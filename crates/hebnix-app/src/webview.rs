@@ -90,6 +90,20 @@ impl WebviewOverlay {
             return Err(format!("gtk::init() failed: {e}"));
         }
 
+        // Hyprland (best-effort, no-op elsewhere): every plugin
+        // enable/disable, or a full plugin reload for an unrelated reason
+        // (Steam/Epic transition etc), tears this window down and rebuilds
+        // it from scratch since it's simplest to always regenerate the host
+        // page fresh rather than diff/patch iframes in place. Hyprland's
+        // default close animation then leaves the *old* surface's last
+        // frame visibly fading out on screen for its animation duration
+        // while the *new* one is already up -- looks exactly like a stray
+        // duplicate overlay. Disabling animation for this surface's
+        // namespace makes a torn-down one disappear instantly instead.
+        let _ = std::process::Command::new("hyprctl")
+            .args(["keyword", "layerrule", "noanim,hebnix-html-overlay"])
+            .output();
+
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_decorated(false);
         window.set_app_paintable(true);
