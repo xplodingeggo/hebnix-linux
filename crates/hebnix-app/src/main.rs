@@ -131,6 +131,13 @@ fn main() -> eframe::Result {
     // SAFETY: single-threaded here, nothing else has run yet.
     unsafe {
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        // GTK3 defaults to the X11 backend (via XWayland, which is present
+        // here -- DISPLAY is set) unless told otherwise, even under a
+        // native Wayland session. gtk-layer-shell requires a real Wayland
+        // GdkWindow to do anything -- on an X11-backed window
+        // init_layer_shell() silently no-ops, so both the tray icon and the
+        // html overlay's window need this forced.
+        std::env::set_var("GDK_BACKEND", "wayland");
     }
 
     let base_dir = config::base_dir();

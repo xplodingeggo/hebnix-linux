@@ -136,10 +136,37 @@ impl WebviewOverlay {
                 &settings,
                 webkit2gtk::HardwareAccelerationPolicy::Never,
             );
+            // the host shell is loaded via load_html with a synthetic base
+            // URI, and its iframes point at real file:// paths -- without
+            // these, WebKit's local-file security policy silently blocks
+            // that cross-origin navigation (host page not itself file://
+            // loaded), and the iframe just never loads with no error
+            // reported anywhere obvious.
+            webkit2gtk::SettingsExt::set_allow_file_access_from_file_urls(&settings, true);
+            webkit2gtk::SettingsExt::set_allow_universal_access_from_file_urls(&settings, true);
+            // plugin page JS errors/console.log land in our own stdout/log
+            // instead of vanishing into the (invisible, headless) web
+            // process -- this is the main debugging tool for page content
+            // issues once the layer-shell surface itself is confirmed up.
+            webkit2gtk::SettingsExt::set_enable_write_console_messages_to_stdout(&settings, true);
         }
         webview.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
+
+        webview.connect_load_changed(|_, event| {
+            tracing::info!(?event, "html overlay: webview load event");
+        });
+        webview.connect_load_failed(|_, event, uri, error| {
+            tracing::warn!(?event, uri, %error, "html overlay: webview load failed");
+            false // let webkit show its own error page too
+        });
+
         window.add(&webview);
         window.show_all();
+
+        tracing::info!(
+            is_layer_window = window.is_layer_window(),
+            "html overlay: layer-shell window created"
+        );
 
         self.window = Some(window);
         self.webview = Some(webview);
@@ -166,10 +193,15 @@ impl WebviewOverlay {
         if pages == self.active.as_slice() {
             return;
         }
+        tracing::info!(
+            slugs = ?pages.iter().map(|(slug, ..)| slug.as_str()).collect::<Vec<_>>(),
+            "html overlay: active plugin page set changed, rebuilding host page"
+        );
         self.active = pages.to_vec();
 
         if self.webview.is_none() {
             if let Err(e) = self.create_window() {
+                tracing::warn!(error = %e, "html overlay: failed to create layer-shell window");
                 self.last_error = Some(e);
                 return;
             }
@@ -179,6 +211,7 @@ impl WebviewOverlay {
         let mut iframes = String::new();
         for (slug, page, assets_dir) in pages {
             let src = file_url(&assets_dir.join(page));
+            tracing::info!(slug, src, "html overlay: iframe src");
             iframes.push_str(&format!(
                 "<iframe id=\"frame-{id}\" src=\"{src}\" \
                  style=\"position:absolute;inset:0;width:100%;height:100%;border:0;\"></iframe>\n",
@@ -193,10 +226,16 @@ impl WebviewOverlay {
              window.__hebnixDeliver = function(slug, data) {{\
                var el = document.getElementById('frame-' + slug);\
                if (el && el.contentWindow) el.contentWindow.postMessage(data, '*');\
+               else console.error('hebnix overlay: no iframe for ' + slug);\
              }};\
              </script></body></html>"
         );
-        webview.load_html(&html, Some("hebnix-overlay:///"));
+        tracing::debug!(html, "html overlay: host page");
+        // real file:// base (not a synthetic scheme) so the file:// iframe
+        // navigations below aren't cross-origin even without the
+        // allow_*_access_from_file_urls settings above -- belt and
+        // suspenders, since either alone should be enough.
+        webview.load_html(&html, Some("file:///"));
     }
 
     /// push `data` (already-serialized JSON) into the named plugin's iframe.
@@ -209,7 +248,12 @@ impl WebviewOverlay {
             json_escape(&html_escape(slug)),
             data
         );
-        webview.run_javascript(&script, gtk::gio::Cancellable::NONE, |_| {});
+        tracing::trace!(slug, %data, "html overlay: deliver");
+        webview.run_javascript(&script, gtk::gio::Cancellable::NONE, |result| {
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "html overlay: deliver run_javascript failed");
+            }
+        });
     }
 
     pub fn show(&mut self) {
@@ -217,6 +261,7 @@ impl WebviewOverlay {
             return;
         }
         if let Some(window) = &self.window {
+            tracing::debug!("html overlay: show");
             window.show();
             self.visible = true;
         }
@@ -227,6 +272,7 @@ impl WebviewOverlay {
             return;
         }
         if let Some(window) = &self.window {
+            tracing::debug!("html overlay: hide");
             window.hide();
         }
         self.visible = false;
