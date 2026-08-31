@@ -90,20 +90,6 @@ impl WebviewOverlay {
             return Err(format!("gtk::init() failed: {e}"));
         }
 
-        // Hyprland (best-effort, no-op elsewhere): every plugin
-        // enable/disable, or a full plugin reload for an unrelated reason
-        // (Steam/Epic transition etc), tears this window down and rebuilds
-        // it from scratch since it's simplest to always regenerate the host
-        // page fresh rather than diff/patch iframes in place. Hyprland's
-        // default close animation then leaves the *old* surface's last
-        // frame visibly fading out on screen for its animation duration
-        // while the *new* one is already up -- looks exactly like a stray
-        // duplicate overlay. Disabling animation for this surface's
-        // namespace makes a torn-down one disappear instantly instead.
-        let _ = std::process::Command::new("hyprctl")
-            .args(["keyword", "layerrule", "noanim,hebnix-html-overlay"])
-            .output();
-
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_decorated(false);
         window.set_app_paintable(true);
@@ -176,6 +162,14 @@ impl WebviewOverlay {
 
         window.add(&webview);
         window.show_all();
+        // show_all() actually maps/shows the window -- keep `visible` in
+        // sync with that or the very next hide() call (if RL isn't
+        // focused) sees `!self.visible` and wrongly no-ops, leaving this
+        // stuck on screen regardless of focus until some *other* true ->
+        // false transition happens to fix the bookkeeping. Confirmed live:
+        // this was the actual cause of the overlay showing while Hebnix's
+        // own window (not Rocket League) had focus.
+        self.visible = true;
 
         tracing::info!(
             is_layer_window = window.is_layer_window(),
@@ -187,20 +181,28 @@ impl WebviewOverlay {
         Ok(())
     }
 
-    fn teardown(&mut self) {
-        if let Some(window) = self.window.take() {
-            window.close();
-        }
-        self.webview = None;
-        self.active.clear();
-    }
-
     /// (re)build the host page if the active plugin set changed since the
     /// last call. Cheap no-op otherwise -- this runs every frame.
+    ///
+    /// The window/webview, once created, is kept alive for the rest of the
+    /// process's life -- an earlier version destroyed and recreated it on
+    /// every transition to/from an empty page set (e.g. toggling the
+    /// plugin, or any full plugin-runtime reload for an unrelated reason
+    /// like a Steam/Epic transition), which left the *old* surface's last
+    /// frame visible on screen for a moment (a compositor close animation,
+    /// or possibly the GTK object just not being torn down synchronously)
+    /// while the *new* one was already up -- looking exactly like a stray
+    /// duplicate overlay. Confirmed live by the user. An empty page set now
+    /// just hides the existing window and clears its content instead.
     pub fn sync_pages(&mut self, pages: &[PageLayer]) {
         if pages.is_empty() {
             if !self.active.is_empty() {
-                self.teardown();
+                tracing::info!("html overlay: no active page plugins, clearing host page");
+                self.active.clear();
+                if let Some(webview) = &self.webview {
+                    webview.load_html("<!doctype html><html><body></body></html>", None);
+                }
+                self.hide();
             }
             return;
         }
@@ -275,7 +277,7 @@ impl WebviewOverlay {
             return;
         }
         if let Some(window) = &self.window {
-            tracing::debug!("html overlay: show");
+            tracing::info!("html overlay: show (Rocket League focused)");
             window.show();
             self.visible = true;
         }
@@ -286,7 +288,7 @@ impl WebviewOverlay {
             return;
         }
         if let Some(window) = &self.window {
-            tracing::debug!("html overlay: hide");
+            tracing::info!("html overlay: hide (Rocket League not focused)");
             window.hide();
         }
         self.visible = false;
