@@ -111,4 +111,10 @@ pub enum AppMsg {
         result: Result<String, String>,
     },
     SendWsCommand(hebnix_sdk::stats::websocket::WsCommand),
+    // hebnix.overlay.send from a plugin's Lua -- delivered to that plugin's
+    // iframe in the html overlay, if it has one (see webview.rs).
+    OverlayPost {
+        slug: String,
+        data: Value,
+    },
 }

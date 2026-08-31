@@ -626,6 +626,26 @@ impl PluginManager {
             .collect()
     }
 
+    /// enabled plugins with an `overlay_page` field: (slug, page filename,
+    /// plugin's own assets dir the page + its resources load from).
+    pub fn overlay_page_plugins(&self) -> Vec<(String, String, PathBuf)> {
+        self.plugins
+            .iter()
+            .filter(|p| p.enabled)
+            .filter_map(|p| {
+                let rt = p.runtime.as_ref()?;
+                let table = rt.lua.registry_value::<Table>(&rt.plugin_table).ok()?;
+                let page = table
+                    .get::<String>("overlay_page")
+                    .ok()
+                    .map(|page| page.trim().trim_start_matches('/').to_string())
+                    .filter(|page| !page.is_empty() && !page.contains(".."))?;
+                let assets = self.plugin_dir.join(&p.slug).join("assets");
+                Some((p.slug.clone(), page, assets))
+            })
+            .collect()
+    }
+
     /// run a plugin's on_overlay(draw, w, h). the canvas must already be the
     /// current draw target (set by overlay::frame), the draw table paints on it.
     pub fn render_overlay_gdi(&mut self, slug: &str, w: f32, h: f32) -> Result<(), String> {
