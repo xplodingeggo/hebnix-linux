@@ -568,6 +568,40 @@ fn capture_state() -> &'static std::sync::Mutex<CaptureState> {
     STATE.get_or_init(|| std::sync::Mutex::new(CaptureState::Idle))
 }
 
+// Async Launch.log parsing (verify=true waits on the stats api/psynet
+// config, too slow for the ui thread lua runs on)
+
+enum AsyncLog {
+    Pending,
+    Done(hebnix_sdk::log::LogInfo),
+}
+
+fn async_log() -> &'static std::sync::Mutex<std::collections::HashMap<String, AsyncLog>> {
+    static MAP: OnceLock<std::sync::Mutex<std::collections::HashMap<String, AsyncLog>>> =
+        OnceLock::new();
+    MAP.get_or_init(Default::default)
+}
+
+fn log_queue() -> &'static crossbeam_channel::Sender<(String, bool)> {
+    static QUEUE: OnceLock<crossbeam_channel::Sender<(String, bool)>> = OnceLock::new();
+    QUEUE.get_or_init(|| {
+        let (tx, rx) = crossbeam_channel::unbounded::<(String, bool)>();
+        std::thread::Builder::new()
+            .name("launch-log-worker".into())
+            .spawn(move || {
+                while let Ok((key, verify)) = rx.recv() {
+                    let info = hebnix_sdk::log::parse_launch_log(None, verify, "INT");
+                    async_log()
+                        .lock()
+                        .unwrap()
+                        .insert(key, AsyncLog::Done(info));
+                }
+            })
+            .ok();
+        tx
+    })
+}
+
 fn parse_hex_color(s: &str) -> Option<egui::Color32> {
     let s = s.trim().trim_start_matches('#');
     match s.len() {
@@ -775,6 +809,80 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
             lua.create_function(move |_, ()| Ok(host.shared.borrow().rl_connected))?,
         )?;
     }
+
+    // Synthetic keyboard input.
+    //
+    // linux-port: unlike Windows' SendInput (which posts to whichever HWND
+    // owns the target thread's input queue, so hebnix could target RL even
+    // while unfocused), this app's uinput virtual keyboard is indistinguishable
+    // from a real keyboard to the compositor -- it always goes to whatever
+    // window currently has focus. Without a check here, a plugin calling
+    // these while the user's tabbed into Discord/a browser/etc would type
+    // into that instead of RL. Both endpoints are gated on RL having focus.
+    //
+    // input.send taps arbitrary keys and is additionally disabled while a
+    // match is in progress, so it can't be turned into a gameplay macro
+    // (jump/boost/flip sequences, etc). chat.send is a separate, narrower
+    // endpoint that only opens a chat channel, types a message, and hits
+    // enter -- that's allowed mid-match because sending chat isn't a
+    // competitive advantage, it's the point of the feature.
+    let input = lua.create_table()?;
+    {
+        let host = Rc::clone(&host);
+        input.set(
+            "send",
+            lua.create_function(move |_, keys: Variadic<String>| {
+                if !hebnix_sdk::process::is_rocket_league_focused() {
+                    return Err(mlua::Error::runtime(
+                        "hebnix.input.send is disabled while Rocket League isn't focused",
+                    ));
+                }
+                if host.shared.borrow().in_match {
+                    return Err(mlua::Error::runtime(
+                        "hebnix.input.send is disabled while a match is in progress",
+                    ));
+                }
+                for key in keys.iter() {
+                    if !hebnix_sdk::input::tap_key(key) {
+                        return Err(mlua::Error::runtime(format!(
+                            "hebnix.input.send: unknown key '{key}'"
+                        )));
+                    }
+                }
+                Ok(())
+            })?,
+        )?;
+    }
+    hebnix.set("input", input)?;
+
+    let chat = lua.create_table()?;
+    chat.set(
+        "send",
+        lua.create_function(|_, (channel, message): (String, String)| {
+            if !hebnix_sdk::process::is_rocket_league_focused() {
+                return Err(mlua::Error::runtime(
+                    "hebnix.chat.send is disabled while Rocket League isn't focused",
+                ));
+            }
+            let open_key = match channel.to_lowercase().as_str() {
+                "global" => "t",
+                "team" => "y",
+                "party" => "u",
+                other => {
+                    return Err(mlua::Error::runtime(format!(
+                        "hebnix.chat.send: unknown channel '{other}', expected global, team or party"
+                    )));
+                }
+            };
+            hebnix_sdk::input::tap_key(open_key);
+            std::thread::sleep(Duration::from_millis(100));
+            hebnix_sdk::input::type_text(&message);
+            std::thread::sleep(Duration::from_millis(30));
+            hebnix_sdk::input::tap_key("enter");
+            Ok(())
+        })?,
+    )?;
+    hebnix.set("chat", chat)?;
     {
         let host = Rc::clone(&host);
         hebnix.set(
@@ -1312,6 +1420,45 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         lua.create_function(|lua, verify: Option<bool>| {
             let info = hebnix_sdk::log::parse_launch_log(None, verify.unwrap_or(true), "INT");
             to_lua(lua, &info)
+        })?,
+    )?;
+
+    // Launch.log verify=true (default) confirms the match against the stats
+    // api. Returns the key to poll with hebnix.launch_log_result(key).
+    hebnix.set(
+        "parse_launch_log_async",
+        lua.create_function(|_, verify: Option<bool>| {
+            let verify = verify.unwrap_or(true);
+            let key = format!("launchlog:{verify}");
+            let mut map = async_log().lock().unwrap();
+            if !map.contains_key(&key) {
+                map.insert(key.clone(), AsyncLog::Pending);
+                drop(map);
+                let _ = log_queue().send((key.clone(), verify));
+            }
+            Ok(key)
+        })?,
+    )?;
+
+    // Returns nil (never requested), "pending", or the log table.
+    hebnix.set(
+        "launch_log_result",
+        lua.create_function(|lua, key: String| {
+            let map = async_log().lock().unwrap();
+            match map.get(&key) {
+                None => Ok(LuaValue::Nil),
+                Some(AsyncLog::Pending) => Ok(LuaValue::String(lua.create_string("pending")?)),
+                Some(AsyncLog::Done(info)) => Ok(to_lua(lua, info)?),
+            }
+        })?,
+    )?;
+
+    // cleans the parse cache so the next _async call re-reads the log
+    hebnix.set(
+        "clear_launch_log",
+        lua.create_function(|_, ()| {
+            async_log().lock().unwrap().clear();
+            Ok(())
         })?,
     )?;
 

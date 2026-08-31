@@ -22,16 +22,16 @@ clean:
 	@echo "Cleaning build artifacts..."
 	cargo clean
 
-# Install to /usr/local/bin (requires sudo)
+# Install to ~/.local/bin (no sudo needed)
 install: release
-	@echo "Installing hebnix-app to /usr/local/bin..."
-	@install -Dm755 target/release/hebnix-app /usr/local/bin/hebnix-app
-	@echo "Installation complete. Run with: hebnix-app"
+	@echo "Installing hebnix-app to $$HOME/.local/bin..."
+	@install -Dm755 target/release/hebnix-app "$$HOME/.local/bin/hebnix-app"
+	@echo "Installation complete. Run with: hebnix-app (make sure ~/.local/bin is on your PATH)"
 
-# Uninstall from /usr/local/bin
+# Uninstall from ~/.local/bin
 uninstall:
 	@echo "Uninstalling hebnix-app..."
-	@rm -f /usr/local/bin/hebnix-app
+	@rm -f "$$HOME/.local/bin/hebnix-app"
 	@echo "Uninstall complete."
 
 # Run the release binary
@@ -72,8 +72,8 @@ help:
 	@echo "  make release      - Build optimized release version"
 	@echo "  make debug        - Build debug version"
 	@echo "  make clean        - Remove build artifacts"
-	@echo "  make install      - Install to /usr/local/bin (requires sudo)"
-	@echo "  make uninstall    - Remove from /usr/local/bin"
+	@echo "  make install      - Install to ~/.local/bin (no sudo needed)"
+	@echo "  make uninstall    - Remove from ~/.local/bin"
 	@echo "  make run          - Build and run release version"
 	@echo "  make dev          - Build and run debug version"
 	@echo "  make test         - Run tests"

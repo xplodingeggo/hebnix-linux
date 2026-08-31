@@ -249,3 +249,161 @@ pub fn detect_hotkey(timeout: Option<Duration>) -> Option<String> {
         std::thread::sleep(Duration::from_millis(15));
     }
 }
+
+// --- synthetic input (uinput virtual keyboard) ---
+//
+// used for things like quick-chat automation: tapping the chat-open key and
+// typing the message. gated by callers (not here) to whatever policy
+// applies, e.g. hebnix's "not while a match is in progress" rule for raw
+// input. Requires rw access to /dev/uinput (the `input` group on most
+// distros, same requirement as reading /dev/input/event* above).
+
+use evdev::uinput::VirtualDevice;
+use evdev::{AttributeSet, KeyEvent};
+
+fn all_known_codes() -> AttributeSet<KeyCode> {
+    let mut keys = AttributeSet::<KeyCode>::new();
+    for &(_, code) in named_keys() {
+        keys.insert(code);
+    }
+    for c in ('a'..='z').chain('0'..='9') {
+        if let Some(code) = letter_digit_code(c) {
+            keys.insert(code);
+        }
+    }
+    keys
+}
+
+fn virtual_keyboard() -> Option<&'static std::sync::Mutex<VirtualDevice>> {
+    static DEVICE: std::sync::OnceLock<Option<std::sync::Mutex<VirtualDevice>>> =
+        std::sync::OnceLock::new();
+    DEVICE
+        .get_or_init(|| {
+            match VirtualDevice::builder()
+                .and_then(|b| b.name("Hebnix Virtual Keyboard").with_keys(&all_known_codes()))
+                .and_then(|b| b.build())
+            {
+                Ok(dev) => Some(std::sync::Mutex::new(dev)),
+                Err(e) => {
+                    tracing::warn!(
+                        "synthetic input unavailable, couldn't create uinput virtual keyboard \
+                         (need rw on /dev/uinput, usually the 'input' group): {e}"
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+const TAP_GAP: Duration = Duration::from_millis(1);
+
+/// press+release an evdev key code
+fn tap_code(dev: &mut VirtualDevice, code: KeyCode) {
+    let _ = dev.emit(&[*KeyEvent::new(code, 1)]);
+    std::thread::sleep(TAP_GAP);
+    let _ = dev.emit(&[*KeyEvent::new(code, 0)]);
+    std::thread::sleep(TAP_GAP);
+}
+
+/// press+release a named key ("enter", "t", "f1", ...). false if the name
+/// isn't recognized or the virtual device couldn't be created.
+pub fn tap_key(name: &str) -> bool {
+    let Some(code) = name_to_code(name) else {
+        return false;
+    };
+    let Some(mutex) = virtual_keyboard() else {
+        return false;
+    };
+    let mut dev = mutex.lock().unwrap();
+    tap_code(&mut dev, code);
+    true
+}
+
+/// ascii char to (KeyCode, needs_shift). None for anything not on a
+/// standard US layout key (good enough for chat text).
+fn char_to_code(c: char) -> Option<(KeyCode, bool)> {
+    if c.is_ascii_alphabetic() {
+        return letter_digit_code(c.to_ascii_lowercase())
+            .map(|code| (code, c.is_ascii_uppercase()));
+    }
+    if c.is_ascii_digit() {
+        return letter_digit_code(c).map(|code| (code, false));
+    }
+    let (code, shift) = match c {
+        ' ' => (KeyCode::KEY_SPACE, false),
+        '\'' => (KeyCode::KEY_APOSTROPHE, false),
+        '"' => (KeyCode::KEY_APOSTROPHE, true),
+        ',' => (KeyCode::KEY_COMMA, false),
+        '<' => (KeyCode::KEY_COMMA, true),
+        '.' => (KeyCode::KEY_DOT, false),
+        '>' => (KeyCode::KEY_DOT, true),
+        '/' => (KeyCode::KEY_SLASH, false),
+        '?' => (KeyCode::KEY_SLASH, true),
+        ';' => (KeyCode::KEY_SEMICOLON, false),
+        ':' => (KeyCode::KEY_SEMICOLON, true),
+        '-' => (KeyCode::KEY_MINUS, false),
+        '_' => (KeyCode::KEY_MINUS, true),
+        '=' => (KeyCode::KEY_EQUAL, false),
+        '+' => (KeyCode::KEY_EQUAL, true),
+        '[' => (KeyCode::KEY_LEFTBRACE, false),
+        '{' => (KeyCode::KEY_LEFTBRACE, true),
+        ']' => (KeyCode::KEY_RIGHTBRACE, false),
+        '}' => (KeyCode::KEY_RIGHTBRACE, true),
+        '\\' => (KeyCode::KEY_BACKSLASH, false),
+        '|' => (KeyCode::KEY_BACKSLASH, true),
+        '`' => (KeyCode::KEY_GRAVE, false),
+        '~' => (KeyCode::KEY_GRAVE, true),
+        '1' => (KeyCode::KEY_1, false),
+        '!' => (KeyCode::KEY_1, true),
+        '2' => (KeyCode::KEY_2, false),
+        '@' => (KeyCode::KEY_2, true),
+        '3' => (KeyCode::KEY_3, false),
+        '#' => (KeyCode::KEY_3, true),
+        '4' => (KeyCode::KEY_4, false),
+        '$' => (KeyCode::KEY_4, true),
+        '5' => (KeyCode::KEY_5, false),
+        '%' => (KeyCode::KEY_5, true),
+        '6' => (KeyCode::KEY_6, false),
+        '^' => (KeyCode::KEY_6, true),
+        '7' => (KeyCode::KEY_7, false),
+        '&' => (KeyCode::KEY_7, true),
+        '8' => (KeyCode::KEY_8, false),
+        '*' => (KeyCode::KEY_8, true),
+        '9' => (KeyCode::KEY_9, false),
+        '(' => (KeyCode::KEY_9, true),
+        '0' => (KeyCode::KEY_0, false),
+        ')' => (KeyCode::KEY_0, true),
+        _ => return None,
+    };
+    Some((code, shift))
+}
+
+/// type text by tapping real key codes through the virtual keyboard (shift
+/// held for caps/punctuation as needed), US layout only. Unmappable
+/// characters (anything outside ascii) are skipped.
+///
+/// deliberately real key events, not some higher-level "insert text" API:
+/// games that read keyboard via raw input (most UE titles, including RL)
+/// only see real key events, same as this app's own bind-capture reading
+/// real key events rather than IME/text composition.
+pub fn type_text(text: &str) {
+    let Some(mutex) = virtual_keyboard() else {
+        return;
+    };
+    let mut dev = mutex.lock().unwrap();
+    for c in text.chars() {
+        let Some((code, need_shift)) = char_to_code(c) else {
+            continue;
+        };
+        if need_shift {
+            let _ = dev.emit(&[*KeyEvent::new(KeyCode::KEY_LEFTSHIFT, 1)]);
+            std::thread::sleep(TAP_GAP);
+        }
+        tap_code(&mut dev, code);
+        if need_shift {
+            let _ = dev.emit(&[*KeyEvent::new(KeyCode::KEY_LEFTSHIFT, 0)]);
+            std::thread::sleep(TAP_GAP);
+        }
+    }
+}

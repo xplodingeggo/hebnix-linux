@@ -13,5 +13,5 @@ pub use dualsense::{
     DS4_BUTTON_DISPLAY, DS4_BUTTONS, PsModel, get_dualsense_inputs, is_dualsense_connected,
     ps_model,
 };
-pub use keyboard::{detect_hotkey, is_key_pressed};
+pub use keyboard::{detect_hotkey, is_key_pressed, tap_key, type_text};
 pub use xinput::{XINPUT_BUTTON_DISPLAY, XInputState, get_xinput_state};

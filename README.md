@@ -54,6 +54,50 @@ Plugins tab, or by cloning a plugin repo (e.g.
 [`rl-profiles-linux`](https://github.com/xplodingeggo/rl-profiles-linux))
 into that `plugins/` folder yourself.
 
+## Optional: hotkeys, binds & chat-send plugins
+
+Reading key/controller state (the show/hide hotkey, `hebnix.is_bind_pressed`,
+etc) goes through `/dev/input/event*`, which needs your user in the `input`
+group:
+
+```sh
+sudo usermod -aG input $USER
+# then log out and back in (or reboot) for the new group to apply
+```
+
+Plugins that *send* synthetic input (`hebnix.input.send`, `hebnix.chat.send`
+— e.g. quick-chat plugins) additionally need a virtual keyboard via
+`/dev/uinput`, which isn't group-`input`-writable by default on most distros
+(unlike `/dev/input/event*`, which already is via systemd's own udev rules).
+One-time setup:
+
+```sh
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+sudo modprobe uinput
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+  | sudo tee /etc/udev/rules.d/60-hebnix-uinput.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger /dev/uinput
+```
+
+`install.sh` checks both of these and offers to set them up for you. Neither
+is a hard requirement — without them the app runs fine, hotkeys/binds just
+read as "not pressed" and chat-send plugins fail to type until it's fixed.
+
+## Controllers
+
+`hebnix.controllers()` reports every connected gamepad through a generic
+SDL-style mapping (`kind = "universal"`, `btn_south`/`btn_east`/`dpad_*`/
+`lx`/`ly`/etc) — this is the same fallback path the Windows build uses for
+anything that isn't a real Xbox controller (what Windows calls a DirectInput
+device), so DInput-style pads already just work here with no extra code:
+Linux's evdev/joystick layer doesn't distinguish XInput from DirectInput at
+the OS level the way Windows does, one generic path covers both. Only real
+Xbox controllers get a narrower Windows-only `kind = "xinput"` fast path with
+the raw `XINPUT_*` fields; on Linux they report as `"universal"` too and are
+still fully readable through the same fields plugins already use for any
+other pad.
+
 ## Optional: avatar/tracker.gg lookups
 
 Plugins that fetch player stats or avatars from tracker.gg need

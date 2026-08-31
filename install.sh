@@ -63,7 +63,7 @@ print_info "Detected distribution: $DISTRO"
 echo ""
 
 # Check for Rust
-echo -e "${BLUE}[1/5] Checking Rust installation...${NC}"
+echo -e "${BLUE}[1/6] Checking Rust installation...${NC}"
 if check_command rustc && check_command cargo; then
     RUST_VERSION=$(rustc --version | awk '{print $2}')
     print_info "Rust version: $RUST_VERSION"
@@ -74,7 +74,7 @@ fi
 echo ""
 
 # Check for C compiler
-echo -e "${BLUE}[2/5] Checking C compiler...${NC}"
+echo -e "${BLUE}[2/6] Checking C compiler...${NC}"
 if check_command gcc || check_command clang; then
     if command -v gcc &> /dev/null; then
         GCC_VERSION=$(gcc --version | head -n1)
@@ -89,7 +89,7 @@ fi
 echo ""
 
 # Check for pkg-config
-echo -e "${BLUE}[3/5] Checking build tools...${NC}"
+echo -e "${BLUE}[3/6] Checking build tools...${NC}"
 if ! check_command pkg-config; then
     MISSING_DEPS=1
 fi
@@ -100,7 +100,7 @@ fi
 echo ""
 
 # Check for system libraries
-echo -e "${BLUE}[4/5] Checking system libraries...${NC}"
+echo -e "${BLUE}[4/6] Checking system libraries...${NC}"
 
 check_library() {
     if pkg-config --exists "$1" 2>/dev/null; then
@@ -134,7 +134,7 @@ fi
 echo ""
 
 # Check for optional dependencies
-echo -e "${BLUE}[5/5] Checking optional dependencies...${NC}"
+echo -e "${BLUE}[5/6] Checking optional dependencies...${NC}"
 if check_command curl-impersonate; then
     print_info "curl-impersonate found (for tracker.gg lookups)"
 else
@@ -151,6 +151,65 @@ if [ "$XDG_CURRENT_DESKTOP" = "KDE" ] || [ "$DESKTOP_SESSION" = "plasma" ]; then
     if ! check_command kscreen-doctor; then
         MISSING_OPTIONAL_DEPS=1
         print_warning "kscreen-doctor not found (part of KDE Plasma)"
+    fi
+fi
+echo ""
+
+# Check keyboard/controller reading (/dev/input/event*, needs the `input`
+# group) and synthetic input (/dev/uinput, virtual keyboard used by
+# hebnix.input.send / hebnix.chat.send -- e.g. the quick-chat plugin).
+# Neither is a hard requirement: without them hotkeys/binds/chat-send
+# plugins just silently report "not pressed" / fail to type, everything
+# else in the app works fine.
+echo -e "${BLUE}[6/6] Checking input device access...${NC}"
+NEEDS_INPUT_GROUP=0
+if groups "$USER" | grep -qw input; then
+    print_status 0 "'$USER' is in the 'input' group"
+else
+    NEEDS_INPUT_GROUP=1
+    MISSING_OPTIONAL_DEPS=1
+    print_warning "'$USER' is not in the 'input' group (needed to read hotkeys/binds and for synthetic chat-send input)"
+fi
+
+NEEDS_UINPUT_RULE=0
+if [ -e /dev/uinput ]; then
+    if [ -w /dev/uinput ] || { [ "$NEEDS_INPUT_GROUP" -eq 1 ] && stat -c '%G' /dev/uinput 2>/dev/null | grep -qw input; }; then
+        print_status 0 "/dev/uinput present and writable"
+    else
+        NEEDS_UINPUT_RULE=1
+        MISSING_OPTIONAL_DEPS=1
+        print_warning "/dev/uinput present but not group-'input'-writable ($(stat -c '%G %a' /dev/uinput 2>/dev/null)) -- synthetic input (chat-send plugins) won't work until fixed"
+    fi
+else
+    NEEDS_UINPUT_RULE=1
+    MISSING_OPTIONAL_DEPS=1
+    print_warning "/dev/uinput not present (uinput kernel module not loaded)"
+fi
+echo ""
+
+if [ $NEEDS_INPUT_GROUP -eq 1 ] || [ $NEEDS_UINPUT_RULE -eq 1 ]; then
+    echo -e "${YELLOW}Synthetic input (chat-send plugins, e.g. quick-chat) needs:${NC}"
+    [ $NEEDS_INPUT_GROUP -eq 1 ] && echo "  - your user in the 'input' group"
+    [ $NEEDS_UINPUT_RULE -eq 1 ] && echo "  - /dev/uinput loaded and group-'input'-writable"
+    echo ""
+    read -p "Set this up now? Needs sudo, and a re-login to take effect. [y/N] " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if [ $NEEDS_UINPUT_RULE -eq 1 ]; then
+            echo "uinput" | sudo tee /etc/modules-load.d/uinput.conf > /dev/null
+            sudo modprobe uinput
+            echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+                | sudo tee /etc/udev/rules.d/60-hebnix-uinput.rules > /dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger /dev/uinput 2>/dev/null || true
+            print_status 0 "uinput module + udev rule installed"
+        fi
+        if [ $NEEDS_INPUT_GROUP -eq 1 ]; then
+            sudo usermod -aG input "$USER"
+            print_status 0 "'$USER' added to the 'input' group (re-login or reboot to take effect)"
+        fi
+    else
+        print_info "Skipped. You can do this later -- see README.md for the manual steps."
     fi
 fi
 echo ""
