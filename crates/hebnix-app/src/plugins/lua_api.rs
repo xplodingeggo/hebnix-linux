@@ -24,10 +24,12 @@ use rodio::{Decoder, OutputStream, Sink};
 pub struct HostShared {
     pub is_gui_open: bool,
     pub rl_connected: bool,
+    pub in_match: bool,
     pub app_version: String,
     /// detected game platform ("steam", "epic", or "" if unknown). default for
     /// eos/rlapi calls that don't pass one.
     pub platform: String,
+    pub suppress_plugin_logs: bool,
 }
 
 /// a window side, either a size in points or a share of the monitor RL is on
@@ -118,6 +120,9 @@ pub struct HostCtx {
 
 impl HostCtx {
     pub fn log(&self, msg: &str) {
+        if self.shared.borrow().suppress_plugin_logs {
+            return;
+        }
         let name = self.display_name.borrow();
         let _ = self.tx.send(AppMsg::Log(format!("[{}] {}", name, msg)));
     }
@@ -754,6 +759,13 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         hebnix.set(
             "is_gui_open",
             lua.create_function(move |_, ()| Ok(host.shared.borrow().is_gui_open))?,
+        )?;
+    }
+    {
+        let host = Rc::clone(&host);
+        hebnix.set(
+            "in_match",
+            lua.create_function(move |_, ()| Ok(host.shared.borrow().in_match))?,
         )?;
     }
     {
@@ -1962,14 +1974,24 @@ fn build_draw_table(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<Table> {
         "image",
         lua.create_function(
             move |_, (path, x, y, w, h, opts): (String, f32, f32, f32, f32, Option<Table>)| {
-                // Ensure images are resolved cleanly relative to the plugin's folder so they can just bundle them!
-                let full_path = crate::config::base_dir()
-                    .join("plugins")
-                    .join(&host_clone.slug)
-                    .join(&path);
-
-                let path_str = full_path.to_string_lossy().to_string();
-                overlay::image(&path_str, x, y, w, h, opt_f32(&opts, "opacity", 1.0));
+                // relative paths resolve against the plugin's own folder so
+                // it can just bundle assets; absolute paths (e.g. a cached
+                // tracker avatar) pass straight through.
+                let requested = std::path::Path::new(&path);
+                let full_path = if requested.is_absolute() {
+                    requested.to_path_buf()
+                } else {
+                    host_clone.dir.join(requested)
+                };
+                let full_path = full_path.canonicalize().unwrap_or(full_path);
+                overlay::image(
+                    &full_path.to_string_lossy(),
+                    x,
+                    y,
+                    w,
+                    h,
+                    opt_f32(&opts, "opacity", 1.0),
+                );
                 Ok(())
             },
         )?,

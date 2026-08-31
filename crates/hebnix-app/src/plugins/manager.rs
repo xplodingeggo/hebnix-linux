@@ -71,8 +71,10 @@ impl PluginManager {
             shared: Rc::new(RefCell::new(HostShared {
                 is_gui_open: true,
                 rl_connected: false,
+                in_match: false,
                 app_version: app_version.to_string(),
                 platform: String::new(),
+                suppress_plugin_logs: false,
             })),
             last_pos_flush: std::time::Instant::now(),
         }
@@ -83,7 +85,7 @@ impl PluginManager {
     }
 
     /// full refresh: unload all, re-discover, load the enabled ones
-    pub fn refresh(&mut self, config: &mut Config, verbose: bool) {
+    pub fn refresh(&mut self, config: &mut Config, _verbose: bool) {
         for plugin in &mut self.plugins {
             if plugin.enabled {
                 Self::call_on_unload(plugin);
@@ -143,15 +145,19 @@ impl PluginManager {
                         plugin.load_error = Some(e);
                     }
                 }
-            } else if verbose {
-                self.log(format!(
-                    "[Core] Skipped Loading Plugin: {} [Disabled]",
-                    plugin.display_name()
-                ));
             }
 
             self.plugins.push(plugin);
         }
+    }
+
+    /// full refresh with reload chatter suppressed (used by the "Reload All"
+    /// button, which would otherwise dump one log line per plugin).
+    pub fn reload_all(&mut self, config: &mut Config) {
+        self.shared.borrow_mut().suppress_plugin_logs = true;
+        self.refresh(config, false);
+        self.shared.borrow_mut().suppress_plugin_logs = false;
+        self.log("[Core] Reloaded Plugins");
     }
 
     /// enable+(re)load or disable+unload one plugin, returns success
@@ -218,6 +224,7 @@ impl PluginManager {
     /// updated shared platform on their next `on_load` call.
     #[cfg(not(feature = "lite"))]
     pub fn reload_enabled_silent(&mut self, config: &mut Config) {
+        self.shared.borrow_mut().suppress_plugin_logs = true;
         let enabled = self
             .plugins
             .iter()
@@ -227,6 +234,7 @@ impl PluginManager {
         for slug in enabled {
             let _ = self.set_enabled(&slug, true, config);
         }
+        self.shared.borrow_mut().suppress_plugin_logs = false;
     }
 
     fn instantiate(&self, disc: &DiscoveredPlugin) -> Result<PluginRuntime, String> {
