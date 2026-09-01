@@ -381,6 +381,7 @@ pub struct HebnixApp {
     quitting: bool,
     last_size: (u32, u32),
     overlay: crate::overlay::Overlay,
+    webview: crate::webview::WebviewOverlay,
     overlay_rect: Option<(i32, i32, i32, i32)>,
     overlay_rect_checked: Option<std::time::Instant>,
     plugin_monitor_size: (f32, f32),
@@ -778,6 +779,7 @@ impl HebnixApp {
             quitting: false,
             last_size,
             overlay: crate::overlay::Overlay::new(),
+            webview: crate::webview::WebviewOverlay::new(),
             overlay_rect: None,
             overlay_rect_checked: None,
             plugin_monitor_size: (1920.0, 1080.0),
@@ -1536,6 +1538,9 @@ impl HebnixApp {
                     self.plugin_mgr
                         .on_http_response(&slug, &req_id, status, &body);
                     ctx.request_repaint();
+                }
+                AppMsg::OverlayPost { slug, data } => {
+                    self.webview.deliver(&slug, &data);
                 }
                 AppMsg::PluginHttpDownloadRes {
                     slug,
@@ -4177,9 +4182,30 @@ impl HebnixApp {
             self.overlay.hide();
         }
 
+        // drains GTK/WebKit's GLib main context -- also what services the
+        // tray icon's own GTK objects, so this needs to run every tick
+        // regardless of whether any plugin actually uses the html overlay.
+        crate::webview::WebviewOverlay::pump();
+
+        let page_layers = self.plugin_mgr.overlay_page_plugins();
+        self.webview.sync_pages(&page_layers);
+        if let Some(error) = self.webview.take_error() {
+            self.console
+                .write(format!("[Core] Overlay webview: {error}"));
+        }
+
+        let focused = hebnix_sdk::process::is_rocket_league_focused();
+        if self.webview.is_active() {
+            if focused {
+                self.webview.show();
+            } else {
+                self.webview.hide();
+            }
+        }
+
         let slugs = self.plugin_mgr.overlay_plugins();
 
-        if slugs.is_empty() || !hebnix_sdk::process::is_rocket_league_focused() {
+        if slugs.is_empty() || !focused {
             self.overlay.hide();
             self.overlay_rect = None;
             return;

@@ -40,6 +40,7 @@ mod upk_keys {
     pub use crate::patcher::upk_keys::*;
 }
 mod watchdog;
+mod webview;
 mod winutil;
 
 use app::HebnixApp;
@@ -117,6 +118,28 @@ fn setup_panic_hook(base_dir: &std::path::Path) {
 }
 
 fn main() -> eframe::Result {
+    // WebKitGTK's own escape hatch for a driver bug in its GPU-accelerated
+    // compositing path (DMA-BUF + explicit sync via
+    // wp_linux_drm_syncobj_surface_v1) -- confirmed live to throw a fatal
+    // Wayland protocol error ("Missing acquire timeline") that GTK treats
+    // as unrecoverable and aborts the whole process on, at least on this
+    // NVIDIA/Wayland combo. The html plugin overlay (webview.rs) is plain
+    // CSS/DOM, nothing worth GPU-compositing, so this is a pure safety net.
+    // Must be set before any other thread exists (env vars aren't safely
+    // mutable once threads that might read the environment are running),
+    // so first thing in main(), before anything else spawns.
+    // SAFETY: single-threaded here, nothing else has run yet.
+    unsafe {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        // GTK3 defaults to the X11 backend (via XWayland, which is present
+        // here -- DISPLAY is set) unless told otherwise, even under a
+        // native Wayland session. gtk-layer-shell requires a real Wayland
+        // GdkWindow to do anything -- on an X11-backed window
+        // init_layer_shell() silently no-ops, so both the tray icon and the
+        // html overlay's window need this forced.
+        std::env::set_var("GDK_BACKEND", "wayland");
+    }
+
     let base_dir = config::base_dir();
     if let Some(parent_pid) = watchdog::parent_pid() {
         watchdog::run(parent_pid);

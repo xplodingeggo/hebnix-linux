@@ -1986,6 +1986,25 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         })?,
     )?;
 
+    // html overlays (plugin.overlay_page) receive data pushed from Lua
+    // through the app message queue -- see webview.rs.
+    {
+        let overlay = lua.create_table()?;
+        let host = Rc::clone(&host);
+        overlay.set(
+            "send",
+            lua.create_function(move |lua, value: LuaValue| {
+                let data: serde_json::Value = lua.from_value(value)?;
+                let _ = host.tx.send(AppMsg::OverlayPost {
+                    slug: host.slug.clone(),
+                    data,
+                });
+                Ok(())
+            })?,
+        )?;
+        hebnix.set("overlay", overlay)?;
+    }
+
     lua.globals().set("hebnix", hebnix)?;
 
     // Build the ui bridge table and stash it in the registry.
