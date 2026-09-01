@@ -131,6 +131,46 @@ fi
 if ! check_library ayatana-appindicator3-0.1 && ! check_library appindicator3-0.1; then
     MISSING_DEPS=1
 fi
+
+# Check udev (gamepad hotplug detection)
+if ! check_library libudev; then
+    MISSING_DEPS=1
+fi
+
+# Check alsa (audio playback)
+if ! check_library alsa; then
+    MISSING_DEPS=1
+fi
+
+# Check openssl (websocket/https client)
+if ! check_library openssl; then
+    MISSING_DEPS=1
+fi
+
+# Check libxdo, x11, xtst, xi (window focus tracking + synthetic input)
+if ! check_library libxdo; then
+    MISSING_DEPS=1
+fi
+if ! check_library x11; then
+    MISSING_DEPS=1
+fi
+if ! check_library xtst; then
+    MISSING_DEPS=1
+fi
+if ! check_library xi; then
+    MISSING_DEPS=1
+fi
+
+# Check webkit2gtk/libsoup/gtk-layer-shell (html plugin overlay)
+if ! check_library webkit2gtk-4.1; then
+    MISSING_DEPS=1
+fi
+if ! check_library libsoup-3.0; then
+    MISSING_DEPS=1
+fi
+if ! check_library gtk-layer-shell-0; then
+    MISSING_DEPS=1
+fi
 echo ""
 
 # Check for optional dependencies
@@ -223,21 +263,26 @@ if [ $MISSING_DEPS -eq 1 ]; then
     case "$DISTRO" in
         arch|manjaro)
             echo -e "${YELLOW}Run the following command to install dependencies:${NC}"
-            echo -e "${GREEN}sudo pacman -S --needed base-devel gtk3 libayatana-appindicator wayland libxkbcommon${NC}"
+            echo -e "${GREEN}sudo pacman -S --needed base-devel gtk3 libayatana-appindicator wayland libxkbcommon \\
+    systemd-libs alsa-lib openssl xdotool libx11 libxtst libxi webkit2gtk-4.1 libsoup3 gtk-layer-shell${NC}"
             echo ""
             echo -e "${YELLOW}For Rust (if not installed):${NC}"
             echo -e "${GREEN}curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
             ;;
         ubuntu|debian|linuxmint|pop)
             echo -e "${YELLOW}Run the following command to install dependencies:${NC}"
-            echo -e "${GREEN}sudo apt install build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev libwayland-dev libxkbcommon-dev${NC}"
+            echo -e "${GREEN}sudo apt install build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev \\
+    libwayland-dev libxkbcommon-dev libudev-dev libasound2-dev libssl-dev libxdo-dev \\
+    libx11-dev libxtst-dev libxi-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-layer-shell-dev${NC}"
             echo ""
             echo -e "${YELLOW}For Rust (if not installed):${NC}"
             echo -e "${GREEN}curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
             ;;
         fedora|rhel|centos)
             echo -e "${YELLOW}Run the following command to install dependencies:${NC}"
-            echo -e "${GREEN}sudo dnf install gcc gtk3-devel libappindicator-gtk3-devel wayland-devel libxkbcommon-devel${NC}"
+            echo -e "${GREEN}sudo dnf install gcc gtk3-devel libappindicator-gtk3-devel wayland-devel libxkbcommon-devel \\
+    systemd-devel alsa-lib-devel openssl-devel libxdo-devel libX11-devel libXtst-devel \\
+    libXi-devel webkit2gtk4.1-devel libsoup3-devel gtk-layer-shell-devel${NC}"
             echo ""
             echo -e "${YELLOW}For Rust (if not installed):${NC}"
             echo -e "${GREEN}curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
@@ -250,6 +295,11 @@ if [ $MISSING_DEPS -eq 1 ]; then
             echo "  - Wayland client development libraries"
             echo "  - libxkbcommon development libraries"
             echo "  - libayatana-appindicator or libappindicator development libraries"
+            echo "  - libudev development libraries (gamepad support)"
+            echo "  - ALSA development libraries (audio)"
+            echo "  - OpenSSL development libraries"
+            echo "  - libxdo, libX11, libXtst, libXi development libraries (window focus + synthetic input)"
+            echo "  - webkit2gtk-4.1, libsoup-3.0, gtk-layer-shell development libraries (html plugin overlay)"
             ;;
     esac
     echo ""
