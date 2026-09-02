@@ -7,6 +7,7 @@
 //! binary is missing, fetches just error out.
 
 use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -49,9 +50,11 @@ const ROUND_WAIT: Duration = Duration::from_secs(20);
 // avatars are a few kb, this is only here so a bad url cant use too much memory
 const AVATAR_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
-/// find the bundled curl-impersonate exe. HEBNIX_CURL_IMPERSONATE overrides,
-/// else it's in the curl-impersonate/ folder next to our exe (put there at
-/// build time). cacert.pem lives right beside it.
+/// find the curl-impersonate exe. HEBNIX_CURL_IMPERSONATE overrides; then
+/// the curl-impersonate/ folder next to our exe (Windows: bundled at build
+/// time); then $PATH -- covers a system package install (e.g. the AUR
+/// `curl-impersonate` package installs to /usr/bin, which isn't "next to"
+/// /usr/bin/hebnix).
 pub fn impersonate_binary() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("HEBNIX_CURL_IMPERSONATE") {
         let path = std::path::PathBuf::from(p);
@@ -64,9 +67,17 @@ pub fn impersonate_binary() -> Option<std::path::PathBuf> {
     } else {
         "curl-impersonate"
     };
-    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let candidate = dir.join("curl-impersonate").join(exe_name);
-    candidate.is_file().then_some(candidate)
+    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        let candidate = dir.join("curl-impersonate").join(exe_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(exe_name))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 // wall-clock derived start index. not crypto, just varies which profile we try

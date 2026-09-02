@@ -168,11 +168,14 @@ other pad.
 Plugins that fetch player stats or avatars from tracker.gg need
 [`curl-impersonate`](https://github.com/lexiforest/curl-impersonate) (the
 site blocks by TLS fingerprint, so a plain HTTP client gets rejected).
-Download a prebuilt Linux release and place the `curl-impersonate` binary
-at:
+Hebnix looks for it, in order: the `HEBNIX_CURL_IMPERSONATE` env var, a
+`curl-impersonate/curl-impersonate` folder next to the `hebnix` binary, then
+`$PATH`. So either install the AUR `curl-impersonate` package (or any
+build of it that ends up on your `PATH`), or download a prebuilt release
+and place the binary at:
 
 ```
-<next to hebnix-app>/curl-impersonate/curl-impersonate
+<next to hebnix>/curl-impersonate/curl-impersonate
 ```
 
 Without it, stats/avatar fetches just fail gracefully — everything else
