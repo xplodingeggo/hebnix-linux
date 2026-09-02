@@ -25,7 +25,7 @@ use crate::ui::console::ConsoleState;
 use crate::ui::workshop::{ImageState, WorkshopState};
 use crate::winutil;
 
-pub const APP_VERSION: &str = "2.1.3";
+pub const APP_VERSION: &str = "2.1.4";
 
 pub const DEFAULT_WIDTH: f32 = 1000.0;
 pub const DEFAULT_HEIGHT: f32 = 600.0;
@@ -3413,18 +3413,34 @@ impl HebnixApp {
             });
     }
 
-    fn render_about_tab(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(40.0);
-        ui.vertical_centered(|ui| {
-            ui.heading("Hebnix Lite");
-            ui.add_space(10.0);
-            ui.label(format!(
-                "Version {APP_VERSION}\n\nA safe, EAC-compliant Mod Loader for Rocket League + Spoofer + Item Changer.\n\nhebnix.com\n\nBuilt by Hebbins & nixvio64.\n\nPress {} to show/hide window.",
-                self.config.settings.hotkey.to_uppercase()
-            ));
-        });
-    }
+fn render_about_tab(&mut self, ui: &mut egui::Ui) {
+    ui.add_space(40.0);
+    ui.vertical_centered(|ui| {
+        ui.heading("Hebnix For Linux");
+        ui.add_space(10.0);
+        ui.label(format!(
+            "Version {APP_VERSION}\n\nA safe, EAC-compliant Mod Loader for Rocket League + Spoofer + Item Changer.\n"
+        ));
 
+        ui.hyperlink_to("hebnix.com", "https://hebnix.com");
+
+        ui.label(format!(
+            "\n\nBuilt by Hebbins & nixvio64.\n\nPress {} to show/hide window.",
+            self.config.settings.hotkey.to_uppercase()
+        ));
+
+        ui.add_space(ui.text_style_height(&egui::TextStyle::Body) * 2.0);
+
+        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Forked to Linux by");
+                ui.hyperlink_to("rlyvision", "https://github.com/rlyvision");
+                ui.label("&");
+                ui.hyperlink_to("xplodingeggo", "https://github.com/xplodingeggo");
+            });
+        });
+    });
+}
     fn render_statsapi_notice(&mut self, ctx: &egui::Context) {
         let Some(notice) = self.statsapi_notice else {
             return;
