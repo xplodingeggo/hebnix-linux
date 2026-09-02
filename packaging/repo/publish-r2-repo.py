@@ -93,7 +93,14 @@ def get_r2_client():
         endpoint_url=endpoint,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
-        config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"}),
+        config=Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 5, "mode": "standard"},
+            # R2 needs path-style addressing (endpoint/bucket/key); boto3
+            # defaults to virtual-hosted style (bucket.endpoint/key), which
+            # doesn't resolve against R2's account-scoped endpoint.
+            s3={"addressing_style": "path"},
+        ),
         region_name="auto",
     )
 
