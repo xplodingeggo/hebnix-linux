@@ -1,10 +1,13 @@
 # Maintainer: xplodingeggo <bugs@notmyproblem.cum>
 pkgname=hebnix-linux-bin
-# NOTE: no stable GitHub release exists yet -- this is a placeholder until
-# the first `vX.Y.Z` tag is pushed (see .github/workflows/release.yml,
-# which produces the hebnix-$pkgver-linux-x86_64.tar.gz asset this package
-# downloads). Update pkgver to match that tag before publishing.
-pkgver=0.1.0
+# Downloads the Arch-built tarball from .github/workflows/release.yml's
+# release-arch job (hebnix-$pkgver-linux-x86_64-arch.tar.gz) -- NOT the
+# plain hebnix-$pkgver-linux-x86_64.tar.gz asset, which is built on
+# Ubuntu and links libxdo.so.3 (Ubuntu's xdotool soname) instead of the
+# libxdo.so.4 Arch's xdotool package actually provides. v0.1.0 shipped
+# only the Ubuntu tarball and didn't run on Arch as a result; fixed in
+# v0.1.1.
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), prebuilt upstream binary"
 arch=('x86_64')
@@ -35,11 +38,11 @@ optdepends=(
 provides=('hebnix')
 conflicts=('hebnix-linux')
 install=hebnix.install
-source=("https://github.com/xplodingeggo/hebnix-linux/releases/download/v$pkgver/hebnix-$pkgver-linux-$CARCH.tar.gz")
+source=("https://github.com/xplodingeggo/hebnix-linux/releases/download/v$pkgver/hebnix-$pkgver-linux-$CARCH-arch.tar.gz")
 sha256sums=('SKIP')
 
 package() {
-	cd "hebnix-$pkgver-linux-$CARCH"
+	cd "hebnix-$pkgver-linux-$CARCH-arch"
 	install -Dm755 bin/hebnix "$pkgdir/usr/bin/hebnix"
 	install -Dm644 share/applications/hebnix.desktop \
 		"$pkgdir/usr/share/applications/hebnix.desktop"

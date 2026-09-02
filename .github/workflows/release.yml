@@ -2,8 +2,20 @@ name: Release
 
 # Stable, tagged releases. Triggered by pushing a `v*` tag (e.g. `v0.2.0`).
 # GitHub is the canonical archive for these versioned artifacts:
-#   - a plain tarball (binary + desktop file + icon) for hebnix-linux-bin
+#   - a plain Ubuntu/glibc-generic tarball (binary + desktop file + icon)
 #   - a distro-agnostic AppImage for direct download / hebnix.com
+#   - a separate Arch-built tarball, specifically for hebnix-linux-bin
+#
+# Why two tarballs: a dynamically-linked binary isn't actually
+# distro-agnostic -- it needs the *build* host's shared library ABI to
+# match the *run* host's. v0.1.0 shipped only the Ubuntu-built tarball,
+# and hebnix-linux-bin (an Arch package) used it directly; it linked
+# libxdo.so.3 (Ubuntu's xdotool soname) while Arch's xdotool package
+# provides libxdo.so.4, so the AUR package didn't actually start on Arch.
+# The `release-arch` job below builds a second copy inside an Arch
+# container so hebnix-linux-bin gets a binary linked against the same
+# library versions Arch itself ships. The AppImage doesn't have this
+# problem since it bundles its own libraries.
 #
 # Nightly/bleeding-edge builds are a separate workflow (nightly.yml) and are
 # never published as a stable tagged release.
@@ -101,4 +113,69 @@ jobs:
             ${{ steps.appimage.outputs.path }}
             ${{ steps.appimage.outputs.path }}.zsync
             SHA256SUMS.txt
+          fail_on_unmatched_files: false
+
+  # Built inside an Arch container specifically so the binary links
+  # against Arch's own library sonames (see the file header comment) --
+  # this is the tarball hebnix-linux-bin's PKGBUILD actually downloads.
+  release-arch:
+    needs: release
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install git + build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git rust pkgconf \
+            gtk3 libayatana-appindicator wayland libxkbcommon systemd-libs \
+            alsa-lib openssl xdotool webkit2gtk-4.1 libsoup3 gtk-layer-shell
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release
+        run: make release
+
+      - name: Verify libxdo soname
+        run: |
+          set -euo pipefail
+          NEEDED="$(readelf -d target/release/hebnix-app | grep -oP 'libxdo\.so\.\d+')"
+          ARCH_SONAME="$(basename "$(readlink -f /usr/lib/libxdo.so)")"
+          echo "binary needs: $NEEDED, Arch xdotool provides: $ARCH_SONAME"
+          [ "$NEEDED" = "$ARCH_SONAME" ]
+
+      - name: Package tarball
+        id: tarball
+        run: |
+          set -euo pipefail
+          NAME="hebnix-${{ steps.version.outputs.version }}-linux-x86_64-arch"
+          STAGE="$(mktemp -d)/$NAME"
+          install -Dm755 target/release/hebnix-app "$STAGE/bin/hebnix"
+          install -Dm644 packaging/hebnix.desktop "$STAGE/share/applications/hebnix.desktop"
+          install -Dm644 crates/hebnix-app/assets/hebnix.png \
+            "$STAGE/share/icons/hicolor/256x256/apps/hebnix.png"
+          install -Dm644 README.md "$STAGE/share/doc/hebnix/README.md"
+          install -Dm644 LICENSE.md "$STAGE/share/licenses/hebnix-linux-bin/LICENSE"
+          install -Dm644 packaging/udev/60-hebnix-uinput.rules \
+            "$STAGE/lib/udev/rules.d/60-hebnix-uinput.rules"
+          install -Dm644 packaging/modules-load.d/hebnix-uinput.conf \
+            "$STAGE/lib/modules-load.d/hebnix-uinput.conf"
+          tar -C "$(dirname "$STAGE")" -czf "$NAME.tar.gz" "$NAME"
+          sha256sum "$NAME.tar.gz" > SHA256SUMS-arch.txt
+          echo "path=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            ${{ steps.tarball.outputs.path }}
+            SHA256SUMS-arch.txt
           fail_on_unmatched_files: false

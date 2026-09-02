@@ -1,10 +1,6 @@
 # Maintainer: xplodingeggo <bugs@notmyproblem.cum>
 pkgname=hebnix-linux
-# NOTE: no stable GitHub release exists yet -- this is a placeholder until
-# the first `vX.Y.Z` tag is pushed (see .github/workflows/release.yml).
-# Update pkgver to match that tag (without the leading 'v') before
-# publishing this package.
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), built from source"
 arch=('x86_64')
