@@ -1,4 +1,4 @@
-# Maintainer: xplodingeggo <h7513070@gmail.com>
+# Maintainer: xplodingeggo <bugs@notmyproblem.cum>
 pkgname=hebnix-linux-bin
 # NOTE: no stable GitHub release exists yet -- this is a placeholder until
 # the first `vX.Y.Z` tag is pushed (see .github/workflows/release.yml,
@@ -10,23 +10,25 @@ pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprla
 arch=('x86_64')
 url="https://github.com/xplodingeggo/hebnix-linux"
 # TODO: same as hebnix-linux -- confirm and fill in the real license
-# before publishing, upstream LICENSE.md is not usable as-is.
-license=('custom')
+# before publishing. Checked again 2026-09-02: upstream LICENSE.md is
+# still not usable as-is (Apache-2.0 header wrapping unrelated BSD text
+# that references "TensorFlow" -- not this project's actual terms).
+license=('LicenseRef-custom')
 depends=(
 	'gtk3'
-	'libayatana-appindicator'
-	'wayland'
-	'libxkbcommon'
 	'systemd-libs'
 	'alsa-lib'
 	'openssl'
 	'xdotool'
-	'libx11'
-	'libxtst'
-	'libxi'
 	'webkit2gtk-4.1'
-	'libsoup3'
 	'gtk-layer-shell'
+	# dlopen'd at runtime (wayland-client/xkbcommon-dl/tray-icon), not in
+	# the binary's ELF NEEDED list -- see hebnix-linux's PKGBUILD for the
+	# full explanation. Kept deliberately despite namcap's
+	# "may not be needed" warning.
+	'wayland'
+	'libxkbcommon'
+	'libayatana-appindicator'
 )
 optdepends=(
 	'curl-impersonate: tracker.gg player stats/avatar lookups (AUR)'
@@ -36,11 +38,11 @@ optdepends=(
 provides=('hebnix')
 conflicts=('hebnix-linux')
 install=hebnix.install
-source=("https://github.com/xplodingeggo/hebnix-linux/releases/download/v$pkgver/hebnix-$pkgver-linux-x86_64.tar.gz")
+source=("https://github.com/xplodingeggo/hebnix-linux/releases/download/v$pkgver/hebnix-$pkgver-linux-$CARCH.tar.gz")
 sha256sums=('SKIP')
 
 package() {
-	cd "hebnix-$pkgver-linux-x86_64"
+	cd "hebnix-$pkgver-linux-$CARCH"
 	install -Dm755 bin/hebnix "$pkgdir/usr/bin/hebnix"
 	install -Dm644 share/applications/hebnix.desktop \
 		"$pkgdir/usr/share/applications/hebnix.desktop"

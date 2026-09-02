@@ -1,4 +1,4 @@
-# Maintainer: xplodingeggo <h7513070@gmail.com>
+# Maintainer: xplodingeggo <bugs@notmyproblem.cum>
 pkgname=hebnix-linux
 # NOTE: no stable GitHub release exists yet -- this is a placeholder until
 # the first `vX.Y.Z` tag is pushed (see .github/workflows/release.yml).
@@ -10,27 +10,34 @@ pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprla
 arch=('x86_64')
 url="https://github.com/xplodingeggo/hebnix-linux"
 # TODO: confirm and fill in the real license before publishing. The
-# upstream Windows repo's LICENSE.md is not usable as-is (it's a mashup of
-# an Apache-2.0 header and unrelated BSD text referencing a different
-# project) -- get a clean license file/statement from the project owner
-# first, then set this to the real SPDX identifier (or 'custom' with a
-# packaged license file).
-license=('custom')
+# upstream Windows repo's LICENSE.md is STILL not usable as-is (checked
+# again 2026-09-02): it's an Apache-2.0 header wrapping unrelated BSD-style
+# text that references "TensorFlow" and credits "The Regents of the
+# University of California" -- reads like boilerplate copied from the
+# wrong project and never customized, not this project's actual terms. Get
+# a clean statement from the project owner, then either set this to a real
+# SPDX identifier, or keep LicenseRef-custom and ship the real text as
+# LICENSE in usr/share/licenses/hebnix-linux/.
+license=('LicenseRef-custom')
 depends=(
 	'gtk3'
-	'libayatana-appindicator'
-	'wayland'
-	'libxkbcommon'
 	'systemd-libs'
 	'alsa-lib'
 	'openssl'
 	'xdotool'
-	'libx11'
-	'libxtst'
-	'libxi'
 	'webkit2gtk-4.1'
-	'libsoup3'
 	'gtk-layer-shell'
+	# Not in hebnix's own ELF NEEDED list (verified with `readelf -d`) --
+	# the wayland-client/xkbcommon-dl/tray-icon crates dlopen these at
+	# runtime rather than link-time linking, specifically so the binary
+	# still starts on a system without them. They ARE genuinely required
+	# for the Wayland overlay, keyboard handling, and tray icon to work,
+	# so `namcap`'s "may not be needed" warning for these three is a false
+	# positive (dlopen isn't visible to static ELF analysis) -- kept
+	# deliberately, not an oversight.
+	'wayland'
+	'libxkbcommon'
+	'libayatana-appindicator'
 )
 makedepends=('rust' 'pkgconf')
 # ring and mlua's vendored Lua compile a small amount of C/asm through the
