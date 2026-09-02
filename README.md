@@ -125,7 +125,3 @@ works fine.
   the app falls back to "always focused" so binds/overlays don't just go
   dead, but features like popping the window over a fullscreened game won't
   work.
-- Play Rocket League in **real fullscreen** (F11 in-game), not Borderless
-  Windowed — it works either way, but real fullscreen gets you the game
-  overlay *and* Hyprland's native auto-hide-your-bar-during-fullscreen
-  behavior for free.
