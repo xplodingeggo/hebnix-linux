@@ -9,16 +9,13 @@ pkgrel=1
 pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), built from source"
 arch=('x86_64')
 url="https://github.com/xplodingeggo/hebnix-linux"
-# TODO: confirm and fill in the real license before publishing. The
-# upstream Windows repo's LICENSE.md is STILL not usable as-is (checked
-# again 2026-09-02): it's an Apache-2.0 header wrapping unrelated BSD-style
-# text that references "TensorFlow" and credits "The Regents of the
-# University of California" -- reads like boilerplate copied from the
-# wrong project and never customized, not this project's actual terms. Get
-# a clean statement from the project owner, then either set this to a real
-# SPDX identifier, or keep LicenseRef-custom and ship the real text as
-# LICENSE in usr/share/licenses/hebnix-linux/.
-license=('LicenseRef-custom')
+# Custom license (pulled from github.com/Hebbins/Hebnix-Public/LICENSE.md,
+# 2026-09-02) -- terms are Apache-2.0 verbatim under the name "Hebnix
+# License, Version 1.0", properly filled in (Copyright 2026 Hebnix). Not
+# literally SPDX Apache-2.0 since the license itself renames and
+# re-titles the grant, so using LicenseRef- per Arch's SPDX migration
+# guidance; the actual text is shipped below.
+license=('LicenseRef-Hebnix')
 depends=(
 	'gtk3'
 	'systemd-libs'
@@ -81,4 +78,5 @@ package() {
 		"$pkgdir/usr/lib/udev/rules.d/60-hebnix-uinput.rules"
 	install -Dm644 packaging/modules-load.d/hebnix-uinput.conf \
 		"$pkgdir/usr/lib/modules-load.d/hebnix-uinput.conf"
+	install -Dm644 LICENSE.md "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

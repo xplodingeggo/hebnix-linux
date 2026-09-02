@@ -61,6 +61,7 @@ jobs:
           install -Dm644 crates/hebnix-app/assets/hebnix.png \
             "$STAGE/share/icons/hicolor/256x256/apps/hebnix.png"
           install -Dm644 README.md "$STAGE/share/doc/hebnix/README.md"
+          install -Dm644 LICENSE.md "$STAGE/share/licenses/hebnix-linux-bin/LICENSE"
           install -Dm644 packaging/udev/60-hebnix-uinput.rules \
             "$STAGE/lib/udev/rules.d/60-hebnix-uinput.rules"
           install -Dm644 packaging/modules-load.d/hebnix-uinput.conf \
