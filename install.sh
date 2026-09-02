@@ -327,100 +327,31 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}   All Required Dependencies Met${NC}"
 echo -e "${GREEN}========================================${NC}\n"
 
-echo -e "${BLUE}Building Hebnix...${NC}"
+echo -e "${BLUE}Building and installing Hebnix...${NC}"
 echo ""
 
 cd "$SCRIPT_DIR"
 
-# Build the project
-cargo build --release
-
-if [ $? -eq 0 ]; then
+# Canonical build+install path (same one GitHub Actions and the AUR
+# packages use) -- installs the `hebnix` command, .desktop file, and icon
+# under ~/.local, no sudo needed. Plugins/themes/config are managed by the
+# app itself at $XDG_CONFIG_HOME/hebnix (~/.config/hebnix by default).
+if make install; then
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}   Build Successful!${NC}"
+    echo -e "${GREEN}   Install Successful!${NC}"
     echo -e "${GREEN}========================================${NC}\n"
 
-    print_info "Binary location: $SCRIPT_DIR/target/release/hebnix-app"
-    echo ""
-
-    # Create .desktop file
-    echo -e "${BLUE}Creating desktop launcher...${NC}"
-
-    # Copy icon to standard location
-    ICON_SOURCE="$SCRIPT_DIR/crates/hebnix-app/assets/hebnix.png"
-    ICON_DIR="$HOME/.local/share/icons"
-    mkdir -p "$ICON_DIR"
-    if [ -f "$ICON_SOURCE" ]; then
-        cp "$ICON_SOURCE" "$ICON_DIR/hebnix.png"
-        ICON_PATH="$ICON_DIR/hebnix.png"
-        print_status 0 "Icon copied to $ICON_PATH"
-    else
-        ICON_PATH="utilities-terminal"
-        print_warning "Icon not found, using default icon"
-    fi
-
-    DESKTOP_CONTENT="[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Hebnix
-Comment=Rocket League overlay and stats tracker for Linux
-Exec=$SCRIPT_DIR/target/release/hebnix-app
-Path=$SCRIPT_DIR/target/release
-Icon=$ICON_PATH
-Terminal=false
-Categories=Game;Utility;
-Keywords=rocket-league;overlay;stats;"
-
-    # Create in ~/Desktop if it exists
-    DESKTOP_DIR="$HOME/Desktop"
-    if [ -d "$DESKTOP_DIR" ]; then
-        DESKTOP_FILE="$DESKTOP_DIR/hebnix.desktop"
-        echo "$DESKTOP_CONTENT" > "$DESKTOP_FILE"
-        chmod +x "$DESKTOP_FILE"
-        print_status 0 "Desktop launcher created at $DESKTOP_FILE"
-    else
-        print_warning "~/Desktop directory not found, skipping Desktop icon"
-    fi
-
-    # Create in ~/.local/share/applications
-    LOCAL_APP_DIR="$HOME/.local/share/applications"
-    mkdir -p "$LOCAL_APP_DIR"
-    LOCAL_DESKTOP_FILE="$LOCAL_APP_DIR/hebnix.desktop"
-    echo "$DESKTOP_CONTENT" > "$LOCAL_DESKTOP_FILE"
-    chmod +x "$LOCAL_DESKTOP_FILE"
-    print_status 0 "Application menu entry created at $LOCAL_DESKTOP_FILE"
-
-    # Try to create in /usr/share/applications (requires sudo)
-    SYSTEM_APP_DIR="/usr/share/applications"
-    SYSTEM_DESKTOP_FILE="$SYSTEM_APP_DIR/hebnix.desktop"
-    if [ -w "$SYSTEM_APP_DIR" ]; then
-        echo "$DESKTOP_CONTENT" > "$SYSTEM_DESKTOP_FILE"
-        chmod +x "$SYSTEM_DESKTOP_FILE"
-        print_status 0 "System-wide application entry created at $SYSTEM_DESKTOP_FILE"
-    else
-        echo "$DESKTOP_CONTENT" | sudo tee "$SYSTEM_DESKTOP_FILE" > /dev/null 2>&1
-        if [ $? -eq 0 ]; then
-            sudo chmod +x "$SYSTEM_DESKTOP_FILE"
-            print_status 0 "System-wide application entry created at $SYSTEM_DESKTOP_FILE"
-        else
-            print_warning "Could not create system-wide entry (no sudo access or declined)"
-        fi
-    fi
-
-    # Update desktop database
     if command -v update-desktop-database &> /dev/null; then
-        update-desktop-database "$LOCAL_APP_DIR" 2>/dev/null
+        update-desktop-database "$HOME/.local/share/applications" 2>/dev/null
     fi
 
+    print_info "Installed to: $HOME/.local/bin/hebnix"
+    print_info "Config, plugins and themes live in: \${XDG_CONFIG_HOME:-\$HOME/.config}/hebnix"
     echo ""
-
     print_info "To run Hebnix:"
-    echo -e "  ${GREEN}cd $SCRIPT_DIR${NC}"
-    echo -e "  ${GREEN}./target/release/hebnix-app${NC}"
-    if [ -f "$DESKTOP_FILE" ]; then
-        echo -e "  ${GREEN}Or double-click the Hebnix icon on your desktop${NC}"
-    fi
+    echo -e "  ${GREEN}hebnix${NC}  (make sure ~/.local/bin is on your PATH)"
+    echo -e "  ${GREEN}Or launch it from your application menu${NC}"
     echo ""
     print_info "On first run, an empty plugins/ folder will be created."
     print_info "Install plugins via the app's Plugins tab or clone them manually."

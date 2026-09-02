@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Hebnix
+Comment=Rocket League overlay and stats tracker
+Exec=hebnix
+Icon=hebnix
+Terminal=false
+Categories=Game;Utility;
+Keywords=rocket-league;overlay;stats;

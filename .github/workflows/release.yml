@@ -1,0 +1,103 @@
+name: Release
+
+# Stable, tagged releases. Triggered by pushing a `v*` tag (e.g. `v0.2.0`).
+# GitHub is the canonical archive for these versioned artifacts:
+#   - a plain tarball (binary + desktop file + icon) for hebnix-linux-bin
+#   - a distro-agnostic AppImage for direct download / hebnix.com
+#
+# Nightly/bleeding-edge builds are a separate workflow (nightly.yml) and are
+# never published as a stable tagged release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        uses: ./.github/actions/install-linux-deps
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Canonical build path -- the same `make release` used locally and by
+      # the AUR hebnix-linux (source) package.
+      - name: Build release
+        run: make release
+
+      - name: Package tarball
+        id: tarball
+        run: |
+          set -euo pipefail
+          NAME="hebnix-${{ steps.version.outputs.version }}-linux-x86_64"
+          STAGE="$(mktemp -d)/$NAME"
+          install -Dm755 target/release/hebnix-app "$STAGE/bin/hebnix"
+          install -Dm644 packaging/hebnix.desktop "$STAGE/share/applications/hebnix.desktop"
+          install -Dm644 crates/hebnix-app/assets/hebnix.png \
+            "$STAGE/share/icons/hicolor/256x256/apps/hebnix.png"
+          install -Dm644 README.md "$STAGE/share/doc/hebnix/README.md"
+          install -Dm644 packaging/udev/60-hebnix-uinput.rules \
+            "$STAGE/lib/udev/rules.d/60-hebnix-uinput.rules"
+          install -Dm644 packaging/modules-load.d/hebnix-uinput.conf \
+            "$STAGE/lib/modules-load.d/hebnix-uinput.conf"
+          tar -C "$(dirname "$STAGE")" -czf "$NAME.tar.gz" "$NAME"
+          echo "path=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Build AppImage
+        id: appimage
+        run: |
+          set -euo pipefail
+          APP_NAME="Hebnix-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          bash packaging/appimage/build-appimage.sh \
+            --binary target/release/hebnix-app \
+            --output "$APP_NAME" \
+            --update-info "gh-releases-zsync|${{ github.repository_owner }}|hebnix-linux|latest|Hebnix-*x86_64.AppImage.zsync"
+          echo "path=$APP_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Checksums
+        run: |
+          sha256sum "${{ steps.tarball.outputs.path }}" \
+            "${{ steps.appimage.outputs.path }}" > SHA256SUMS.txt
+          if [ -f "${{ steps.appimage.outputs.path }}.zsync" ]; then
+            sha256sum "${{ steps.appimage.outputs.path }}.zsync" >> SHA256SUMS.txt
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Hebnix ${{ steps.version.outputs.tag }}
+          prerelease: false
+          make_latest: true
+          files: |
+            ${{ steps.tarball.outputs.path }}
+            ${{ steps.appimage.outputs.path }}
+            ${{ steps.appimage.outputs.path }}.zsync
+            SHA256SUMS.txt
+          fail_on_unmatched_files: false

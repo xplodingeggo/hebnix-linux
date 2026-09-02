@@ -1,0 +1,77 @@
+# Maintainer: xplodingeggo <h7513070@gmail.com>
+pkgname=hebnix-linux
+# NOTE: no stable GitHub release exists yet -- this is a placeholder until
+# the first `vX.Y.Z` tag is pushed (see .github/workflows/release.yml).
+# Update pkgver to match that tag (without the leading 'v') before
+# publishing this package.
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), built from source"
+arch=('x86_64')
+url="https://github.com/xplodingeggo/hebnix-linux"
+# TODO: confirm and fill in the real license before publishing. The
+# upstream Windows repo's LICENSE.md is not usable as-is (it's a mashup of
+# an Apache-2.0 header and unrelated BSD text referencing a different
+# project) -- get a clean license file/statement from the project owner
+# first, then set this to the real SPDX identifier (or 'custom' with a
+# packaged license file).
+license=('custom')
+depends=(
+	'gtk3'
+	'libayatana-appindicator'
+	'wayland'
+	'libxkbcommon'
+	'systemd-libs'
+	'alsa-lib'
+	'openssl'
+	'xdotool'
+	'libx11'
+	'libxtst'
+	'libxi'
+	'webkit2gtk-4.1'
+	'libsoup3'
+	'gtk-layer-shell'
+)
+makedepends=('rust' 'pkgconf')
+# ring and mlua's vendored Lua compile a small amount of C/asm through the
+# `cc` crate, which picks up $CFLAGS. If the builder has makepkg's `lto`
+# option enabled, that C code gets built with GCC LTO bytecode objects
+# that rustc's linker (ld.lld) can't resolve symbols from -- disable it
+# for this package specifically rather than relying on every builder's
+# local makepkg.conf.
+options=('!lto')
+optdepends=(
+	'curl-impersonate: tracker.gg player stats/avatar lookups (AUR)'
+	'kdotool: window focus tracking on KDE/Plasma (AUR)'
+	'kscreen: kscreen-doctor, used for monitor info on KDE/Plasma'
+)
+provides=('hebnix')
+conflicts=('hebnix-linux-bin')
+install=hebnix.install
+source=("$pkgname-$pkgver.tar.gz::https://github.com/xplodingeggo/hebnix-linux/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+	cd "hebnix-linux-$pkgver"
+	# Canonical build path -- same `make release` used locally and by CI.
+	make release
+}
+
+check() {
+	cd "hebnix-linux-$pkgver"
+	make check
+}
+
+package() {
+	cd "hebnix-linux-$pkgver"
+	# Canonical install path, DESTDIR/PREFIX-aware -- installs
+	# /usr/bin/hebnix, the .desktop file, and the icon. Never touches
+	# $HOME: plugins/themes/config are created by Hebnix itself at
+	# $XDG_CONFIG_HOME/hebnix on first run.
+	make DESTDIR="$pkgdir" PREFIX=/usr install
+
+	install -Dm644 packaging/udev/60-hebnix-uinput.rules \
+		"$pkgdir/usr/lib/udev/rules.d/60-hebnix-uinput.rules"
+	install -Dm644 packaging/modules-load.d/hebnix-uinput.conf \
+		"$pkgdir/usr/lib/modules-load.d/hebnix-uinput.conf"
+}

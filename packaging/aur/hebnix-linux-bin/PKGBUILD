@@ -1,0 +1,54 @@
+# Maintainer: xplodingeggo <h7513070@gmail.com>
+pkgname=hebnix-linux-bin
+# NOTE: no stable GitHub release exists yet -- this is a placeholder until
+# the first `vX.Y.Z` tag is pushed (see .github/workflows/release.yml,
+# which produces the hebnix-$pkgver-linux-x86_64.tar.gz asset this package
+# downloads). Update pkgver to match that tag before publishing.
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), prebuilt upstream binary"
+arch=('x86_64')
+url="https://github.com/xplodingeggo/hebnix-linux"
+# TODO: same as hebnix-linux -- confirm and fill in the real license
+# before publishing, upstream LICENSE.md is not usable as-is.
+license=('custom')
+depends=(
+	'gtk3'
+	'libayatana-appindicator'
+	'wayland'
+	'libxkbcommon'
+	'systemd-libs'
+	'alsa-lib'
+	'openssl'
+	'xdotool'
+	'libx11'
+	'libxtst'
+	'libxi'
+	'webkit2gtk-4.1'
+	'libsoup3'
+	'gtk-layer-shell'
+)
+optdepends=(
+	'curl-impersonate: tracker.gg player stats/avatar lookups (AUR)'
+	'kdotool: window focus tracking on KDE/Plasma (AUR)'
+	'kscreen: kscreen-doctor, used for monitor info on KDE/Plasma'
+)
+provides=('hebnix')
+conflicts=('hebnix-linux')
+install=hebnix.install
+source=("https://github.com/xplodingeggo/hebnix-linux/releases/download/v$pkgver/hebnix-$pkgver-linux-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+	cd "hebnix-$pkgver-linux-x86_64"
+	install -Dm755 bin/hebnix "$pkgdir/usr/bin/hebnix"
+	install -Dm644 share/applications/hebnix.desktop \
+		"$pkgdir/usr/share/applications/hebnix.desktop"
+	install -Dm644 share/icons/hicolor/256x256/apps/hebnix.png \
+		"$pkgdir/usr/share/icons/hicolor/256x256/apps/hebnix.png"
+	install -Dm644 share/doc/hebnix/README.md "$pkgdir/usr/share/doc/hebnix/README.md"
+	install -Dm644 lib/udev/rules.d/60-hebnix-uinput.rules \
+		"$pkgdir/usr/lib/udev/rules.d/60-hebnix-uinput.rules"
+	install -Dm644 lib/modules-load.d/hebnix-uinput.conf \
+		"$pkgdir/usr/lib/modules-load.d/hebnix-uinput.conf"
+}

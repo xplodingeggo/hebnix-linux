@@ -1,0 +1,80 @@
+name: Nightly
+
+# Bleeding-edge development builds from `main`. Explicitly separate from
+# stable tagged releases (release.yml): published as a single rolling
+# "nightly" prerelease that's replaced on every run, never as a `vX.Y.Z`
+# tag, so package managers / stable AppImage users are never silently
+# upgraded onto one.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        uses: ./.github/actions/install-linux-deps
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: make release
+
+      - name: Package tarball
+        id: tarball
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          NAME="hebnix-nightly-${SHORT_SHA}-linux-x86_64"
+          STAGE="$(mktemp -d)/$NAME"
+          install -Dm755 target/release/hebnix-app "$STAGE/bin/hebnix"
+          install -Dm644 packaging/hebnix.desktop "$STAGE/share/applications/hebnix.desktop"
+          install -Dm644 crates/hebnix-app/assets/hebnix.png \
+            "$STAGE/share/icons/hicolor/256x256/apps/hebnix.png"
+          tar -C "$(dirname "$STAGE")" -czf "$NAME.tar.gz" "$NAME"
+          echo "path=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Build AppImage
+        id: appimage
+        run: |
+          set -euo pipefail
+          bash packaging/appimage/build-appimage.sh \
+            --binary target/release/hebnix-app \
+            --output "Hebnix-nightly-${{ steps.tarball.outputs.sha }}-x86_64.AppImage"
+          echo "path=Hebnix-nightly-${{ steps.tarball.outputs.sha }}-x86_64.AppImage" >> "$GITHUB_OUTPUT"
+
+      - name: Replace nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+
+      - name: Publish nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: "Nightly (${{ steps.tarball.outputs.sha }})"
+          prerelease: true
+          make_latest: false
+          body: |
+            Automated development build from `main` @ ${{ github.sha }}.
+            This is **not** a stable release -- for stable, use a tagged
+            `vX.Y.Z` release, the AUR `hebnix-linux`/`hebnix-linux-bin`
+            packages, or the stable AppImage.
+          files: |
+            ${{ steps.tarball.outputs.path }}
+            ${{ steps.appimage.outputs.path }}
+          fail_on_unmatched_files: false

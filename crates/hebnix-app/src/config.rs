@@ -1,5 +1,6 @@
-//! app config, stored as config.toml next to the exe. first run imports an
-//! old config.ini (python version) if present so settings carry over.
+//! app config, stored as config.toml under the XDG config dir. first run
+//! imports an old config.ini (python version) if present so settings carry
+//! over.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -192,13 +193,95 @@ fn parse_ini_bool(v: &str, default: bool) -> bool {
     }
 }
 
-/// app root dir: next to the exe, or HEBNIX_BASE_DIR if set (dev runs)
+/// app root dir: `$XDG_CONFIG_HOME/hebnix` (falling back to `~/.config/hebnix`),
+/// or `HEBNIX_BASE_DIR` if set (dev runs / fully portable installs). This is
+/// where config.toml, plugins/, themes/, fonts/, and logs all live -- it's
+/// created on demand and is never inside a read-only package/AppImage.
 pub fn base_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("HEBNIX_BASE_DIR") {
         return PathBuf::from(dir);
     }
-    std::env::current_exe()
+    let dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("hebnix");
+    migrate_legacy_base_dir(&dir);
+    dir
+}
+
+/// Known Hebnix-owned entries that used to live next to the executable.
+/// Deliberately an allowlist (not "copy everything beside the exe") so the
+/// migration can't accidentally vacuum up an unrelated file -- or the
+/// executable itself -- into the new config dir.
+const LEGACY_ENTRIES: &[&str] = &[
+    "config.toml",
+    "config.ini",
+    "plugins",
+    "themes",
+    "fonts",
+    "presets",
+    "balls",
+    "boosts",
+    "decals",
+    "spoofer",
+    "friends.json",
+    "spoofer_settings.json",
+    "owned_products.json",
+    "theme_errors.txt",
+    "hebnix.ico",
+];
+
+/// One-time migration for installs that predate the switch to the XDG config
+/// dir, where base_dir used to be "next to the executable". If the new dir
+/// doesn't exist yet but an old exe-adjacent config.toml does, copy the
+/// known Hebnix data entries over (copy, not move -- never destroys the old
+/// data) so existing users don't lose plugins/themes/settings.
+fn migrate_legacy_base_dir(new_dir: &Path) {
+    if new_dir.join("config.toml").exists() {
+        return;
+    }
+    let Some(legacy_dir) = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."))
+    else {
+        return;
+    };
+    if !legacy_dir.join("config.toml").exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(new_dir);
+    let mut migrated = false;
+    for entry in LEGACY_ENTRIES {
+        let src = legacy_dir.join(entry);
+        if !src.exists() {
+            continue;
+        }
+        let dst = new_dir.join(entry);
+        let result = if src.is_dir() {
+            copy_dir_recursive(&src, &dst)
+        } else {
+            std::fs::copy(&src, &dst).map(|_| ())
+        };
+        match result {
+            Ok(()) => migrated = true,
+            Err(e) => tracing::warn!("failed to migrate legacy {src:?} to {dst:?}: {e}"),
+        }
+    }
+    if migrated {
+        tracing::info!("migrated legacy config dir {legacy_dir:?} to {new_dir:?}");
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
 }
