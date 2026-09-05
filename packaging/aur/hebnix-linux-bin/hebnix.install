@@ -1,4 +1,9 @@
 post_install() {
+	# needed only for Workshop LAN multiplayer (the virtual TAP adapter +
+	# nftables rules); everything else works fine without it.
+	setcap cap_net_admin+ep /usr/bin/hebnix 2>/dev/null || \
+		echo "==> Note: could not grant cap_net_admin to /usr/bin/hebnix (Workshop LAN multiplayer won't work). Run manually: sudo setcap cap_net_admin+ep /usr/bin/hebnix"
+
 	cat <<'EOF'
 ==> Hebnix installed. To run: hebnix
 

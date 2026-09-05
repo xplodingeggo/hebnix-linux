@@ -2011,6 +2011,7 @@ dependencies = [
  "hmac",
  "httparse",
  "image",
+ "libc",
  "libloading 0.8.9",
  "mlua",
  "nix 0.29.0",

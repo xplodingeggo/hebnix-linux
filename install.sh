@@ -357,6 +357,28 @@ if make install; then
     print_info "Install plugins via the app's Plugins tab or clone them manually."
     echo ""
 
+    # Workshop LAN multiplayer needs a virtual network adapter + nftables
+    # rules, both gated behind CAP_NET_ADMIN. Everything else works fine
+    # without this -- it's the same optional/sudo pattern as the uinput step
+    # above, just for a different feature.
+    if command -v setcap &> /dev/null; then
+        echo -e "${YELLOW}Workshop LAN multiplayer needs one extra permission on the hebnix binary:${NC}"
+        read -p "Grant it now? Needs sudo. [y/N] " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if sudo setcap cap_net_admin+ep "$HOME/.local/bin/hebnix"; then
+                print_status 0 "Workshop LAN multiplayer permission granted"
+            else
+                print_warning "setcap failed -- Workshop LAN multiplayer won't work until you run it manually"
+            fi
+        else
+            print_info "Skipped. Run later: sudo setcap cap_net_admin+ep \"$HOME/.local/bin/hebnix\""
+        fi
+    else
+        print_warning "setcap not found (libcap) -- Workshop LAN multiplayer won't work without it"
+    fi
+    echo ""
+
     if [ $MISSING_OPTIONAL_DEPS -eq 1 ]; then
         print_warning "Remember to install optional dependencies for full functionality."
     fi
