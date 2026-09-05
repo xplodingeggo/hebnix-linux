@@ -147,6 +147,10 @@ fn main() -> eframe::Result {
     setup_logging(&base_dir);
     setup_panic_hook(&base_dir);
     tracing::info!("Hebnix {} starting", app::APP_VERSION);
+    // no-op unless the binary was setcap'd with cap_net_admin+eip - lets
+    // Workshop LAN multiplayer's `ip`/`nft` child processes inherit the
+    // capability instead of needing it set on those binaries themselves.
+    multiplayer_lan::raise_net_admin_ambient();
 
     let cfg = config::Config::load(&base_dir);
 

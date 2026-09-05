@@ -913,7 +913,7 @@ impl WorkshopState {
         if !is_admin {
             ui.colored_label(
                 egui::Color32::YELLOW,
-                "Workshop multiplayer needs one extra permission. Run: sudo setcap cap_net_admin+ep <path to hebnix binary>, then restart Hebnix.",
+                "Workshop multiplayer needs one extra permission. Run: sudo setcap cap_net_admin+eip <path to hebnix binary>, then restart Hebnix.",
             );
         }
         ui.horizontal(|ui| {

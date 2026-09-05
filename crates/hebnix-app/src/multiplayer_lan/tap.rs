@@ -14,9 +14,30 @@ use std::process::Command;
 
 pub const ADAPTER_NAME: &str = "hebnix0";
 
+/// `setcap cap_net_admin+eip` on the binary only grants CAP_NET_ADMIN to
+/// *this* process - it does not propagate to child processes spawned via
+/// fork+exec (e.g. `ip`, `nft`), which normally start with a clean
+/// capability set regardless of what the parent has. Linux's "ambient"
+/// capability set exists exactly for this: a capability raised into it is
+/// inherited by every child the process spawns from then on, without
+/// needing to setcap `/usr/bin/ip`/`/usr/bin/nft` themselves. Requires the
+/// binary's file capability to include the inheritable flag (`+i`, hence
+/// `+eip` not just `+ep`) - call this once at startup.
+pub fn raise_net_admin_ambient() {
+    const PR_CAP_AMBIENT: libc::c_int = 47;
+    const PR_CAP_AMBIENT_RAISE: libc::c_ulong = 2;
+    const CAP_NET_ADMIN: libc::c_ulong = 12;
+    unsafe {
+        // best-effort: harmlessly fails (returns -1) if CAP_NET_ADMIN isn't
+        // in this process's permitted+inheritable sets yet, e.g. a plain
+        // `cargo run` dev binary, or root (which needs no ambient cap at all)
+        libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0);
+    }
+}
+
 /// Windows gates Workshop LAN on running elevated, since installing its TAP
 /// driver needs administrator rights. Linux doesn't need root at all here -
-/// `setcap cap_net_admin+ep` on the binary (done once at install time, see
+/// `setcap cap_net_admin+eip` on the binary (done once at install time, see
 /// packaging/) is enough for both the TAP device and the nftables rules.
 /// Checks the process's effective capability set directly rather than
 /// reusing the (root-only) admin check the spoofer feature uses.

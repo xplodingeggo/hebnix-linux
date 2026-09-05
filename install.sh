@@ -366,13 +366,13 @@ if make install; then
         read -p "Grant it now? Needs sudo. [y/N] " -n 1 -r
         echo ""
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if sudo setcap cap_net_admin+ep "$HOME/.local/bin/hebnix"; then
+            if sudo setcap cap_net_admin+eip "$HOME/.local/bin/hebnix"; then
                 print_status 0 "Workshop LAN multiplayer permission granted"
             else
                 print_warning "setcap failed -- Workshop LAN multiplayer won't work until you run it manually"
             fi
         else
-            print_info "Skipped. Run later: sudo setcap cap_net_admin+ep \"$HOME/.local/bin/hebnix\""
+            print_info "Skipped. Run later: sudo setcap cap_net_admin+eip \"$HOME/.local/bin/hebnix\""
         fi
     else
         print_warning "setcap not found (libcap) -- Workshop LAN multiplayer won't work without it"
