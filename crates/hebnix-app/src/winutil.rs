@@ -232,25 +232,34 @@ pub fn restart_rocket_league(_game_path: &std::path::Path) -> std::io::Result<()
 }
 
 /// Workshop LAN "restart with -multihome=<address>". A native/Proton Steam
-/// install just gets "-multihome=<address>" as the override launch option,
-/// matching Windows exactly. But RL has no official Linux/Steam listing
-/// anymore, so it's extremely common to add it as a non-Steam shortcut
-/// whose actual target is something else entirely (Heroic, Lutris, a
-/// launcher script) -- steam://run's launch-options segment *replaces* the
-/// shortcut's configured Launch Options for that run, so a bare
-/// "-multihome=..." would blow away whatever actually launches the game
-/// (e.g. Heroic's "heroic://launch?appName=..." deep link) and nothing
-/// would start.
+/// install (a real, owned Steam listing) just gets "-multihome=<address>"
+/// as the override launch option via `steam://run/<appid>//<options>/`,
+/// matching Windows exactly.
 ///
-/// `HEBNIX_RL_LAUNCH_OPTIONS_TEMPLATE`, if set, is used as the full launch
-/// options string instead, with `{multihome}` ("-multihome=<address>", raw)
-/// and `{multihome_encoded}` ("-multihome%3D<address>", percent-encoded for
-/// embedding inside another URI's query string) placeholders substituted
-/// in. For a Steam shortcut targeting Heroic (Heroic's own `heroic://` deep
-/// link forwards repeated `&arg=` query params straight through to the
-/// game, verified against Heroic's own protocol handler source):
+/// But RL has no official Linux/Steam listing anymore, so it's extremely
+/// common to add it as a non-Steam shortcut whose actual target is a
+/// separate launcher (Heroic, Lutris, ...) - and Steam's `run` verb (the
+/// only one that supports an options override at all) flatly refuses that:
+/// non-Steam shortcuts have no store-page "configuration" for it to run,
+/// so Steam just errors "Game configuration unavailable" (verified live).
+/// There's no way to get an extra argument into a shortcut's launch through
+/// Steam's URI scheme at all.
 ///
-///   HEBNIX_RL_LAUNCH_OPTIONS_TEMPLATE='--no-gui --no-sandbox "heroic://launch?appName=Sugar&runner=legendary&arg={multihome_encoded}"'
+/// `HEBNIX_RL_MULTIHOME_COMMAND_TEMPLATE`, if set, is spawned directly
+/// instead (bypassing Steam for this one relaunch - no Steam overlay during
+/// the hosted session, but it actually works), with `{multihome}`
+/// ("-multihome=<address>", raw) and `{multihome_encoded}`
+/// ("-multihome%3D<address>", percent-encoded for embedding in a URI query
+/// string) placeholders substituted in, then shell-word-split into a
+/// program + args. For Heroic: call Heroic's own binary directly (not raw
+/// `legendary`) so it assembles the launch exactly like its own GUI would -
+/// correct Proton/wine version, prefix, EAC runtime, Steam Runtime, GameMode
+/// wrapper, all read from Heroic's own per-game config, not guessed at here.
+/// Heroic's `heroic://launch` deep link forwards repeated `&arg=` query
+/// params straight through to the game (verified against Heroic's own
+/// protocol handler source):
+///
+///   HEBNIX_RL_MULTIHOME_COMMAND_TEMPLATE=/opt/Heroic/heroic --no-gui --no-sandbox "heroic://launch?appName=Sugar&runner=legendary&arg={multihome_encoded}"
 pub fn restart_rocket_league_multihome(
     _game_path: &std::path::Path,
     address: &str,
@@ -262,17 +271,30 @@ pub fn restart_rocket_league_multihome(
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    let appid = std::env::var("HEBNIX_RL_APPID").unwrap_or_else(|_| "252950".to_string());
     let raw = format!("-multihome={address}");
     let encoded = format!("-multihome%3D{address}");
-    let launch_options = std::env::var("HEBNIX_RL_LAUNCH_OPTIONS_TEMPLATE")
-        .map(|template| {
-            template
-                .replace("{multihome_encoded}", &encoded)
-                .replace("{multihome}", &raw)
-        })
-        .unwrap_or(raw);
-    launch_uri(&format!("steam://run/{appid}//{launch_options}/")).map_err(|error| error.to_string())
+
+    if let Ok(template) = std::env::var("HEBNIX_RL_MULTIHOME_COMMAND_TEMPLATE") {
+        let rendered = template
+            .replace("{multihome_encoded}", &encoded)
+            .replace("{multihome}", &raw);
+        let parts = shell_words::split(&rendered)
+            .map_err(|error| format!("invalid HEBNIX_RL_MULTIHOME_COMMAND_TEMPLATE: {error}"))?;
+        let (program, args) = parts
+            .split_first()
+            .ok_or_else(|| "HEBNIX_RL_MULTIHOME_COMMAND_TEMPLATE is empty".to_string())?;
+        tracing::info!("multihome relaunch: spawning {program} {args:?}");
+        std::process::Command::new(program)
+            .args(args)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    } else {
+        let appid = std::env::var("HEBNIX_RL_APPID").unwrap_or_else(|_| "252950".to_string());
+        let uri = format!("steam://run/{appid}//{raw}/");
+        tracing::info!("multihome relaunch: opening {uri}");
+        launch_uri(&uri).map_err(|error| error.to_string())
+    }
 }
 
 pub fn clear_rocket_league_multihome() -> Result<(), String> {
