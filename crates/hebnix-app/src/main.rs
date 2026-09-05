@@ -185,6 +185,7 @@ fn main() -> eframe::Result {
         ])
         .with_min_inner_size([app::MIN_WIDTH, app::MIN_HEIGHT])
         .with_transparent(true)
+        .with_decorations(false)
         .with_visible(!cfg.settings.start_in_tray);
     // only actually honored on X11 - Wayland's xdg_toplevel has no "set
     // position" request on any compositor, by protocol design (see

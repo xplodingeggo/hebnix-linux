@@ -4558,6 +4558,45 @@ impl eframe::App for HebnixApp {
 
         if !self.hidden {
             egui::CentralPanel::default().show(ui, |ui| {
+                // custom titlebar: with_decorations(false) (see main.rs) drops
+                // the compositor's own window chrome everywhere, not just on
+                // Hyprland (which never drew one by default anyway) - needed
+                // so a real titlebar/taskbar-icon-bearing window doesn't sit
+                // on top of the game, obtrusive during play, on KDE/GNOME/X11
+                // WMs that do draw one normally. Since there's now no native
+                // close/minimize/drag affordance anywhere, this thin strip is
+                // the only way to get them back, on every platform.
+                let (bar_rect, bar_resp) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 22.0),
+                    egui::Sense::click_and_drag(),
+                );
+                if bar_resp.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                let mut bar_ui = ui.new_child(
+                    egui::UiBuilder::new().max_rect(bar_rect).layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                bar_ui.add_space(6.0);
+                bar_ui.label(egui::RichText::new("Hebnix").strong().size(12.0));
+                bar_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(4.0);
+                    if ui
+                        .add(egui::Button::new("✕").frame(false))
+                        .on_hover_text("Close")
+                        .clicked()
+                    {
+                        self.force_quit(ctx);
+                    }
+                    if ui
+                        .add(egui::Button::new("─").frame(false))
+                        .on_hover_text("Minimize to tray")
+                        .clicked()
+                    {
+                        self.set_hidden(ctx, true);
+                    }
+                });
+                ui.separator();
+
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.tab, Tab::Console, "Console");
