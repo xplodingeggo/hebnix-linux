@@ -92,6 +92,34 @@ pub fn has_net_admin_capability() -> bool {
     // CAP_NET_ADMIN = 12, per linux/capability.h
     mask & (1 << 12) != 0
 }
+
+/// grants this binary cap_net_admin via a graphical PolicyKit prompt (the
+/// Linux equivalent of a Windows UAC dialog) instead of making the user
+/// open a terminal. Blocks until the user responds to the dialog - call
+/// from a background thread, not the UI thread. The *currently running*
+/// process can't pick up a capability granted to its own file after the
+/// fact (capabilities are fixed at exec() time) - the caller needs to
+/// relaunch Hebnix for it to take effect, same as any setcap change.
+pub fn grant_via_pkexec() -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("could not find Hebnix's own binary path: {error}"))?;
+    let output = Command::new("pkexec")
+        .args(["setcap", "cap_net_admin+eip"])
+        .arg(&exe)
+        .output()
+        .map_err(|error| format!("could not run pkexec: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "pkexec was cancelled or denied".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
 const TUN_PATH: &str = "/dev/net/tun";
 
 // linux/if_tun.h - _IOW('T', 202/203, c_int)

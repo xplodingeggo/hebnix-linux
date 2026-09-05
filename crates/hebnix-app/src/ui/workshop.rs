@@ -918,9 +918,28 @@ impl WorkshopState {
         }
 
         if !is_admin {
-            ui.colored_label(
-                egui::Color32::YELLOW,
-                "Workshop multiplayer needs one extra permission. Run: sudo setcap cap_net_admin+eip <path to hebnix binary>, then restart Hebnix.",
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "Workshop multiplayer needs one extra permission.",
+                );
+                if ui
+                    .button("Grant permission")
+                    .on_hover_text("Opens a system permission prompt, then restarts Hebnix")
+                    .clicked()
+                {
+                    let tx = tx.clone();
+                    let repaint = ctx.clone();
+                    self.multiplayer.status = "Waiting for the permission prompt...".to_string();
+                    std::thread::spawn(move || {
+                        let result = crate::multiplayer_lan::grant_via_pkexec();
+                        let _ = tx.send(AppMsg::NetAdminGranted { result });
+                        repaint.request_repaint();
+                    });
+                }
+            });
+            ui.small(
+                "Or run manually: sudo setcap cap_net_admin+eip <path to hebnix binary>, then restart Hebnix.",
             );
         }
         if launch_cfg.mode == crate::config::RlLaunchMode::SteamShortcutToHeroic {

@@ -1275,6 +1275,22 @@ impl HebnixApp {
                         ctx_local.request_repaint();
                     });
                 }
+                AppMsg::NetAdminGranted { result } => match result {
+                    Ok(()) => {
+                        self.console.write(
+                            "[Core] Permission granted. Restarting Hebnix to apply it...",
+                        );
+                        if let Ok(exe) = std::env::current_exe() {
+                            let args: Vec<String> = std::env::args().skip(1).collect();
+                            let _ = std::process::Command::new(exe).args(args).spawn();
+                        }
+                        self.force_quit(ctx);
+                    }
+                    Err(error) => {
+                        self.console
+                            .write(format!("[Core] Could not grant permission: {error}"));
+                    }
+                },
                 AppMsg::PluginUpdatesFound { updates } => match updates {
                     Ok(list) => {
                         if list.is_empty() {

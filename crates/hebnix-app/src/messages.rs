@@ -107,6 +107,12 @@ pub enum AppMsg {
     /// itself has no self-updater on Linux - the AUR package/tarball/
     /// AppImage own that instead)
     StartupPluginUpdateCheck,
+    /// result of the "Grant permission" pkexec prompt for Workshop LAN's
+    /// cap_net_admin - Ok(()) triggers a self-relaunch since a capability
+    /// change on our own file doesn't apply to the already-running process
+    NetAdminGranted {
+        result: Result<(), String>,
+    },
     PluginUpdatesFound {
         updates: Result<Vec<Value>, String>,
     },
