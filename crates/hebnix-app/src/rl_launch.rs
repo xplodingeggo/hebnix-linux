@@ -145,15 +145,22 @@ pub fn find_heroic_shortcuts() -> Vec<ShortcutCandidate> {
 }
 
 fn launch_uri(uri: &str) -> Result<(), String> {
-    if uri.starts_with("steam://") && std::process::Command::new("steam").arg(uri).spawn().is_ok()
-    {
-        return Ok(());
+    tracing::info!("rl_launch: opening {uri}");
+    if uri.starts_with("steam://") {
+        match std::process::Command::new("steam").arg(uri).spawn() {
+            Ok(_) => return Ok(()),
+            Err(error) => tracing::warn!("rl_launch: 'steam' binary spawn failed ({error}), falling back to xdg-open"),
+        }
     }
     std::process::Command::new("xdg-open")
         .arg(uri)
         .spawn()
         .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            let message = format!("could not open '{uri}' via steam or xdg-open: {error}");
+            tracing::warn!("rl_launch: {message}");
+            message
+        })
 }
 
 fn heroic_launch(cfg: &RlLaunchCfg, multihome: Option<&str>) -> Result<(), String> {
@@ -164,17 +171,26 @@ fn heroic_launch(cfg: &RlLaunchCfg, multihome: Option<&str>) -> Result<(), Strin
     if let Some(address) = multihome {
         uri.push_str(&format!("&arg=-multihome%3D{address}"));
     }
+    tracing::info!(
+        "rl_launch: spawning '{}' --no-gui --no-sandbox {uri}",
+        cfg.heroic_binary
+    );
     std::process::Command::new(&cfg.heroic_binary)
         .args(["--no-gui", "--no-sandbox", &uri])
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("could not run '{}': {error}", cfg.heroic_binary))
+        .map_err(|error| {
+            let message = format!("could not run '{}': {error}", cfg.heroic_binary);
+            tracing::warn!("rl_launch: {message}");
+            message
+        })
 }
 
 /// plain restart, no Workshop LAN address. `HEBNIX_RL_APPID` overrides
 /// `cfg.steam_id` for SteamProton/SteamShortcutToHeroic without needing to
 /// re-run the setup wizard.
 pub fn restart(cfg: &RlLaunchCfg) -> Result<(), String> {
+    tracing::info!("rl_launch: restart() mode={:?}", cfg.mode);
     match cfg.mode {
         RlLaunchMode::Unconfigured => Err(
             "Rocket League launch isn't set up yet - open Settings > Rocket League Launch Setup"
@@ -193,6 +209,7 @@ pub fn restart(cfg: &RlLaunchCfg) -> Result<(), String> {
 /// `{multihome_encoded}` placeholders, shell-word-split) overrides
 /// everything below without needing to re-run the setup wizard.
 pub fn restart_multihome(cfg: &RlLaunchCfg, address: &str) -> Result<(), String> {
+    tracing::info!("rl_launch: restart_multihome() mode={:?} address={address}", cfg.mode);
     let raw = format!("-multihome={address}");
     let encoded = format!("-multihome%3D{address}");
 

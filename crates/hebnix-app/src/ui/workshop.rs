@@ -1378,6 +1378,7 @@ impl WorkshopState {
         let tx = tx.clone();
         let repaint = ctx.clone();
         std::thread::spawn(move || {
+            tracing::info!("workshop lan: prepare_multiplayer starting, join_pin={join_pin:?}");
             let joined = join_pin
                 .as_deref()
                 .map(|pin| {
@@ -1388,6 +1389,7 @@ impl WorkshopState {
             let joined = match joined {
                 Ok(joined) => joined,
                 Err(error) => {
+                    tracing::warn!("workshop lan: join_room failed: {error}");
                     let _ = tx.send(AppMsg::WorkshopMultiplayerPrepared { result: Err(error) });
                     repaint.request_repaint();
                     return;
@@ -1397,22 +1399,34 @@ impl WorkshopState {
                 .as_ref()
                 .map(|joined| joined.assigned_ip.clone())
                 .unwrap_or(address);
+            tracing::info!("workshop lan: using address {address}");
             let cleanup_join = joined.clone();
             let _ = tx.send(AppMsg::WorkshopMultiplayerProgress(
                 "Opening the Workshop LAN adapter...".to_string(),
             ));
-            let result = crate::multiplayer_lan::ensure_adapter(&address)
-                .and_then(|_| crate::multiplayer_lan::TapSession::open());
+            let result = crate::multiplayer_lan::ensure_adapter(&address).inspect_err(|error| {
+                tracing::warn!("workshop lan: ensure_adapter failed: {error}");
+            });
+            let result = result.and_then(|_| {
+                crate::multiplayer_lan::TapSession::open().inspect_err(|error| {
+                    tracing::warn!("workshop lan: TapSession::open failed: {error}");
+                })
+            });
+            tracing::info!("workshop lan: TAP adapter ready = {}", result.is_ok());
             let result = result.and_then(|tunnel| {
                 let _ = tx.send(AppMsg::WorkshopMultiplayerProgress(
                     "Starting Rocket League with the Workshop LAN address...".to_string(),
                 ));
-                crate::winutil::restart_rocket_league_multihome(
+                let launch_result = crate::winutil::restart_rocket_league_multihome(
                     Path::new(&rl_path),
                     &address,
                     &launch_cfg,
-                )
-                .map(|_| (tunnel, joined))
+                );
+                match &launch_result {
+                    Ok(()) => tracing::info!("workshop lan: multihome relaunch spawned ok"),
+                    Err(error) => tracing::warn!("workshop lan: multihome relaunch failed: {error}"),
+                }
+                launch_result.map(|_| (tunnel, joined))
             });
             if result.is_err()
                 && let Some(joined) = cleanup_join
