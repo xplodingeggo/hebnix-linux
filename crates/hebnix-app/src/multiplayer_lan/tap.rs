@@ -20,19 +20,26 @@ pub const ADAPTER_NAME: &str = "hebnix0";
 /// capability set regardless of what the parent has. Linux's "ambient"
 /// capability set exists exactly for this: a capability raised into it is
 /// inherited by every child the process spawns from then on, without
-/// needing to setcap `/usr/bin/ip`/`/usr/bin/nft` themselves. Requires the
-/// binary's file capability to include the inheritable flag (`+i`, hence
-/// `+eip` not just `+ep`) - call this once at startup.
+/// needing to setcap `/usr/bin/ip`/`/usr/bin/nft` themselves.
+///
+/// Ambient raise requires the capability in *both* Permitted and
+/// Inheritable - but `execve()` never copies a file's inheritable flag into
+/// the new process's own Inheritable set, it only narrows down whatever the
+/// *parent* process (a plain shell/desktop launcher, whose own Inheritable
+/// set is always empty for this) already had. So Inheritable is empty right
+/// after exec even with `+eip` on the file, and raising straight to Ambient
+/// silently fails. A process can always add one of its own Permitted caps
+/// to its own Inheritable set though (self-modification, no extra privilege
+/// needed) - do that first, then the Ambient raise actually succeeds.
+/// Call this once at startup.
 pub fn raise_net_admin_ambient() {
-    const PR_CAP_AMBIENT: libc::c_int = 47;
-    const PR_CAP_AMBIENT_RAISE: libc::c_ulong = 2;
-    const CAP_NET_ADMIN: libc::c_ulong = 12;
-    unsafe {
-        // best-effort: harmlessly fails (returns -1) if CAP_NET_ADMIN isn't
-        // in this process's permitted+inheritable sets yet, e.g. a plain
-        // `cargo run` dev binary, or root (which needs no ambient cap at all)
-        libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0);
-    }
+    use caps::{CapSet, Capability};
+    // best-effort: both silently no-op if CAP_NET_ADMIN isn't in this
+    // process's Permitted set at all yet (e.g. a plain `cargo run` dev
+    // binary with no setcap applied), or if running as root (which needs no
+    // ambient cap in the first place).
+    let _ = caps::raise(None, CapSet::Inheritable, Capability::CAP_NET_ADMIN);
+    let _ = caps::raise(None, CapSet::Ambient, Capability::CAP_NET_ADMIN);
 }
 
 /// Windows gates Workshop LAN on running elevated, since installing its TAP
