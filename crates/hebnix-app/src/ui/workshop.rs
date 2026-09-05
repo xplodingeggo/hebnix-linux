@@ -923,6 +923,15 @@ impl WorkshopState {
                 "Workshop multiplayer needs one extra permission. Run: sudo setcap cap_net_admin+eip <path to hebnix binary>, then restart Hebnix.",
             );
         }
+        if launch_cfg.mode == crate::config::RlLaunchMode::SteamShortcutToHeroic {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe6, 0xa8, 0x3c),
+                "Note: Steam can't pass this feature's extra launch argument through a \
+                 non-Steam shortcut (a Valve limitation). Host/Join will launch Heroic \
+                 directly instead - the game still works, just without Steam overlay/rich \
+                 presence for this session.",
+            );
+        }
         ui.horizontal(|ui| {
             if self.multiplayer.hosted.is_none()
                 && self.multiplayer.joined.is_none()

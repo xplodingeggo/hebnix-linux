@@ -3755,6 +3755,19 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
                     RlLaunchMode::SteamShortcutToHeroic,
                     "Non-Steam shortcut that opens Heroic",
                 );
+                if self.rl_launch_draft.mode == RlLaunchMode::SteamShortcutToHeroic {
+                    ui.label(
+                        egui::RichText::new(
+                            "Note: Steam has no way to pass Workshop LAN's extra launch \
+                             argument through a shortcut (a Valve limitation, not something \
+                             fixable here) - Host/Join will bypass Steam and launch Heroic \
+                             directly instead. The game itself still works, just without \
+                             Steam overlay/rich presence for that one session.",
+                        )
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(0xe6, 0xa8, 0x3c)),
+                    );
+                }
                 ui.radio_value(
                     &mut self.rl_launch_draft.mode,
                     RlLaunchMode::HeroicDirect,
@@ -4532,25 +4545,29 @@ impl eframe::App for HebnixApp {
                                 .size(12.0)
                                 .color(self.status_color),
                         );
-                        let restart = ui
+                        let start = ui
                             .add_enabled(
-                                self.last_rl_open,
-                                egui::Button::new("Restart Rocket League"),
+                                self.config.rl_launch.mode != crate::config::RlLaunchMode::Unconfigured,
+                                egui::Button::new("Start Rocket League"),
                             )
-                            .on_hover_text("Restart the currently attached Steam or Epic install");
-                        if restart.clicked() {
+                            .on_hover_text(if self.last_rl_open {
+                                "Close and restart Rocket League"
+                            } else {
+                                "Launch Rocket League"
+                            });
+                        if start.clicked() {
                             let path = self.config.settings.rl_path.clone();
                             let launch_cfg = self.config.rl_launch.clone();
                             let tx = self.tx.clone();
-                            self.console.write("[Core] Restarting Rocket League...");
+                            self.console.write("[Core] Starting Rocket League...");
                             std::thread::spawn(move || {
                                 let message = match crate::winutil::restart_rocket_league(
                                     std::path::Path::new(&path),
                                     &launch_cfg,
                                 ) {
-                                    Ok(()) => "[Core] Rocket League restarted.".to_string(),
+                                    Ok(()) => "[Core] Rocket League started.".to_string(),
                                     Err(error) => {
-                                        format!("[Core] Rocket League restart failed: {error}")
+                                        format!("[Core] Rocket League failed to start: {error}")
                                     }
                                 };
                                 let _ = tx.send(AppMsg::Log(message));
