@@ -47,12 +47,12 @@ pub fn ensure_rocket_league_lan_rule(executable: &Path, remote: &str) -> Result<
 
 pub fn remove_rules() -> Result<(), String> {
     // dropping the whole table removes every rule we ever added in one shot
-    let _ = Command::new("nft").args(["delete", "table", "inet", "hebnix"]).output();
+    let _ = super::tap::command_with_net_admin("nft").args(["delete", "table", "inet", "hebnix"]).output();
     Ok(())
 }
 
 fn ensure_table() -> Result<(), String> {
-    let exists = Command::new("nft")
+    let exists = super::tap::command_with_net_admin("nft")
         .args(["list", "table", "inet", "hebnix"])
         .output()
         .map(|o| o.status.success())
@@ -84,7 +84,7 @@ fn ensure_udp_rule(comment: &str, matcher: &str, executable: &Path) -> Result<()
 }
 
 fn rule_exists(comment: &str) -> Result<bool, String> {
-    let output = Command::new("nft")
+    let output = super::tap::command_with_net_admin("nft")
         .args(["list", "table", "inet", "hebnix"])
         .output()
         .map_err(|e| format!("could not query nftables: {e}"))?;
@@ -92,7 +92,7 @@ fn rule_exists(comment: &str) -> Result<bool, String> {
 }
 
 fn run(args: &[&str]) -> Result<(), String> {
-    let output = Command::new("nft")
+    let output = super::tap::command_with_net_admin("nft")
         .args(args)
         .output()
         .map_err(|e| format!("could not update nftables: {e}"))?;
