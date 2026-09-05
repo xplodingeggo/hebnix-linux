@@ -4,9 +4,9 @@
 //! version so `bindings.rs` doesn't need to change: gilrs buttons are mapped
 //! onto the xinput bitmask on the fly.
 
-use std::sync::{Mutex, OnceLock};
+use gilrs::{Axis, Button};
 
-use gilrs::{Axis, Button, Gilrs};
+use super::gilrs_hub;
 
 // Button masks (same values as the windows XINPUT_GAMEPAD_* constants)
 
@@ -66,17 +66,6 @@ impl XInputState {
     }
 }
 
-fn gilrs_handle() -> &'static Mutex<Option<Gilrs>> {
-    static HANDLE: OnceLock<Mutex<Option<Gilrs>>> = OnceLock::new();
-    HANDLE.get_or_init(|| match Gilrs::new() {
-        Ok(g) => Mutex::new(Some(g)),
-        Err(e) => {
-            tracing::warn!("xinput: gilrs init failed: {e}");
-            Mutex::new(None)
-        }
-    })
-}
-
 const GILRS_BUTTONS: [(Button, u16); 14] = [
     (Button::DPadUp, XINPUT_DPAD_UP),
     (Button::DPadDown, XINPUT_DPAD_DOWN),
@@ -105,7 +94,7 @@ fn trigger_u8(v: f32) -> u8 {
 /// xinput-shaped state for controller user_index (0-3, by connection order),
 /// None if not connected.
 pub fn get_xinput_state(user_index: u32) -> Option<XInputState> {
-    let mut guard = gilrs_handle().lock().unwrap();
+    let mut guard = gilrs_hub::handle().lock().unwrap();
     let gilrs = guard.as_mut()?;
     // drain pending events so is_pressed()/value() reflect the latest state
     while gilrs.next_event().is_some() {}

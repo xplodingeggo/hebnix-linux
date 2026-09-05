@@ -44,7 +44,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tray-icon = "0.24.1"
 ureq = { workspace = true, features = ["json"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-reqwest = { version = "0.11", features = ["blocking"] }
+reqwest = { version = "0.11", features = ["blocking", "multipart"] }
 base64 = "0.21"
 flate2 = "1.0"
 hmac = "0.12"
