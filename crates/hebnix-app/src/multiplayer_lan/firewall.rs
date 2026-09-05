@@ -10,7 +10,6 @@
 //! Requires CAP_NET_ADMIN (same capability the TAP device needs).
 
 use std::path::Path;
-use std::process::Command;
 
 const CHAIN_IN: &str = "input";
 const LAN_PORTS: &str = "7777-7778, 14000-14010";

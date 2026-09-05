@@ -225,14 +225,21 @@ fn kwin_rl_pid() -> Option<u32> {
         .ok()
 }
 
-/// (left, top, right, bottom) via `search --pid <pid> getwindowgeometry`,
-/// which prints exactly three lines:
+/// (left, top, right, bottom) via `search --name <title> --limit 1
+/// getwindowgeometry`, which prints exactly three lines:
 ///   Window {id}
 ///     Position: x,y
 ///     Geometry: WxH
-fn kwin_rl_window_rect(pid: u32) -> Option<(i32, i32, i32, i32)> {
-    let pid_s = pid.to_string();
-    let lines = kdotool_lines(&["search", "--pid", &pid_s, "getwindowgeometry"])?;
+///
+/// Takes the window by title, not pid: `search --pid <pid>` was confirmed
+/// live to ignore the pid filter entirely on this kdotool build (returns
+/// *every* window in the session regardless of which pid is given), so
+/// this used to silently grab whatever window happened to come first in
+/// kdotool's own listing order - anything from Steam to a file manager,
+/// not necessarily Rocket League at all.
+fn kwin_rl_window_rect() -> Option<(i32, i32, i32, i32)> {
+    let lines =
+        kdotool_lines(&["search", "--name", "Rocket League", "--limit", "1", "getwindowgeometry"])?;
     let pos_line = lines.iter().find(|l| l.contains("Position:"))?;
     let geo_line = lines.iter().find(|l| l.contains("Geometry:"))?;
     let (x, y) = pos_line.split("Position:").nth(1)?.trim().split_once(',')?;
@@ -344,7 +351,7 @@ pub fn get_rocket_league_window_rect() -> Option<(i32, i32, i32, i32)> {
                 None
             }
         }
-        Compositor::Kwin => kwin_rl_window_rect(pid),
+        Compositor::Kwin => kwin_rl_window_rect(),
         Compositor::Other => {
             warn_unsupported_compositor_once();
             None
@@ -457,8 +464,19 @@ pub fn focus_own_window_over_game(own_pid: u32) -> bool {
             // is documented to switch to whatever virtual desktop the
             // window lives on, same as real xdotool on X11 -- unverified
             // here, but no separate desktop-switch step should be needed.
-            let pid_s = own_pid.to_string();
-            kdotool_lines(&["search", "--pid", &pid_s, "windowactivate", "windowraise"])
+            //
+            // By title, not pid: confirmed live against a real KWin/kdotool
+            // session that `search --pid <pid>` ignores the pid filter
+            // entirely and returns *every* window in the session (Steam,
+            // a file manager, Rocket League, whatever else happened to be
+            // open) - chaining windowactivate/windowraise onto that raised
+            // and activated all of them in sequence, not specifically our
+            // own window, which is exactly the reported symptom (F2 doing
+            // nothing useful while focused on the game). "Hebnix" is a
+            // fixed, unique window title (see main.rs's with_title), so
+            // matching by name sidesteps the broken filter entirely -
+            // verified live to return exactly one match.
+            kdotool_lines(&["search", "--name", "^Hebnix$", "windowactivate", "windowraise"])
                 .is_some()
         }
         Compositor::Other => {
