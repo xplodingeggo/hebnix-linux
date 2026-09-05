@@ -888,7 +888,7 @@ impl WorkshopState {
         let mut prepare_host = false;
         let mut prepare_guest = false;
         let mut close_game = false;
-        let is_admin = crate::spoofer::is_admin();
+        let is_admin = crate::multiplayer_lan::has_net_admin_capability();
         let setup_in_progress = self.multiplayer.setup_progress.is_some();
         let rl_open = self.multiplayer.wizard_check.rl_open;
         let tap_ready = self.multiplayer.wizard_check.tap_ready;
@@ -913,7 +913,7 @@ impl WorkshopState {
         if !is_admin {
             ui.colored_label(
                 egui::Color32::YELLOW,
-                "Workshop multiplayer requires Hebnix to run as administrator.",
+                "Workshop multiplayer needs one extra permission. Run: sudo setcap cap_net_admin+ep <path to hebnix binary>, then restart Hebnix.",
             );
         }
         ui.horizontal(|ui| {
@@ -1271,14 +1271,16 @@ impl WorkshopState {
         }
         if host {
             if !is_admin {
-                self.multiplayer.status = "Run Hebnix as administrator before hosting.".to_string();
+                self.multiplayer.status =
+                    "Grant cap_net_admin to the Hebnix binary before hosting (see above).".to_string();
             } else {
                 self.start_hosting(rl_path, tx, ctx);
             }
         }
         if join {
             if !is_admin {
-                self.multiplayer.status = "Run Hebnix as administrator before joining.".to_string();
+                self.multiplayer.status =
+                    "Grant cap_net_admin to the Hebnix binary before joining (see above).".to_string();
                 return;
             }
             self.join_multiplayer(rl_path, tx, ctx);

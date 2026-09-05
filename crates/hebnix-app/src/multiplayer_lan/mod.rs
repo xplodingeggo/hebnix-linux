@@ -25,7 +25,7 @@ pub use models::{
     RoomCredentials, UpdatePlayerRequest,
 };
 pub use room_api::RoomClient;
-pub use tap::{TapSession, configure_existing, ensure_adapter, is_configured};
+pub use tap::{TapSession, configure_existing, ensure_adapter, has_net_admin_capability, is_configured};
 
 pub const VPN_SUBNET: &str = "192.10.192";
 pub const HOST_ADDRESS: &str = "192.10.192.1";

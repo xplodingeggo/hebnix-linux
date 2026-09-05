@@ -13,6 +13,34 @@ use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::process::Command;
 
 pub const ADAPTER_NAME: &str = "hebnix0";
+
+/// Windows gates Workshop LAN on running elevated, since installing its TAP
+/// driver needs administrator rights. Linux doesn't need root at all here -
+/// `setcap cap_net_admin+ep` on the binary (done once at install time, see
+/// packaging/) is enough for both the TAP device and the nftables rules.
+/// Checks the process's effective capability set directly rather than
+/// reusing the (root-only) admin check the spoofer feature uses.
+pub fn has_net_admin_capability() -> bool {
+    // root implicitly has every capability, including a plain `cargo run`
+    // during development where setcap was never applied to the debug binary
+    if nix::unistd::geteuid().is_root() {
+        return true;
+    }
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return false;
+    };
+    let Some(line) = status.lines().find(|line| line.starts_with("CapEff:")) else {
+        return false;
+    };
+    let Some(hex) = line.split_whitespace().nth(1) else {
+        return false;
+    };
+    let Ok(mask) = u64::from_str_radix(hex, 16) else {
+        return false;
+    };
+    // CAP_NET_ADMIN = 12, per linux/capability.h
+    mask & (1 << 12) != 0
+}
 const TUN_PATH: &str = "/dev/net/tun";
 
 // linux/if_tun.h - _IOW('T', 202/203, c_int)
