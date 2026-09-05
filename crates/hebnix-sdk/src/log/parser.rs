@@ -128,14 +128,48 @@ fn check_stats_port() -> bool {
 
 // Main entry point
 
+/// same bug class fixed in save_file::detect_save_data_path(): RL has no
+/// native Linux client anymore, so it always runs through some Wine/Proton
+/// prefix, and Launch.log lives under *that* prefix's emulated "My
+/// Documents" - never the host's real ~/Documents. Left as a bare
+/// dirs::document_dir() join originally, meaning this never found the real
+/// file on any Wine/Proton setup (confirmed live: a plugin's Epic-id
+/// detection silently failed here even though the exact same id was
+/// findable via save_file::find_save_accounts(), which already got this
+/// fix). Prefers the exact prefix a live RL process is running in when
+/// available (find_rocket_league() reliably returns None in practice for
+/// EAC-protected RL - see process::detector - so this almost never fires,
+/// but costs nothing to try), otherwise scans every known prefix plus the
+/// host's own Documents folder and picks whichever actually has the file.
 fn find_launch_log() -> PathBuf {
-    dirs::document_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("My Games")
-        .join("Rocket League")
-        .join("TAGame")
-        .join("Logs")
-        .join("Launch.log")
+    let rel = Path::new("My Games/Rocket League/TAGame/Logs/Launch.log");
+
+    if let Some(exe) = crate::process::find_rocket_league().map(|info| info.exe_path) {
+        if let Some(docs) = crate::process::documents_dir_for_exe(&exe) {
+            let candidate = docs.join(rel);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+
+    let mut candidates: Vec<PathBuf> = crate::process::candidate_documents_dirs()
+        .into_iter()
+        .map(|docs| docs.join(rel))
+        .collect();
+    if let Some(host_docs) = dirs::document_dir() {
+        candidates.push(host_docs.join(rel));
+    }
+
+    candidates
+        .into_iter()
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .unwrap_or_else(|| {
+            dirs::document_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(rel)
+        })
 }
 
 /// parse Launch.log into session + game info. verify=true (recommended) checks
