@@ -948,17 +948,16 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
                     "hebnix.chat.send is disabled while Rocket League isn't focused",
                 ));
             }
-            let open_key = match channel.to_lowercase().as_str() {
-                "global" => "t",
-                "team" => "y",
-                "party" => "u",
-                other => {
-                    return Err(mlua::Error::runtime(format!(
-                        "hebnix.chat.send: unknown channel '{other}', expected global, team or party"
-                    )));
-                }
-            };
-            hebnix_sdk::input::tap_key(open_key);
+            let channel = channel.to_lowercase();
+            if !matches!(channel.as_str(), "global" | "team" | "party") {
+                return Err(mlua::Error::runtime(format!(
+                    "hebnix.chat.send: unknown channel '{channel}', expected global, team or party"
+                )));
+            }
+            // reads the user's actual rebound key from their save file,
+            // falling back to RL's stock T/Y/U defaults if unreadable.
+            let open_key = hebnix_sdk::input::chat_channel_bind(&channel);
+            hebnix_sdk::input::tap_key(&open_key);
             std::thread::sleep(Duration::from_millis(100));
             hebnix_sdk::input::type_text(&message);
             std::thread::sleep(Duration::from_millis(30));
@@ -1060,6 +1059,27 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
                 .map(|b| crate::plugins::gamepad_icons::bind_type_label(&b))
                 .unwrap_or("");
             Ok(label)
+        })?,
+    )?;
+    hebnix.set(
+        "get_action_binds",
+        lua.create_function(|lua, action: String| {
+            let result = lua.create_table()?;
+            for (index, bind) in hebnix_sdk::input::action_binds(&action).iter().enumerate() {
+                result.set(index + 1, bind.clone())?;
+            }
+            Ok(result)
+        })?,
+    )?;
+    hebnix.set(
+        "is_action_pressed",
+        lua.create_function(|_, action: String| Ok(hebnix_sdk::input::is_action_pressed(&action)))?,
+    )?;
+    hebnix.set(
+        "refresh_action_binds",
+        lua.create_function(|_, ()| {
+            hebnix_sdk::input::clear_action_bind_cache();
+            Ok(())
         })?,
     )?;
 
