@@ -76,6 +76,61 @@ impl Default for SettingsCfg {
     }
 }
 
+/// How Rocket League actually gets launched/restarted on this machine.
+/// RL has no official Linux/Steam listing anymore, so there's no single
+/// "just call steam://" answer - Steam's `run` verb (the only one that
+/// supports passing an extra launch argument, needed for Workshop LAN's
+/// -multihome flag) only works for a real, owned Steam catalog listing, not
+/// a non-Steam shortcut, and a shortcut's *target* could be anything
+/// (Heroic, Lutris, ...). Set once via the Rocket League Launch Setup
+/// wizard (Settings tab), re-run any time your setup changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RlLaunchMode {
+    /// wizard never completed - restart/Workshop LAN buttons should point
+    /// the user at Settings instead of guessing
+    #[default]
+    Unconfigured,
+    /// RL is a real, owned Steam listing (native or Proton) - steam://run
+    /// supports passing -multihome=<address> directly
+    SteamProton,
+    /// a Steam non-Steam-shortcut whose target is Heroic - steam://rungameid
+    /// works for a plain restart, but steam://run's argument override
+    /// doesn't work on shortcuts at all, so Workshop LAN has to bypass Steam
+    /// and call Heroic directly for that one relaunch
+    SteamShortcutToHeroic,
+    /// Heroic only, no Steam involved at all - every relaunch calls Heroic
+    /// directly
+    HeroicDirect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RlLaunchCfg {
+    pub mode: RlLaunchMode,
+    /// SteamProton: RL's real Steam appid (252950). SteamShortcutToHeroic:
+    /// the shortcut's computed rungameid (a large synthetic number, see
+    /// rl_launch::compute_shortcut_id). Unused for HeroicDirect.
+    pub steam_id: String,
+    /// path to the Heroic binary (SteamShortcutToHeroic and HeroicDirect only)
+    pub heroic_binary: String,
+    /// Epic catalog app name - "Sugar" for Rocket League, same for everyone
+    pub heroic_app_name: String,
+    pub heroic_runner: String,
+}
+
+impl Default for RlLaunchCfg {
+    fn default() -> Self {
+        Self {
+            mode: RlLaunchMode::Unconfigured,
+            steam_id: "252950".to_string(),
+            heroic_binary: "heroic".to_string(),
+            heroic_app_name: "Sugar".to_string(),
+            heroic_runner: "legendary".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PatcherCfg {
@@ -90,6 +145,7 @@ pub struct PatcherCfg {
 pub struct Config {
     pub window: WindowCfg,
     pub settings: SettingsCfg,
+    pub rl_launch: RlLaunchCfg,
     pub patcher: PatcherCfg,
     /// enabled state keyed by plugin slug
     pub plugins: BTreeMap<String, bool>,

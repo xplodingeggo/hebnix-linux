@@ -382,6 +382,9 @@ pub struct HebnixApp {
     fullscreen_notice: bool,
     fullscreen_notice_dismissed: bool,
     startup_enabled: bool,
+    rl_launch_setup_open: bool,
+    rl_launch_draft: crate::config::RlLaunchCfg,
+    rl_launch_shortcut_candidates: Vec<crate::rl_launch::ShortcutCandidate>,
     quitting: bool,
     last_size: (u32, u32),
     overlay: crate::overlay::Overlay,
@@ -455,6 +458,7 @@ impl HebnixApp {
         let _ = std::fs::create_dir_all(&plugin_dir);
 
         let mut config = Config::load(&base_dir);
+        let rl_launch_draft = config.rl_launch.clone();
 
         let error_file = base_dir.join("theme_errors.txt");
         match theme::apply_theme(&cc.egui_ctx, &themes_dir, &fonts_dir, &config.settings.theme) {
@@ -770,6 +774,9 @@ impl HebnixApp {
             fullscreen_notice: false,
             fullscreen_notice_dismissed: false,
             startup_enabled,
+            rl_launch_setup_open: false,
+            rl_launch_draft,
+            rl_launch_shortcut_candidates: Vec::new(),
             quitting: false,
             last_size,
             overlay: crate::overlay::Overlay::new(),
@@ -1945,7 +1952,10 @@ impl HebnixApp {
             }
             "restart" => {
                 let path = self.config.settings.rl_path.clone();
-                match crate::winutil::restart_rocket_league(std::path::Path::new(&path)) {
+                match crate::winutil::restart_rocket_league(
+                    std::path::Path::new(&path),
+                    &self.config.rl_launch,
+                ) {
                     Ok(()) => self.console.write("[Console] Rocket League restarted."),
                     Err(error) => self
                         .console
@@ -3295,6 +3305,31 @@ impl HebnixApp {
                                     .size(11.0)
                                     .color(egui::Color32::GRAY),
                             );
+                            ui.add_space(12.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+                            ui.strong("Rocket League Launch");
+                            ui.label(
+                                egui::RichText::new(
+                                    "Tells Hebnix how to restart Rocket League - used by the Restart Rocket League button and Workshop LAN's Host/Join.",
+                                )
+                                .size(11.0)
+                                .color(egui::Color32::GRAY),
+                            );
+                            let mode_label = match self.config.rl_launch.mode {
+                                crate::config::RlLaunchMode::Unconfigured => "Not set up yet",
+                                crate::config::RlLaunchMode::SteamProton => "Real Steam game (Proton)",
+                                crate::config::RlLaunchMode::SteamShortcutToHeroic => {
+                                    "Non-Steam shortcut to Heroic"
+                                }
+                                crate::config::RlLaunchMode::HeroicDirect => "Heroic directly",
+                            };
+                            ui.label(format!("Current setup: {mode_label}"));
+                            if ui.button("Rocket League Launch Setup...").clicked() {
+                                self.rl_launch_draft = self.config.rl_launch.clone();
+                                self.rl_launch_shortcut_candidates.clear();
+                                self.rl_launch_setup_open = true;
+                            }
                         }
                     }
                 });
@@ -3687,6 +3722,118 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         if close {
             self.fullscreen_notice = false;
             self.fullscreen_notice_dismissed = true;
+        }
+    }
+
+    fn render_rl_launch_setup(&mut self, ctx: &egui::Context) {
+        if !self.rl_launch_setup_open {
+            return;
+        }
+        use crate::config::RlLaunchMode;
+
+        let mut open = true;
+        egui::Window::new("Rocket League Launch Setup")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(
+                    "How do you actually launch Rocket League? This decides how the Restart \
+                     Rocket League button and Workshop LAN's Host/Join work.",
+                );
+                ui.add_space(8.0);
+
+                ui.radio_value(
+                    &mut self.rl_launch_draft.mode,
+                    RlLaunchMode::SteamProton,
+                    "Real Steam game (native or Proton)",
+                );
+                ui.radio_value(
+                    &mut self.rl_launch_draft.mode,
+                    RlLaunchMode::SteamShortcutToHeroic,
+                    "Non-Steam shortcut that opens Heroic",
+                );
+                ui.radio_value(
+                    &mut self.rl_launch_draft.mode,
+                    RlLaunchMode::HeroicDirect,
+                    "Heroic directly, no Steam involved",
+                );
+                ui.add_space(8.0);
+
+                match self.rl_launch_draft.mode {
+                    RlLaunchMode::Unconfigured => {}
+                    RlLaunchMode::SteamProton => {
+                        ui.label("Steam App ID (252950 is Rocket League's own real listing):");
+                        ui.text_edit_singleline(&mut self.rl_launch_draft.steam_id);
+                    }
+                    RlLaunchMode::SteamShortcutToHeroic => {
+                        if ui.button("Scan Steam shortcuts for Heroic").clicked() {
+                            self.rl_launch_shortcut_candidates =
+                                crate::rl_launch::find_heroic_shortcuts();
+                        }
+                        if self.rl_launch_shortcut_candidates.is_empty() {
+                            ui.small(
+                                "No candidates found yet - click Scan, or enter the ID manually below.",
+                            );
+                        } else {
+                            for candidate in &self.rl_launch_shortcut_candidates {
+                                if ui
+                                    .button(format!(
+                                        "{}  ({})",
+                                        candidate.app_name, candidate.exe
+                                    ))
+                                    .clicked()
+                                {
+                                    self.rl_launch_draft.steam_id = candidate.rungameid.to_string();
+                                }
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.label("Steam shortcut ID:");
+                        ui.text_edit_singleline(&mut self.rl_launch_draft.steam_id);
+                        ui.add_space(4.0);
+                        ui.label("Heroic binary path (or just 'heroic' if it's on your PATH):");
+                        ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_binary);
+                    }
+                    RlLaunchMode::HeroicDirect => {
+                        ui.label("Heroic binary path (or just 'heroic' if it's on your PATH):");
+                        ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_binary);
+                    }
+                }
+
+                if matches!(
+                    self.rl_launch_draft.mode,
+                    RlLaunchMode::SteamShortcutToHeroic | RlLaunchMode::HeroicDirect
+                ) {
+                    ui.add_space(4.0);
+                    ui.label("Epic app name (Sugar is Rocket League's, same for everyone):");
+                    ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_app_name);
+                    ui.label("Runner:");
+                    ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_runner);
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let can_save = self.rl_launch_draft.mode != RlLaunchMode::Unconfigured;
+                    if ui
+                        .add_enabled(can_save, egui::Button::new("Save"))
+                        .clicked()
+                    {
+                        self.config.rl_launch = self.rl_launch_draft.clone();
+                        self.save_config();
+                        self.console
+                            .write("[Core] Rocket League launch setup saved.");
+                        self.rl_launch_setup_open = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.rl_launch_setup_open = false;
+                    }
+                });
+            });
+        if !open {
+            self.rl_launch_setup_open = false;
         }
     }
 
@@ -4393,11 +4540,13 @@ impl eframe::App for HebnixApp {
                             .on_hover_text("Restart the currently attached Steam or Epic install");
                         if restart.clicked() {
                             let path = self.config.settings.rl_path.clone();
+                            let launch_cfg = self.config.rl_launch.clone();
                             let tx = self.tx.clone();
                             self.console.write("[Core] Restarting Rocket League...");
                             std::thread::spawn(move || {
                                 let message = match crate::winutil::restart_rocket_league(
                                     std::path::Path::new(&path),
+                                    &launch_cfg,
                                 ) {
                                     Ok(()) => "[Core] Rocket League restarted.".to_string(),
                                     Err(error) => {
@@ -4416,7 +4565,7 @@ impl eframe::App for HebnixApp {
                     Tab::Workshop => {
                         let rl_path = self.config.settings.rl_path.clone();
                         let tx = self.tx.clone();
-                        self.workshop.render(ui, &rl_path, &tx);
+                        self.workshop.render(ui, &rl_path, &self.config.rl_launch, &tx);
                     }
                     Tab::Spoofer => self.render_spoofer_tab(ui),
                     Tab::Patcher => {
@@ -4720,7 +4869,15 @@ impl eframe::App for HebnixApp {
                     ui.vertical_centered(|ui| {
                         if ui.button("Restart Rocket League").clicked() {
                             let path = self.config.settings.rl_path.clone();
-                            let _ = crate::winutil::restart_rocket_league(std::path::Path::new(&path));
+                            match crate::winutil::restart_rocket_league(
+                                std::path::Path::new(&path),
+                                &self.config.rl_launch,
+                            ) {
+                                Ok(()) => self.console.write("[Core] Rocket League restarted."),
+                                Err(error) => self
+                                    .console
+                                    .write(format!("[Core] Rocket League restart failed: {error}")),
+                            }
                             close = true;
                         }
                         if ui.button("OK").clicked() {
@@ -4740,6 +4897,7 @@ impl eframe::App for HebnixApp {
             self.render_web_port_notice(ctx);
             self.render_fullscreen_notice(ctx);
             self.render_install_modal(ctx);
+            self.render_rl_launch_setup(ctx);
         }
         self.plugin_mgr.dispatch_tick();
         self.render_plugin_windows(ctx);

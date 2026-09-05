@@ -7,6 +7,7 @@ mod boost_patcher {
     pub use crate::patcher::boost_patcher::*;
 }
 mod config;
+mod rl_launch;
 mod cosmetic_thumbnail {
     pub use crate::patcher::cosmetic_thumbnail::*;
 }

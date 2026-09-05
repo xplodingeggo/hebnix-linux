@@ -660,7 +660,13 @@ impl WorkshopState {
     }
 
     /// render the tab. rl_path comes from the app config.
-    pub fn render(&mut self, ui: &mut egui::Ui, rl_path: &str, tx: &Sender<AppMsg>) {
+    pub fn render(
+        &mut self,
+        ui: &mut egui::Ui,
+        rl_path: &str,
+        launch_cfg: &crate::config::RlLaunchCfg,
+        tx: &Sender<AppMsg>,
+    ) {
         let ctx = ui.ctx().clone();
 
         ui.horizontal(|ui| {
@@ -669,7 +675,7 @@ impl WorkshopState {
         });
         ui.separator();
         if self.view == WorkshopView::Multiplayer {
-            self.render_multiplayer(ui, rl_path, tx, &ctx);
+            self.render_multiplayer(ui, rl_path, launch_cfg, tx, &ctx);
             return;
         }
 
@@ -851,6 +857,7 @@ impl WorkshopState {
         &mut self,
         ui: &mut egui::Ui,
         rl_path: &str,
+        launch_cfg: &crate::config::RlLaunchCfg,
         tx: &Sender<AppMsg>,
         ctx: &eframe::egui::Context,
     ) {
@@ -1227,13 +1234,14 @@ impl WorkshopState {
         }
 
         if prepare_host {
-            self.prepare_multiplayer(rl_path, HOST_ADDRESS, None, tx, ctx);
+            self.prepare_multiplayer(rl_path, HOST_ADDRESS, None, launch_cfg, tx, ctx);
         }
         if prepare_guest {
             self.prepare_multiplayer(
                 rl_path,
                 FIRST_GUEST_ADDRESS,
                 Some(self.multiplayer.join_pin.clone()),
+                launch_cfg,
                 tx,
                 ctx,
             );
@@ -1356,6 +1364,7 @@ impl WorkshopState {
         rl_path: &str,
         address: &str,
         join_pin: Option<String>,
+        launch_cfg: &crate::config::RlLaunchCfg,
         tx: &Sender<AppMsg>,
         ctx: &eframe::egui::Context,
     ) {
@@ -1365,6 +1374,7 @@ impl WorkshopState {
         let rl_path = rl_path.to_string();
         let address = address.to_string();
         let join_pin = join_pin.filter(|pin| pin.len() == 4);
+        let launch_cfg = launch_cfg.clone();
         let tx = tx.clone();
         let repaint = ctx.clone();
         std::thread::spawn(move || {
@@ -1397,8 +1407,12 @@ impl WorkshopState {
                 let _ = tx.send(AppMsg::WorkshopMultiplayerProgress(
                     "Starting Rocket League with the Workshop LAN address...".to_string(),
                 ));
-                crate::winutil::restart_rocket_league_multihome(Path::new(&rl_path), &address)
-                    .map(|_| (tunnel, joined))
+                crate::winutil::restart_rocket_league_multihome(
+                    Path::new(&rl_path),
+                    &address,
+                    &launch_cfg,
+                )
+                .map(|_| (tunnel, joined))
             });
             if result.is_err()
                 && let Some(joined) = cleanup_join
