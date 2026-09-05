@@ -186,6 +186,12 @@ fn main() -> eframe::Result {
         .with_min_inner_size([app::MIN_WIDTH, app::MIN_HEIGHT])
         .with_transparent(true)
         .with_visible(!cfg.settings.start_in_tray);
+    // only actually honored on X11 - Wayland's xdg_toplevel has no "set
+    // position" request on any compositor, by protocol design (see
+    // config::WindowCfg's x/y doc comment)
+    if let (Some(x), Some(y)) = (cfg.window.x, cfg.window.y) {
+        viewport = viewport.with_position([x as f32, y as f32]);
+    }
     if let Some(icon) = load_window_icon(&base_dir) {
         viewport = viewport.with_icon(icon);
     }

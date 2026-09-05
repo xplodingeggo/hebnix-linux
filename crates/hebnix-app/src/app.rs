@@ -387,6 +387,7 @@ pub struct HebnixApp {
     rl_launch_shortcut_candidates: Vec<crate::rl_launch::ShortcutCandidate>,
     quitting: bool,
     last_size: (u32, u32),
+    last_pos: Option<(i32, i32)>,
     overlay: crate::overlay::Overlay,
     webview: crate::webview::WebviewOverlay,
     overlay_rect: Option<(i32, i32, i32, i32)>,
@@ -565,6 +566,10 @@ impl HebnixApp {
         workshop.fetch_catalog(tx.clone(), cc.egui_ctx.clone());
 
         let last_size = (config.window.width, config.window.height);
+        let last_pos = match (config.window.x, config.window.y) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        };
         let startup_enabled = winutil::is_startup_enabled();
 
         let spoofer_mgr = Arc::new(SpooferManager::new(base_dir.clone(), tx.clone()));
@@ -779,6 +784,7 @@ impl HebnixApp {
             rl_launch_shortcut_candidates: Vec::new(),
             quitting: false,
             last_size,
+            last_pos,
             overlay: crate::overlay::Overlay::new(),
             webview: crate::webview::WebviewOverlay::new(),
             overlay_rect: None,
@@ -1171,6 +1177,10 @@ impl HebnixApp {
         self.quitting = true;
         self.config.window.width = self.last_size.0;
         self.config.window.height = self.last_size.1;
+        if let Some((x, y)) = self.last_pos {
+            self.config.window.x = Some(x);
+            self.config.window.y = Some(y);
+        }
         self.save_config();
 
         self.spoofer_mgr.shutdown();
@@ -4536,6 +4546,10 @@ impl eframe::App for HebnixApp {
             if size.x > 0.0 && size.y > 0.0 {
                 self.last_size = (size.x as u32, size.y as u32);
             }
+        }
+        // only ever meaningful on X11 - see WindowCfg::x/y doc comment
+        if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+            self.last_pos = Some((rect.min.x as i32, rect.min.y as i32));
         }
 
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {

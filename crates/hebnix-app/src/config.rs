@@ -31,6 +31,14 @@ pub fn default_statsapi_path() -> String {
 pub struct WindowCfg {
     pub width: u32,
     pub height: u32,
+    /// last on-screen position - only ever actually restored on X11.
+    /// Wayland's xdg_toplevel protocol has no "set position" request at all
+    /// on any compositor (Hyprland, Sway, KDE, GNOME included) - placement
+    /// is compositor/user-controlled by design, not something client code
+    /// can request. Harmless to save regardless; just a no-op on restore
+    /// there.
+    pub x: Option<i32>,
+    pub y: Option<i32>,
 }
 
 impl Default for WindowCfg {
@@ -38,6 +46,8 @@ impl Default for WindowCfg {
         Self {
             width: 1000,
             height: 600,
+            x: None,
+            y: None,
         }
     }
 }
