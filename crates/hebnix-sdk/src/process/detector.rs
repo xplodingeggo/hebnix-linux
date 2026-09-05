@@ -134,7 +134,21 @@ pub fn find_rocket_league() -> Option<RlProcessInfo> {
             continue;
         };
         let platform = detect_platform(&root);
-        let save_path = get_save_data_path(platform);
+        // if the running exe lives inside a Wine/Proton prefix (it always
+        // does - RL has no native Linux client anymore), use that exact
+        // prefix's Documents dir rather than guessing between however many
+        // prefixes happen to be installed.
+        let save_path = super::wine_prefix::documents_dir_for_exe(exe)
+            .map(|docs| match platform {
+                RlPlatform::Epic => docs.join(SAVE_PATH_EPIC),
+                RlPlatform::Steam => docs.join(SAVE_PATH_STEAM),
+                RlPlatform::Unknown => [SAVE_PATH_STEAM, SAVE_PATH_EPIC]
+                    .into_iter()
+                    .map(|rel| docs.join(rel))
+                    .find(|candidate| candidate.is_dir())
+                    .unwrap_or_else(|| docs.join(SAVE_PATH_STEAM)),
+            })
+            .unwrap_or_else(|| get_save_data_path(platform));
 
         return Some(RlProcessInfo {
             pid: pid.as_u32(),

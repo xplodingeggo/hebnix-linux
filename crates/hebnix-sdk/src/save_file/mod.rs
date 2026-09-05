@@ -184,20 +184,31 @@ pub fn detect_save_data_path() -> Option<PathBuf> {
         return Some(rl.save_data_path);
     }
 
-    let docs = dirs::document_dir()?;
+    // RL isn't running (or its exe path wasn't readable) - fall back to
+    // scanning every Wine/Proton prefix we can find (Steam Proton, Heroic,
+    // ...) plus the host's own Documents folder, and pick whichever
+    // candidate actually has the newest .save file. There's no single
+    // fixed prefix location since RL has no native Linux client anymore.
+    let mut docs_dirs = crate::process::candidate_documents_dirs();
+    if let Some(host_docs) = dirs::document_dir() {
+        docs_dirs.push(host_docs);
+    }
+
     let mut best_path: Option<PathBuf> = None;
     let mut best_mtime: Option<std::time::SystemTime> = None;
 
-    for rel in [SAVE_PATH_STEAM, SAVE_PATH_EPIC] {
-        let candidate = docs.join(rel);
-        if !candidate.is_dir() {
-            continue;
-        }
-        if let Some(latest) = find_save_file(Some(&candidate)) {
-            if let Ok(mtime) = latest.metadata().and_then(|m| m.modified()) {
-                if best_mtime.map(|b| mtime > b).unwrap_or(true) {
-                    best_mtime = Some(mtime);
-                    best_path = Some(candidate);
+    for docs in &docs_dirs {
+        for rel in [SAVE_PATH_STEAM, SAVE_PATH_EPIC] {
+            let candidate = docs.join(rel);
+            if !candidate.is_dir() {
+                continue;
+            }
+            if let Some(latest) = find_save_file(Some(&candidate)) {
+                if let Ok(mtime) = latest.metadata().and_then(|m| m.modified()) {
+                    if best_mtime.map(|b| mtime > b).unwrap_or(true) {
+                        best_mtime = Some(mtime);
+                        best_path = Some(candidate);
+                    }
                 }
             }
         }
