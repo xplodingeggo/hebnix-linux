@@ -26,6 +26,10 @@ use crate::ui::workshop::{ImageState, WorkshopState};
 use crate::winutil;
 
 pub const APP_VERSION: &str = "2.1.4";
+/// the actual hebnix-linux release version (shown in the About tab), as
+/// opposed to APP_VERSION above which tracks Windows Hebnix's engine/plugin
+/// compat version and is unrelated to this port's own release numbering.
+pub const LINUX_PORT_VERSION: &str = "0.1.1";
 
 pub const DEFAULT_WIDTH: f32 = 1000.0;
 pub const DEFAULT_HEIGHT: f32 = 600.0;
@@ -387,11 +391,6 @@ pub struct HebnixApp {
     plugin_monitor_size: (f32, f32),
     plugin_monitor_checked: Option<std::time::Instant>,
 
-    update_info: Option<crate::update::UpdateInfo>,
-    update_modal_open: bool,
-    update_downloading: bool,
-    update_error: Option<String>,
-
     spoofer_mgr: Arc<SpooferManager>,
     spoofer_master: bool,
     spoofer_http_proxy: bool,
@@ -477,16 +476,10 @@ impl HebnixApp {
 
         let (tx, rx) = crossbeam_channel::unbounded::<AppMsg>();
 
-        let tx_update = tx.clone();
-        let ctx_update = cc.egui_ctx.clone();
-        std::thread::Builder::new()
-            .name("update-checker".into())
-            .spawn(move || {
-                let result = crate::update::check_for_updates(APP_VERSION);
-                let _ = tx_update.send(AppMsg::AppUpdateFetched { result });
-                ctx_update.request_repaint();
-            })
-            .ok();
+        // Hebnix has no self-updater on Linux - the AUR package / tarball /
+        // AppImage own that instead. Just kick off the plugin-update check
+        // directly instead of gating it behind a (removed) app-version check.
+        let _ = tx.send(AppMsg::StartupPluginUpdateCheck);
 
         let stats = Arc::new(StatsClient::new("127.0.0.1", 49123));
         let (stats_tx, stats_rx) = crossbeam_channel::unbounded();
@@ -786,10 +779,6 @@ impl HebnixApp {
             plugin_monitor_size: (1920.0, 1080.0),
             plugin_monitor_checked: None,
 
-            update_info: None,
-            update_modal_open: false,
-            update_downloading: false,
-            update_error: None,
             spoofer_mgr,
             spoofer_master,
             spoofer_http_proxy,
@@ -1247,53 +1236,37 @@ impl HebnixApp {
                         self.workshop.refresh_wizard_status(&self.tx, ctx);
                     }
                 }
-                AppMsg::AppUpdateFetched { result } => match result {
-                    Ok(Some(info)) => {
-                        self.console
-                            .write(format!("[Core] Update available: v{}", info.version));
-                        self.update_info = Some(info);
-                        self.update_modal_open = true;
+                AppMsg::StartupPluginUpdateCheck => {
+                    self.console.write("[Core] Checking for plugin updates...");
+                    let mut payload = Vec::new();
+                    for p in &self.plugin_mgr.plugins {
+                        payload.push(serde_json::json!({
+                            "name": p.manifest.name,
+                            "author": p.manifest.author,
+                            "version": p.manifest.version,
+                        }));
                     }
-                    Ok(None) => {
-                        self.console
-                            .write("[Core] Hebnix is up to date. Checking for plugin updates...");
-                        let mut payload = Vec::new();
-                        for p in &self.plugin_mgr.plugins {
-                            payload.push(serde_json::json!({
-                                "name": p.manifest.name,
-                                "author": p.manifest.author,
-                                "version": p.manifest.version,
-                            }));
-                        }
-                        let payload_json = serde_json::Value::Array(payload);
-                        let tx = self.tx.clone();
-                        let ctx_local = ctx.clone();
+                    let payload_json = serde_json::Value::Array(payload);
+                    let tx = self.tx.clone();
+                    let ctx_local = ctx.clone();
 
-                        std::thread::spawn(move || {
-                            let result: Result<Vec<serde_json::Value>, String> = (|| {
-                                let agent =
-                                    ureq::AgentBuilder::new().try_proxy_from_env(false).build();
-                                let resp = agent.post("https://api.hebnix.com/check")
-                                    .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                                    .send_json(payload_json)
-                                    .map_err(|e| format!("Failed to check plugin updates: {e}"))?;
-                                let json: serde_json::Value =
-                                    resp.into_json().map_err(|e| format!("Invalid JSON: {e}"))?;
-                                let arr = json.as_array().cloned().unwrap_or_default();
-                                Ok(arr)
-                            })(
-                            );
-                            let _ = tx.send(AppMsg::PluginUpdatesFound { updates: result });
-                            ctx_local.request_repaint();
-                        });
-                    }
-                    Err(e) => self
-                        .console
-                        .write(format!("[Core] Update check failed: {e}")),
-                },
-                AppMsg::AppUpdateFailed { error } => {
-                    self.update_downloading = false;
-                    self.update_error = Some(error);
+                    std::thread::spawn(move || {
+                        let result: Result<Vec<serde_json::Value>, String> = (|| {
+                            let agent =
+                                ureq::AgentBuilder::new().try_proxy_from_env(false).build();
+                            let resp = agent.post("https://api.hebnix.com/check")
+                                .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                                .send_json(payload_json)
+                                .map_err(|e| format!("Failed to check plugin updates: {e}"))?;
+                            let json: serde_json::Value =
+                                resp.into_json().map_err(|e| format!("Invalid JSON: {e}"))?;
+                            let arr = json.as_array().cloned().unwrap_or_default();
+                            Ok(arr)
+                        })(
+                        );
+                        let _ = tx.send(AppMsg::PluginUpdatesFound { updates: result });
+                        ctx_local.request_repaint();
+                    });
                 }
                 AppMsg::PluginUpdatesFound { updates } => match updates {
                     Ok(list) => {
@@ -3430,26 +3403,27 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Hebnix For Linux");
         ui.add_space(10.0);
         ui.label(format!(
-            "Version {APP_VERSION}\n\nA safe, EAC-compliant Mod Loader for Rocket League + Spoofer + Item Changer.\n"
+            "Version {LINUX_PORT_VERSION}\n\nA safe, EAC-compliant Mod Loader for Rocket League + Spoofer + Item Changer.\n"
         ));
 
         ui.hyperlink_to("hebnix.com", "https://hebnix.com");
-
-        ui.label(format!(
-            "\n\nBuilt by Hebbins & nixvio64.\n\nPress {} to show/hide window.",
-            self.config.settings.hotkey.to_uppercase()
-        ));
-
-        ui.add_space(ui.text_style_height(&egui::TextStyle::Body) * 2.0);
+        ui.add_space(12.0);
 
         ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.label("Built by Hebbins & nixvio64.");
             ui.horizontal(|ui| {
-                ui.label("Forked to Linux by");
-                ui.hyperlink_to("rlyvision", "https://github.com/rlyvision");
-                ui.label("&");
+                ui.label("Ported by");
                 ui.hyperlink_to("xplodingeggo", "https://github.com/xplodingeggo");
+                ui.label("and");
+                ui.hyperlink_to("rlyvision", "https://github.com/rlyvision");
             });
         });
+
+        ui.add_space(ui.text_style_height(&egui::TextStyle::Body) * 2.0);
+        ui.label(format!(
+            "Press {} to show/hide window.",
+            self.config.settings.hotkey.to_uppercase()
+        ));
     });
 }
     fn render_statsapi_notice(&mut self, ctx: &egui::Context) {
@@ -3713,65 +3687,6 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         if close {
             self.fullscreen_notice = false;
             self.fullscreen_notice_dismissed = true;
-        }
-    }
-
-    fn render_update_modal(&mut self, ctx: &egui::Context) {
-        if !self.update_modal_open {
-            return;
-        }
-
-        if let Some(info) = &self.update_info {
-            let mut open = self.update_modal_open;
-
-            egui::Window::new("Update Available!")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.heading(format!("Hebnix v{} is now available!", info.version));
-                    ui.add_space(8.0);
-
-                    if let Some(err) = &self.update_error {
-                        ui.colored_label(egui::Color32::from_rgb(0xe7, 0x4c, 0x3c), err);
-                        ui.add_space(8.0);
-                    }
-
-                    ui.horizontal(|ui| {
-                        if self.update_downloading {
-                            ui.add_enabled(false, egui::Button::new("Downloading & Installing..."));
-                            ui.spinner();
-                        } else {
-                            if ui
-                                .add(
-                                    egui::Button::new("Update Now")
-                                        .fill(egui::Color32::from_rgb(0x2e, 0xcc, 0x71)),
-                                )
-                                .clicked()
-                            {
-                                self.update_downloading = true;
-                                self.update_error = None;
-
-                                let setup_url = info.setup_url.clone();
-                                let base_dir = self.base_dir.clone();
-                                let tx = self.tx.clone();
-                                let ctx = ctx.clone();
-
-                                std::thread::spawn(move || {
-                                    if let Err(e) = crate::update::download_and_install_update(
-                                        &setup_url, &base_dir,
-                                    ) {
-                                        let _ = tx.send(AppMsg::AppUpdateFailed { error: e });
-                                        ctx.request_repaint();
-                                    }
-                                });
-                            }
-                        }
-                    });
-                });
-
-            self.update_modal_open = open;
         }
     }
 
@@ -4824,7 +4739,6 @@ impl eframe::App for HebnixApp {
             self.render_statsapi_notice(ctx);
             self.render_web_port_notice(ctx);
             self.render_fullscreen_notice(ctx);
-            self.render_update_modal(ctx);
             self.render_install_modal(ctx);
         }
         self.plugin_mgr.dispatch_tick();

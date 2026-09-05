@@ -35,7 +35,6 @@ mod swapper {
 mod theme;
 mod tray;
 mod ui;
-mod update;
 mod upk_keys {
     pub use crate::patcher::upk_keys::*;
 }

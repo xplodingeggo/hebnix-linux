@@ -103,12 +103,10 @@ pub enum AppMsg {
         status: u16,
         body: String,
     },
-    AppUpdateFetched {
-        result: Result<Option<crate::update::UpdateInfo>, String>,
-    },
-    AppUpdateFailed {
-        error: String,
-    },
+    /// fired once at startup to kick off the plugin-update check (Hebnix
+    /// itself has no self-updater on Linux - the AUR package/tarball/
+    /// AppImage own that instead)
+    StartupPluginUpdateCheck,
     PluginUpdatesFound {
         updates: Result<Vec<Value>, String>,
     },
