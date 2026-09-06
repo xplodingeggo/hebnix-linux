@@ -200,6 +200,40 @@ fn parse_hex_color(value: &str) -> [u8; 3] {
     [0xE8, 0xE8, 0xE8]
 }
 
+/// a horizontally-centered row of label/hyperlink pieces (piece.1 is a URL
+/// for a hyperlink, None for a plain label) with a space between each. See
+/// render_about_tab for why plain ui.horizontal() can't just be centered by
+/// wrapping it in vertical_centered.
+fn credits_row(ui: &mut egui::Ui, pieces: &[(&str, Option<&str>)]) {
+    let spacing = 4.0;
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let total_width: f32 = pieces
+        .iter()
+        .map(|(text, _)| {
+            ui.painter()
+                .layout_no_wrap(text.to_string(), font_id.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        })
+        .sum::<f32>()
+        + spacing * (pieces.len().saturating_sub(1)) as f32;
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = spacing;
+        ui.add_space(((ui.available_width() - total_width) / 2.0).max(0.0));
+        for (text, url) in pieces {
+            match url {
+                Some(url) => {
+                    ui.hyperlink_to(*text, *url);
+                }
+                None => {
+                    ui.label(*text);
+                }
+            }
+        }
+    });
+}
+
 enum TitlebarIcon {
     Close,
     Minimize,
@@ -3515,48 +3549,28 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         ui.hyperlink_to("hebnix.com", "https://hebnix.com");
         ui.add_space(12.0);
 
-        // egui::Grid doesn't take part in vertical_centered's block-centering
-        // the way horizontal() does (it always hugs the left edge), so this
-        // uses two horizontal() rows with fixed-width cells instead - fixed
-        // widths keep both rows the exact same total size regardless of how
-        // long each name/separator is, which is what makes xplodingeggo line
-        // up under Hebbins and rlyvision under nixvio64, while still letting
-        // vertical_centered center the whole block correctly.
-        let cell = |ui: &mut egui::Ui, width: f32, add_contents: &dyn Fn(&mut egui::Ui)| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(width, ui.text_style_height(&egui::TextStyle::Body)),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| add_contents(ui),
-            );
-        };
-        ui.horizontal(|ui| {
-            cell(ui, 70.0, &|ui| {
-                ui.label("Built by");
-            });
-            cell(ui, 95.0, &|ui| {
-                ui.hyperlink_to("Hebbins", "https://github.com/Hebbins");
-            });
-            cell(ui, 28.0, &|ui| {
-                ui.label("&");
-            });
-            cell(ui, 95.0, &|ui| {
-                ui.hyperlink_to("nixvio64", "https://github.com/nixvio64");
-            });
-        });
-        ui.horizontal(|ui| {
-            cell(ui, 70.0, &|ui| {
-                ui.label("Ported by");
-            });
-            cell(ui, 95.0, &|ui| {
-                ui.hyperlink_to("xplodingeggo", "https://github.com/xplodingeggo");
-            });
-            cell(ui, 28.0, &|ui| {
-                ui.label("and");
-            });
-            cell(ui, 95.0, &|ui| {
-                ui.hyperlink_to("rlyvision", "https://github.com/rlyvision");
-            });
-        });
+        // ui.horizontal() always reserves the *full available width* for
+        // itself internally (see egui's horizontal_with_main_wrap_dyn),
+        // regardless of how little of that width its content actually
+        // uses - so vertical_centered (which centers each child based on
+        // its allocated width) sees an already-full-width row and never
+        // offsets it, leaving the visible content flush-left no matter
+        // what's inside. A plain label/heading/hyperlink doesn't have this
+        // problem since its own allocated width IS its content width. Fixed
+        // by measuring the row's real rendered width and manually padding
+        // it into the horizontal center before laying out its pieces.
+        credits_row(ui, &[
+            ("Built by", None),
+            ("Hebbins", Some("https://github.com/Hebbins")),
+            ("&", None),
+            ("nixvio64", Some("https://github.com/nixvio64")),
+        ]);
+        credits_row(ui, &[
+            ("Ported by", None),
+            ("xplodingeggo", Some("https://github.com/xplodingeggo")),
+            ("and", None),
+            ("rlyvision", Some("https://github.com/rlyvision")),
+        ]);
 
         ui.add_space(ui.text_style_height(&egui::TextStyle::Body) * 2.0);
         ui.label(format!(
@@ -3862,11 +3876,9 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
                 if self.rl_launch_draft.mode == RlLaunchMode::SteamShortcutToHeroic {
                     ui.label(
                         egui::RichText::new(
-                            "Note: Steam has no way to pass Workshop LAN's extra launch \
-                             argument through a shortcut (a Valve limitation, not something \
-                             fixable here) - Host/Join will bypass Steam and launch Heroic \
-                             directly instead. The game itself still works, just without \
-                             Steam overlay/rich presence for that one session.",
+                            "Non-Steam shortcuts can't pass launch arguments (a Steam \
+                             limitation). Set up TAP & Host/Join will launch Heroic directly \
+                             instead, bypassing Steam for that session.",
                         )
                         .size(11.0)
                         .color(egui::Color32::from_rgb(0xe6, 0xa8, 0x3c)),
