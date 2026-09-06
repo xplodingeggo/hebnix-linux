@@ -120,13 +120,21 @@ fn rocket_league_launched_with_multihome(address: &str) -> bool {
 }
 
 fn rocket_league_multihome_address() -> Option<String> {
-    let path = dirs::document_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("My Games")
-        .join("Rocket League")
-        .join("TAGame")
-        .join("Logs")
-        .join("Launch.log");
+    // same Wine/Proton-prefix bug already fixed for save_file::detect_save_data_path()
+    // and log::parser::find_launch_log() - Launch.log lives under whatever
+    // prefix RL is actually running in, never the host's real ~/Documents.
+    let rel = Path::new("My Games/Rocket League/TAGame/Logs/Launch.log");
+    let mut candidates: Vec<PathBuf> = hebnix_sdk::process::candidate_documents_dirs()
+        .into_iter()
+        .map(|docs| docs.join(rel))
+        .collect();
+    if let Some(host_docs) = dirs::document_dir() {
+        candidates.push(host_docs.join(rel));
+    }
+    let path = candidates
+        .into_iter()
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())?;
     let log = std::fs::read_to_string(path).ok()?;
     log.lines().take(300).find_map(|line| {
         let line = line.to_ascii_lowercase();
