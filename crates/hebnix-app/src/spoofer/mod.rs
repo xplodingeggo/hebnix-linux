@@ -76,7 +76,23 @@ pub fn run_elevated_relaunch() -> bool {
 
     let mut command = std::process::Command::new("pkexec");
     command.arg("env");
-    for var in ["WAYLAND_DISPLAY", "DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY"] {
+    // pkexec also resets HOME to the target (root) user's home by default,
+    // same deliberate reason as the display vars above - but this app
+    // constantly reads the *real* user's own files while elevated (Steam
+    // shortcuts.vdf, Heroic's installed.json, Wine/Proton prefixes under
+    // ~/.steam or ~/Games/Heroic, its own ~/.config/hebnix), all resolved
+    // via dirs::home_dir()/$HOME. Left unforwarded, every one of those
+    // silently starts looking under /root instead and comes up empty -
+    // confirmed live: "Scan Steam shortcuts for Heroic" reporting no
+    // candidates once elevation started actually working, despite the
+    // real shortcuts.vdf parsing fine in isolation.
+    for var in [
+        "WAYLAND_DISPLAY",
+        "DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "XAUTHORITY",
+        "HOME",
+    ] {
         if let Ok(value) = std::env::var(var) {
             command.arg(format!("{var}={value}"));
         }
