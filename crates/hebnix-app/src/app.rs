@@ -200,6 +200,49 @@ fn parse_hex_color(value: &str) -> [u8; 3] {
     [0xE8, 0xE8, 0xE8]
 }
 
+enum TitlebarIcon {
+    Close,
+    Minimize,
+}
+
+/// hand-painted instead of a unicode glyph (✕ / ─) - the bundled font's
+/// coverage for those is inconsistent across systems and rendered as
+/// mismatched tofu boxes on at least one real setup.
+fn titlebar_icon_button(ui: &mut egui::Ui, icon: TitlebarIcon) -> egui::Response {
+    let size = egui::vec2(22.0, 22.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(rect, 2.0, visuals.bg_fill);
+        }
+        let stroke = egui::Stroke::new(1.3, visuals.fg_stroke.color);
+        let center = rect.center();
+        match icon {
+            TitlebarIcon::Minimize => {
+                let half = 4.0;
+                ui.painter().line_segment(
+                    [center - egui::vec2(half, 0.0), center + egui::vec2(half, 0.0)],
+                    stroke,
+                );
+            }
+            TitlebarIcon::Close => {
+                let half = 4.0;
+                ui.painter().line_segment(
+                    [center - egui::vec2(half, half), center + egui::vec2(half, half)],
+                    stroke,
+                );
+                ui.painter().line_segment(
+                    [center - egui::vec2(half, -half), center + egui::vec2(half, -half)],
+                    stroke,
+                );
+            }
+        }
+    }
+    response
+}
+
 impl RankSpoofState {
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
@@ -3472,15 +3515,26 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         ui.hyperlink_to("hebnix.com", "https://hebnix.com");
         ui.add_space(12.0);
 
-        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-            ui.label("Built by Hebbins & nixvio64.");
-            ui.horizontal(|ui| {
+        // a grid so each ported-by name lines up directly under the
+        // built-by name it corresponds to (xplodingeggo under Hebbins,
+        // rlyvision under nixvio64), instead of two independently-centered
+        // rows that drift apart whenever the names differ in width.
+        egui::Grid::new("about_credits")
+            .num_columns(4)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Built by");
+                ui.hyperlink_to("Hebbins", "https://github.com/Hebbins");
+                ui.label("&");
+                ui.hyperlink_to("nixvio64", "https://github.com/nixvio64");
+                ui.end_row();
+
                 ui.label("Ported by");
                 ui.hyperlink_to("xplodingeggo", "https://github.com/xplodingeggo");
                 ui.label("and");
                 ui.hyperlink_to("rlyvision", "https://github.com/rlyvision");
+                ui.end_row();
             });
-        });
 
         ui.add_space(ui.text_style_height(&egui::TextStyle::Body) * 2.0);
         ui.label(format!(
@@ -4582,15 +4636,13 @@ impl eframe::App for HebnixApp {
                 bar_ui.label(egui::RichText::new("Hebnix").strong().size(12.0));
                 bar_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(4.0);
-                    if ui
-                        .add(egui::Button::new("✕").frame(false))
+                    if titlebar_icon_button(ui, TitlebarIcon::Close)
                         .on_hover_text("Close")
                         .clicked()
                     {
                         self.force_quit(ctx);
                     }
-                    if ui
-                        .add(egui::Button::new("─").frame(false))
+                    if titlebar_icon_button(ui, TitlebarIcon::Minimize)
                         .on_hover_text("Minimize to tray")
                         .clicked()
                     {
