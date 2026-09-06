@@ -2295,6 +2295,35 @@ impl HebnixApp {
                                 .color(egui::Color32::GRAY),
                             );
 
+                            if !crate::multiplayer_lan::has_net_bind_service_capability()
+                                && !spoofer::is_admin()
+                            {
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        egui::Color32::YELLOW,
+                                        "Account/PsyNet Proxy need one extra permission (bind port 443).",
+                                    );
+                                    if ui
+                                        .button("Grant Permission")
+                                        .on_hover_text(
+                                            "Opens a system permission prompt, then restarts Hebnix",
+                                        )
+                                        .clicked()
+                                    {
+                                        let tx = self.tx.clone();
+                                        let repaint = ui.ctx().clone();
+                                        self.console
+                                            .write("[Spoofer] Waiting for the permission prompt...");
+                                        std::thread::spawn(move || {
+                                            let result = crate::multiplayer_lan::grant_via_pkexec();
+                                            let _ = tx.send(AppMsg::NetAdminGranted { result });
+                                            repaint.request_repaint();
+                                        });
+                                    }
+                                });
+                            }
+
                             ui.add_space(10.0);
                             ui.add_enabled_ui(self.spoofer_master, |ui| {
                                 ui.horizontal(|ui| {

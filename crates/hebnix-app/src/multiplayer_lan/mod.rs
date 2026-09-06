@@ -27,7 +27,7 @@ pub use models::{
 pub use room_api::RoomClient;
 pub use tap::{
     TapSession, configure_existing, ensure_adapter, grant_via_pkexec, has_net_admin_capability,
-    is_configured, raise_net_admin_ambient,
+    has_net_bind_service_capability, is_configured, raise_net_admin_ambient,
 };
 
 pub const VPN_SUBNET: &str = "192.10.192";

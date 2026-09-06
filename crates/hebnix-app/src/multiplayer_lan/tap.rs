@@ -71,7 +71,7 @@ pub(super) fn command_with_net_admin(program: &str) -> Command {
 /// packaging/) is enough for both the TAP device and the nftables rules.
 /// Checks the process's effective capability set directly rather than
 /// reusing the (root-only) admin check the spoofer feature uses.
-pub fn has_net_admin_capability() -> bool {
+fn has_effective_capability(bit: u32) -> bool {
     // root implicitly has every capability, including a plain `cargo run`
     // during development where setcap was never applied to the debug binary
     if nix::unistd::geteuid().is_root() {
@@ -89,22 +89,37 @@ pub fn has_net_admin_capability() -> bool {
     let Ok(mask) = u64::from_str_radix(hex, 16) else {
         return false;
     };
-    // CAP_NET_ADMIN = 12, per linux/capability.h
-    mask & (1 << 12) != 0
+    mask & (1 << bit) != 0
 }
 
-/// grants this binary cap_net_admin via a graphical PolicyKit prompt (the
-/// Linux equivalent of a Windows UAC dialog) instead of making the user
-/// open a terminal. Blocks until the user responds to the dialog - call
-/// from a background thread, not the UI thread. The *currently running*
-/// process can't pick up a capability granted to its own file after the
-/// fact (capabilities are fixed at exec() time) - the caller needs to
-/// relaunch Hebnix for it to take effect, same as any setcap change.
+pub fn has_net_admin_capability() -> bool {
+    // CAP_NET_ADMIN = 12, per linux/capability.h
+    has_effective_capability(12)
+}
+
+/// spoofer's local MITM proxy binds 127.0.0.1:443 directly (see
+/// spoofer::socket::REVERSE_ADDR) - a privileged port, needing this same
+/// capability (or root). Granted by the same grant_via_pkexec() call as
+/// CAP_NET_ADMIN, one setcap covering both.
+pub fn has_net_bind_service_capability() -> bool {
+    // CAP_NET_BIND_SERVICE = 10, per linux/capability.h
+    has_effective_capability(10)
+}
+
+/// grants this binary both capabilities it can ever need (CAP_NET_ADMIN for
+/// Workshop LAN's TAP device/nftables, CAP_NET_BIND_SERVICE for spoofer's
+/// port-443 bind) via a graphical PolicyKit prompt (the Linux equivalent of
+/// a Windows UAC dialog) instead of making the user open a terminal.
+/// Blocks until the user responds to the dialog - call from a background
+/// thread, not the UI thread. The *currently running* process can't pick
+/// up a capability granted to its own file after the fact (capabilities
+/// are fixed at exec() time) - the caller needs to relaunch Hebnix for it
+/// to take effect, same as any setcap change.
 pub fn grant_via_pkexec() -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|error| format!("could not find Hebnix's own binary path: {error}"))?;
     let output = Command::new("pkexec")
-        .args(["setcap", "cap_net_admin+eip"])
+        .args(["setcap", "cap_net_admin,cap_net_bind_service=eip"])
         .arg(&exe)
         .output()
         .map_err(|error| format!("could not run pkexec: {error}"))?;

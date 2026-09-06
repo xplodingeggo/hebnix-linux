@@ -34,7 +34,6 @@ pub fn set_redirects(hosts: &[&str]) -> Result<(), String> {
         out.push('\n');
     }
     write(&path, &out)?;
-    flush_dns();
     Ok(())
 }
 
@@ -61,7 +60,6 @@ pub fn clear() -> Result<(), String> {
     }
 
     write(&path, &out)?;
-    flush_dns();
     Ok(())
 }
 
@@ -82,6 +80,15 @@ fn write(path: &Path, content: &str) -> Result<(), String> {
 /// glibc's resolver doesn't cache by default, but systemd-resolved (the
 /// common Arch setup with NetworkManager) does -- flush it if present.
 /// Best-effort: silently does nothing if resolved isn't running.
+///
+/// Deliberately NOT called from set_redirects/clear above, even though
+/// they used to do this internally: those two run inside the root-elevated
+/// `run_privileged` one-shot helper, and flushing your own session's DNS
+/// cache as root (rather than as yourself) can hit a stricter/different
+/// polkit rule than the same request from your own active session -
+/// caused a *second* unexpected auth prompt right after the hosts-file one
+/// on at least one real setup. Callers call this separately, from the
+/// normal (never-elevated) app process, after run_privileged succeeds.
 pub fn flush_dns() {
     let _ = std::process::Command::new("resolvectl")
         .arg("flush-caches")

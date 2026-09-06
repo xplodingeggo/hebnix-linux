@@ -170,6 +170,8 @@ pub fn restore_if_crashed(base_dir: &Path) {
         // again next launch.
         if let Err(error) = run_privileged(PrivilegedAction::ClearHosts, base_dir) {
             tracing::warn!("spoofer: couldn't clear the stale hosts redirect: {error}");
+        } else {
+            hosts::flush_dns();
         }
     }
 }
@@ -409,6 +411,17 @@ impl SpooferManager {
                     .into(),
             );
         }
+        // the local MITM proxy binds 127.0.0.1:443 directly (a privileged
+        // port) - needs CAP_NET_BIND_SERVICE, granted the same way as
+        // Workshop LAN's CAP_NET_ADMIN (one setcap covers both). Checked
+        // up front for a clear message instead of a raw OS bind error.
+        if !crate::multiplayer_lan::has_net_bind_service_capability() && !is_admin() {
+            return Err(
+                "Needs one extra permission to bind port 443 - open Spoofer settings and click \
+                 Grant Permission"
+                    .into(),
+            );
+        }
         let mut real_ips = HashMap::new();
         for host in REDIRECT_HOSTS {
             real_ips.insert(host.to_string(), dns::resolve_a(host)?);
@@ -438,6 +451,7 @@ impl SpooferManager {
             proxy.stop();
             return Err(error);
         }
+        hosts::flush_dns();
         *slot = Some(proxy);
         Ok(())
     }
@@ -446,7 +460,14 @@ impl SpooferManager {
         if self.http_active.load(Ordering::Relaxed) || self.socket_active.load(Ordering::Relaxed) {
             return;
         }
-        let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
+        // stop_socket() and stop_http() both call this - only actually the
+        // pkexec round trip once (has_redirects() is a plain file read, no
+        // root needed), or toggling one proxy off with the other already
+        // off used to prompt for authentication twice in a row for nothing.
+        if hosts::has_redirects() {
+            let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
+            hosts::flush_dns();
+        }
         if let Ok(mut slot) = self.reverse_proxy.lock() {
             if let Some(proxy) = slot.take() {
                 proxy.stop();
@@ -459,8 +480,13 @@ impl SpooferManager {
     pub fn shutdown(&self) {
         self.stop_socket();
         self.stop_http();
-        // Clear a redirect even if the socket failed to start or its state was lost.
-        let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
+        // Clear a redirect even if the socket failed to start or its state
+        // was lost - but stop_socket()/stop_http() above already did this
+        // via stop_reverse_if_unused() in the normal case, so skip the
+        // redundant (and potentially auth-prompting) third call.
+        if hosts::has_redirects() {
+            let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
+        }
         hosts::flush_dns();
     }
 }
