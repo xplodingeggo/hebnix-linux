@@ -3515,26 +3515,48 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         ui.hyperlink_to("hebnix.com", "https://hebnix.com");
         ui.add_space(12.0);
 
-        // a grid so each ported-by name lines up directly under the
-        // built-by name it corresponds to (xplodingeggo under Hebbins,
-        // rlyvision under nixvio64), instead of two independently-centered
-        // rows that drift apart whenever the names differ in width.
-        egui::Grid::new("about_credits")
-            .num_columns(4)
-            .spacing([6.0, 4.0])
-            .show(ui, |ui| {
+        // egui::Grid doesn't take part in vertical_centered's block-centering
+        // the way horizontal() does (it always hugs the left edge), so this
+        // uses two horizontal() rows with fixed-width cells instead - fixed
+        // widths keep both rows the exact same total size regardless of how
+        // long each name/separator is, which is what makes xplodingeggo line
+        // up under Hebbins and rlyvision under nixvio64, while still letting
+        // vertical_centered center the whole block correctly.
+        let cell = |ui: &mut egui::Ui, width: f32, add_contents: &dyn Fn(&mut egui::Ui)| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, ui.text_style_height(&egui::TextStyle::Body)),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| add_contents(ui),
+            );
+        };
+        ui.horizontal(|ui| {
+            cell(ui, 70.0, &|ui| {
                 ui.label("Built by");
-                ui.hyperlink_to("Hebbins", "https://github.com/Hebbins");
-                ui.label("&");
-                ui.hyperlink_to("nixvio64", "https://github.com/nixvio64");
-                ui.end_row();
-
-                ui.label("Ported by");
-                ui.hyperlink_to("xplodingeggo", "https://github.com/xplodingeggo");
-                ui.label("and");
-                ui.hyperlink_to("rlyvision", "https://github.com/rlyvision");
-                ui.end_row();
             });
+            cell(ui, 95.0, &|ui| {
+                ui.hyperlink_to("Hebbins", "https://github.com/Hebbins");
+            });
+            cell(ui, 28.0, &|ui| {
+                ui.label("&");
+            });
+            cell(ui, 95.0, &|ui| {
+                ui.hyperlink_to("nixvio64", "https://github.com/nixvio64");
+            });
+        });
+        ui.horizontal(|ui| {
+            cell(ui, 70.0, &|ui| {
+                ui.label("Ported by");
+            });
+            cell(ui, 95.0, &|ui| {
+                ui.hyperlink_to("xplodingeggo", "https://github.com/xplodingeggo");
+            });
+            cell(ui, 28.0, &|ui| {
+                ui.label("and");
+            });
+            cell(ui, 95.0, &|ui| {
+                ui.hyperlink_to("rlyvision", "https://github.com/rlyvision");
+            });
+        });
 
         ui.add_space(ui.text_style_height(&egui::TextStyle::Body) * 2.0);
         ui.label(format!(
