@@ -190,6 +190,17 @@ pub struct SpooferManager {
     title_settings: Arc<Mutex<TitleSettings>>,
     skill_bridge: Mutex<Option<SkillBridge>>,
     crl: Mutex<Option<crl::CrlServer>>,
+    // start_http() and start_socket() each independently call
+    // ensure_reverse_proxy() - if the first one's pkexec call fails (auth
+    // declined/slow/whatever), the second one used to immediately retry
+    // the whole thing again from scratch, including its own fresh pkexec
+    // prompt, purely because it has no memory of the first one just
+    // failing. Confirmed live: enabling both proxies at once (the normal
+    // startup case with saved settings) fired two separate set-hosts
+    // prompts a fraction of a second apart. Caching a recent failure here
+    // for a few seconds means the second caller in the same burst gets the
+    // same error back instead of trying pkexec all over again.
+    recent_reverse_proxy_failure: Mutex<Option<(std::time::Instant, String)>>,
 }
 
 impl SpooferManager {
@@ -255,6 +266,7 @@ impl SpooferManager {
             title_settings: Arc::new(Mutex::new(TitleSettings::default())),
             skill_bridge: Mutex::new(None),
             crl: Mutex::new(None),
+            recent_reverse_proxy_failure: Mutex::new(None),
         }
     }
 
@@ -397,6 +409,22 @@ impl SpooferManager {
     }
 
     fn ensure_reverse_proxy(&self) -> Result<(), String> {
+        const RETRY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
+        if let Ok(guard) = self.recent_reverse_proxy_failure.lock() {
+            if let Some((at, error)) = guard.as_ref() {
+                if at.elapsed() < RETRY_COOLDOWN {
+                    return Err(error.clone());
+                }
+            }
+        }
+        let result = self.ensure_reverse_proxy_uncached();
+        if let Ok(mut guard) = self.recent_reverse_proxy_failure.lock() {
+            *guard = result.as_ref().err().map(|error| (std::time::Instant::now(), error.clone()));
+        }
+        result
+    }
+
+    fn ensure_reverse_proxy_uncached(&self) -> Result<(), String> {
         let mut slot = self
             .reverse_proxy
             .lock()
