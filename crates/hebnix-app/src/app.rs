@@ -804,6 +804,8 @@ impl HebnixApp {
             swapper.set_owned_only(true);
         }
         let cert_installed = spoofer::ca::is_current_installed(&base_dir);
+        let rl_launch_unconfigured =
+            config.rl_launch.mode == crate::config::RlLaunchMode::Unconfigured;
 
         let mut app = Self {
             base_dir: base_dir.clone(),
@@ -857,7 +859,10 @@ impl HebnixApp {
             fullscreen_notice: false,
             fullscreen_notice_dismissed: false,
             startup_enabled,
-            rl_launch_setup_open: false,
+            // nag the user into finishing setup rather than letting the
+            // Restart Rocket League button and Workshop LAN silently do
+            // nothing until they happen to find Settings themselves.
+            rl_launch_setup_open: rl_launch_unconfigured,
             rl_launch_draft,
             rl_launch_shortcut_candidates: Vec::new(),
             quitting: false,
