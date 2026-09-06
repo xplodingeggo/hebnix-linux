@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// libraries listed in libraryfolders.vdf - e.g. a game installed on a
 /// second drive still gets its compatdata under that library, not the
 /// default one).
-fn steam_library_steamapps_dirs() -> Vec<PathBuf> {
+pub fn steam_library_steamapps_dirs() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };

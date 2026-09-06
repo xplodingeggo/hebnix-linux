@@ -19,6 +19,7 @@ pub struct MonitorShared {
     pub api_port: u16,
     pub statsapi_path: String,
     pub rl_path: String,
+    pub rl_launch: crate::config::RlLaunchCfg,
 }
 
 pub struct Monitor {
@@ -104,18 +105,32 @@ fn monitor_loop(
 
         // every 2.5s: RL / statsapi status
         if tick % 5 == 0 {
-            let (port, statsapi_path, rl_path) = {
+            let (port, statsapi_path, rl_path, rl_launch) = {
                 let s = shared.lock().unwrap();
-                (s.api_port, s.statsapi_path.clone(), s.rl_path.clone())
+                (
+                    s.api_port,
+                    s.statsapi_path.clone(),
+                    s.rl_path.clone(),
+                    s.rl_launch.clone(),
+                )
             };
 
             // liveness by process name. the exe path goes unreadable once eac
             // locks the process, so needing it made a running game look closed.
             let rl_open = hebnix_sdk::process::is_rocket_league_running();
-            // path resolution is best-effort (works during startup before eac)
+            // path resolution via the live process is best-effort (only works
+            // during the brief window before eac locks the exe path down);
+            // resolve_install_root() reads it straight from the launcher's
+            // own install manifest instead, which doesn't need the live
+            // process at all and is what actually keeps rl_path pointed at
+            // wherever the game currently being played is really installed.
             let root_dir = if rl_open {
                 hebnix_sdk::process::find_rocket_league()
                     .map(|info| info.root_dir.to_string_lossy().to_string())
+                    .or_else(|| {
+                        crate::rl_launch::resolve_install_root(&rl_launch)
+                            .map(|p| p.to_string_lossy().to_string())
+                    })
             } else {
                 None
             };

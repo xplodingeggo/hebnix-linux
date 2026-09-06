@@ -512,6 +512,7 @@ impl HebnixApp {
                 api_port: 49123,
                 statsapi_path: config.settings.statsapi_path.clone(),
                 rl_path: config.settings.rl_path.clone(),
+                rl_launch: config.rl_launch.clone(),
             },
             tx.clone(),
             cc.egui_ctx.clone(),
@@ -1841,6 +1842,7 @@ impl HebnixApp {
             api_port: self.current_api_port,
             statsapi_path: self.config.settings.statsapi_path.clone(),
             rl_path: self.config.settings.rl_path.clone(),
+            rl_launch: self.config.rl_launch.clone(),
         });
     }
 

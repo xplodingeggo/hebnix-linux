@@ -186,6 +186,51 @@ fn heroic_launch(cfg: &RlLaunchCfg, multihome: Option<&str>) -> Result<(), Strin
         })
 }
 
+/// where RL is actually installed, straight from the launch config -
+/// independent of the live process. Live detection
+/// (`process::find_rocket_league()`) needs to read the running exe's path,
+/// which EAC blocks almost immediately after launch, so in practice it only
+/// ever works in the brief window right at startup; `settings.rl_path` was
+/// getting stuck on whatever it last resolved to (or a stale manual value)
+/// and never correcting itself once EAC engaged - e.g. staying pointed at
+/// an old Steam install while the user actually plays through Heroic,
+/// silently breaking Workshop map installs (they'd copy into the Steam
+/// copy's CookedPCConsole, which the running Heroic-launched game never
+/// reads). This resolves the real install directory from data that doesn't
+/// need the live process at all: legendary's own installed.json for
+/// Heroic-based modes, Steam's appmanifest for SteamProton.
+pub fn resolve_install_root(cfg: &RlLaunchCfg) -> Option<PathBuf> {
+    match cfg.mode {
+        RlLaunchMode::Unconfigured => None,
+        RlLaunchMode::HeroicDirect | RlLaunchMode::SteamShortcutToHeroic => {
+            let path = dirs::home_dir()?.join(".config/heroic/legendaryConfig/legendary/installed.json");
+            let text = std::fs::read_to_string(path).ok()?;
+            let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+            let install_path = json.get(&cfg.heroic_app_name)?.get("install_path")?.as_str()?;
+            Some(PathBuf::from(install_path))
+        }
+        RlLaunchMode::SteamProton => {
+            let id = std::env::var("HEBNIX_RL_APPID").unwrap_or_else(|_| cfg.steam_id.clone());
+            for steamapps in hebnix_sdk::process::steam_library_steamapps_dirs() {
+                let manifest = steamapps.join(format!("appmanifest_{id}.acf"));
+                let Ok(text) = std::fs::read_to_string(&manifest) else {
+                    continue;
+                };
+                // simple keyed text VDF: `"installdir"\t\t"Name"` on its own line
+                if let Some(installdir) = text.lines().find_map(|line| {
+                    let line = line.trim();
+                    let rest = line.strip_prefix("\"installdir\"")?.trim();
+                    let inner = rest.strip_prefix('"')?.strip_suffix('"')?;
+                    Some(inner.to_string())
+                }) {
+                    return Some(steamapps.join("common").join(installdir));
+                }
+            }
+            None
+        }
+    }
+}
+
 /// plain restart, no Workshop LAN address. `HEBNIX_RL_APPID` overrides
 /// `cfg.steam_id` for SteamProton/SteamShortcutToHeroic without needing to
 /// re-run the setup wizard.
