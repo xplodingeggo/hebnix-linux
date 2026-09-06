@@ -165,11 +165,15 @@ fn main() -> eframe::Result {
         tracing::warn!("couldnt spawn the elevated relaunch helper (is polkit/pkexec installed?)");
     }
 
-    // single instance guard
-    let Some(_lock) = winutil::acquire_single_instance() else {
+    // single instance guard. held in a process-wide static (not just this
+    // local binding) so a relaunch triggered later from deep inside App
+    // (spoofer's elevate-on-enable) can release it first - see
+    // winutil::release_single_instance_lock for why that matters.
+    let Some(lock) = winutil::acquire_single_instance() else {
         winutil::focus_existing_instance();
         return Ok(());
     };
+    winutil::hold_single_instance_lock(lock);
 
     spoofer::restore_if_crashed(&base_dir);
     let _ = watchdog::spawn();

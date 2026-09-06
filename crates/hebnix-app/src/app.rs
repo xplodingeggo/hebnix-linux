@@ -755,10 +755,24 @@ impl HebnixApp {
         }
 
         if spoofer_master && !spoofer::is_admin() {
+            // release before spawning, not after: the relaunched copy runs
+            // its own single-instance check within milliseconds of
+            // starting, and this process is still holding that lock at
+            // this point in startup - without releasing it first, the new
+            // copy loses that race almost every time, finds the lock
+            // still held, and silently exits with no window and no error
+            // (confirmed live).
+            winutil::release_single_instance_lock();
             if spoofer::spawn_elevated_relaunch() {
                 std::process::exit(0);
             } else {
                 spoofer_master = false;
+                // didn't actually relaunch - reacquire so this process (the
+                // one continuing to start up non-elevated) still enforces
+                // single-instance for anyone launched after it.
+                if let Some(lock) = winutil::acquire_single_instance() {
+                    winutil::hold_single_instance_lock(lock);
+                }
             }
         }
 
@@ -3741,9 +3755,17 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
                 );
             }
             self.save_config();
+            // see the startup elevate-check in App::new() for why this has
+            // to happen before spawning, not after - the relaunched copy
+            // otherwise loses the single-instance race against this
+            // still-running process almost every time.
+            winutil::release_single_instance_lock();
             if spoofer::spawn_elevated_relaunch() {
                 self.spoofer_mgr.shutdown();
                 std::process::exit(0);
+            }
+            if let Some(lock) = winutil::acquire_single_instance() {
+                winutil::hold_single_instance_lock(lock);
             }
             self.spoofer_master = false;
             self.save_config();

@@ -40,21 +40,59 @@ pub const SKIP_ELEVATE_ARG: &str = "--no-elevate";
 /// the hosts-file write; the whole app was already designed around
 /// "the process itself runs elevated" so this mirrors that shape.
 ///
-/// Returns true once the relaunch is *spawned* (matching the windows
-/// version's semantics) -- if the user declines the polkit auth dialog,
-/// pkexec just exits non-zero and the (still non-root) caller falls through
-/// to whatever `--no-elevate` handling `main()` already has.
+/// pkexec resets its own environment for the process it launches (a
+/// deliberate security measure, not a bug) - WAYLAND_DISPLAY/DISPLAY/
+/// XDG_RUNTIME_DIR/XAUTHORITY do NOT pass through just because this
+/// (non-root) process has them set, even via Command::env (that only
+/// affects pkexec's own env, not what it hands to its target). Without
+/// them the relaunched GUI process can't attach to the display at all and
+/// exits immediately (confirmed live: "neither WAYLAND_DISPLAY nor
+/// WAYLAND_SOCKET nor DISPLAY is set"), while the caller here had already
+/// assumed success and exited - the whole app just vanished with nothing
+/// on screen to explain why. Fixed by forwarding them explicitly through
+/// `pkexec env VAR=val ... <program>`, and by giving the relaunch a brief
+/// grace period to prove it's actually still alive (catches this and an
+/// auth dialog decline, which also exits pkexec almost immediately)
+/// before reporting success - not a perfect guarantee for a fire-and-
+/// forget relaunch, but enough to stop lying about instant failures.
 pub fn spawn_elevated_relaunch() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
-    std::process::Command::new("pkexec")
-        .arg(exe)
-        .args(args)
-        .arg(SKIP_ELEVATE_ARG)
-        .spawn()
-        .is_ok()
+
+    let mut command = std::process::Command::new("pkexec");
+    command.arg("env");
+    for var in ["WAYLAND_DISPLAY", "DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY"] {
+        if let Ok(value) = std::env::var(var) {
+            command.arg(format!("{var}={value}"));
+        }
+    }
+    command.arg(exe).args(args).arg(SKIP_ELEVATE_ARG);
+
+    tracing::info!("spoofer: relaunching elevated via: {command:?}");
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            tracing::warn!("spoofer: pkexec spawn failed: {error}");
+            return false;
+        }
+    };
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    match child.try_wait() {
+        Ok(None) => {
+            tracing::info!("spoofer: elevated relaunch still alive after grace period");
+            true
+        }
+        Ok(Some(status)) => {
+            tracing::warn!("spoofer: elevated relaunch exited almost immediately: {status}");
+            false
+        }
+        Err(error) => {
+            tracing::warn!("spoofer: elevated relaunch try_wait failed: {error}");
+            false
+        }
+    }
 }
 
 fn marker_path(base_dir: &Path) -> PathBuf {
