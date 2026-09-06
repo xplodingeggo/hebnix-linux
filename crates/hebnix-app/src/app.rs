@@ -499,8 +499,6 @@ pub struct HebnixApp {
     patcher_boost: crate::boost_patcher::BoostPatcherState,
     patcher_decal: crate::decal_patcher::DecalPatcherState,
     swapper: crate::swapper::SwapperState,
-    admin_prompt_open: bool,
-    owned_admin_requested: bool,
     owned_proxy_prompt_open: bool,
     presets: crate::presets::PresetStore,
 }
@@ -754,18 +752,6 @@ impl HebnixApp {
             }
         }
 
-        // this runs before any window exists, so blocking here (until the
-        // elevated copy - or the declined/failed relaunch attempt - is
-        // fully done) is invisible; see run_elevated_relaunch's doc for why
-        // it has to actually block rather than just check-and-exit.
-        if spoofer_master && !spoofer::is_admin() {
-            if spoofer::run_elevated_relaunch() {
-                std::process::exit(0);
-            } else {
-                spoofer_master = false;
-            }
-        }
-
         let mut spoofer_friends_enabled = false;
         let mut spoofer_friends: HashMap<String, FriendSpoofState> = HashMap::new();
         if let Ok(text) = std::fs::read_to_string(base_dir.join("friends.json")) {
@@ -799,14 +785,7 @@ impl HebnixApp {
         let patcher_ball = crate::ball::PatcherState::new(&base_dir, &config);
         let patcher_boost = crate::boost_patcher::BoostPatcherState::new(&base_dir, &config);
         let patcher_decal = crate::decal_patcher::DecalPatcherState::new(&base_dir, &config);
-        let mut swapper = crate::swapper::SwapperState::new(&base_dir);
-        let owned_restart_marker = base_dir.join("enable_owned_replacements.pending");
-        if spoofer::is_admin() && owned_restart_marker.is_file() {
-            let _ = std::fs::remove_file(&owned_restart_marker);
-            spoofer_master = true;
-            spoofer_http_proxy = true;
-            swapper.set_owned_only(true);
-        }
+        let swapper = crate::swapper::SwapperState::new(&base_dir);
         let cert_installed = spoofer::ca::is_current_installed(&base_dir);
         let rl_launch_unconfigured =
             config.rl_launch.mode == crate::config::RlLaunchMode::Unconfigured;
@@ -905,8 +884,6 @@ impl HebnixApp {
             patcher_boost,
             patcher_decal,
             swapper,
-            admin_prompt_open: false,
-            owned_admin_requested: false,
             owned_proxy_prompt_open: false,
             presets: crate::presets::PresetStore::new(&base_dir.clone()),
         };
@@ -1388,13 +1365,6 @@ impl HebnixApp {
                             .write(format!("[Core] Could not grant permission: {error}"));
                     }
                 },
-                AppMsg::SpooferElevateFailed => {
-                    self.spoofer_master = false;
-                    self.save_config();
-                    self.console.write(
-                        "[Spoofer] Couldn't relaunch as admin (declined, or pkexec/polkit isn't set up).",
-                    );
-                }
                 AppMsg::PluginUpdatesFound { updates } => match updates {
                     Ok(list) => {
                         if list.is_empty() {
@@ -2311,17 +2281,18 @@ impl HebnixApp {
                                 .checkbox(&mut self.spoofer_master, "Enable Spoofer")
                                 .changed()
                             {
-                                if self.spoofer_master && !spoofer::is_admin() {
-                                    self.admin_prompt_open = true;
-                                    self.spoofer_master = false;
-                                } else {
-                                    self.save_config();
-                                    self.evaluate_proxies();
-                                }
+                                // no upfront admin prompt needed - hosts-file
+                                // interception and CA install each ask for
+                                // authentication lazily, exactly when
+                                // actually needed (see spoofer::run_privileged).
+                                self.save_config();
+                                self.evaluate_proxies();
                             }
                             ui.label(
-                                egui::RichText::new("Requires Admin for hosts-file interception")
-                                    .color(egui::Color32::GRAY),
+                                egui::RichText::new(
+                                    "May prompt for authentication (hosts-file interception)",
+                                )
+                                .color(egui::Color32::GRAY),
                             );
 
                             ui.add_space(10.0);
@@ -2388,7 +2359,10 @@ impl HebnixApp {
                                         "Installed",
                                     );
                                     if ui.button("Remove").clicked() {
-                                        match spoofer::ca::uninstall(&self.base_dir) {
+                                        match spoofer::run_privileged(
+                                            spoofer::PrivilegedAction::UninstallCa,
+                                            &self.base_dir,
+                                        ) {
                                             Ok(()) => {
                                                 self.console
                                                     .write("[Spoofer] Certificate removed.");
@@ -2408,7 +2382,10 @@ impl HebnixApp {
                                         "Missing",
                                     );
                                     if ui.button("Install Certificate").clicked() {
-                                        match spoofer::ca::install(&self.base_dir) {
+                                        match spoofer::run_privileged(
+                                            spoofer::PrivilegedAction::InstallCa,
+                                            &self.base_dir,
+                                        ) {
                                             Ok(()) => {
                                                 self.console
                                                     .write("[Spoofer] Certificate installed.");
@@ -3713,67 +3690,6 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         }
     }
 
-    fn render_admin_prompt(&mut self, ctx: &egui::Context) {
-        if !self.admin_prompt_open {
-            return;
-        }
-        let mut ok = false;
-        let mut cancel = false;
-
-        egui::Window::new("Administrator required")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(if self.owned_admin_requested {
-                    "Filtering replacements by ownership needs the Hebnix proxy.\n\
-                     Hebnix will restart as Administrator, enable the proxy, and build your owned-item catalog."
-                } else {
-                    "This action requires Hebnix to be run as Administrator."
-                });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
-                        ok = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-
-        if ok {
-            self.admin_prompt_open = false;
-            self.spoofer_master = true;
-            if self.owned_admin_requested {
-                let _ = std::fs::write(
-                    self.base_dir.join("enable_owned_replacements.pending"),
-                    b"1",
-                );
-            }
-            self.save_config();
-            self.spoofer_mgr.shutdown();
-            self.admin_prompt_open = false;
-            self.console.write("[Spoofer] Relaunching as admin...");
-            // run_elevated_relaunch blocks until pkexec itself is done (see
-            // its doc comment for why it has to actually block, not just
-            // check-and-exit) - this window is already visible, so that
-            // has to happen on a background thread instead of the UI
-            // thread, or the whole app would freeze for however long the
-            // elevated copy keeps running.
-            let tx = self.tx.clone();
-            std::thread::spawn(move || {
-                if spoofer::run_elevated_relaunch() {
-                    std::process::exit(0);
-                }
-                let _ = tx.send(AppMsg::SpooferElevateFailed);
-            });
-        } else if cancel {
-            self.admin_prompt_open = false;
-            self.owned_admin_requested = false;
-        }
-    }
-
     fn render_owned_proxy_prompt(&mut self, ctx: &egui::Context) {
         if !self.owned_proxy_prompt_open {
             return;
@@ -3806,7 +3722,7 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         if enable {
             self.owned_proxy_prompt_open = false;
             if !self.spoofer_cert_installed {
-                match spoofer::ca::install(&self.base_dir) {
+                match spoofer::run_privileged(spoofer::PrivilegedAction::InstallCa, &self.base_dir) {
                     Ok(()) => {
                         self.spoofer_cert_installed =
                             spoofer::ca::is_current_installed(&self.base_dir);
@@ -4864,12 +4780,10 @@ impl eframe::App for HebnixApp {
                                     );
                                     if requested {
                                         self.swapper.set_owned_only(false);
-                                        if !spoofer::is_admin() {
-                                            self.owned_admin_requested = true;
-                                            self.admin_prompt_open = true;
-                                        } else {
-                                            self.owned_proxy_prompt_open = true;
-                                        }
+                                        // no need to branch on is_admin() - CA
+                                        // install/hosts interception each
+                                        // prompt lazily, exactly when needed.
+                                        self.owned_proxy_prompt_open = true;
                                     }
                                 }
                                 PatcherSubTab::Active => {
@@ -5090,7 +5004,6 @@ impl eframe::App for HebnixApp {
         }
 
         if !self.hidden {
-            self.render_admin_prompt(ctx);
             self.render_owned_proxy_prompt(ctx);
             self.render_statsapi_notice(ctx);
             self.render_web_port_notice(ctx);

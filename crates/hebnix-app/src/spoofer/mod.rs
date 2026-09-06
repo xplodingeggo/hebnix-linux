@@ -33,95 +33,117 @@ pub fn is_admin() -> bool {
     nix::unistd::geteuid().is_root()
 }
 
-pub const SKIP_ELEVATE_ARG: &str = "--no-elevate";
+/// Exactly two things this whole feature ever needs root for: writing
+/// /etc/hosts (the MITM redirect) and trusting the CA system-wide via
+/// p11-kit. Everything else - the proxy itself (an unprivileged port),
+/// DNS resolution, the rules engine - runs fine as a normal user. This
+/// app used to relaunch its *entire self* elevated via pkexec whenever
+/// spoofer was enabled (mirroring the Windows build, which really does
+/// need to run fully elevated) - on Linux that dragged every child
+/// process this app ever spawns into running as root too, which broke
+/// in ways that took most of a session to fully chase down: Steam/Heroic
+/// refusing to start as root, pkexec stripping HOME/WAYLAND_DISPLAY/etc
+/// so Steam-shortcut scanning and even the display itself silently broke,
+/// and a race against the app's own single-instance lock. All of that
+/// goes away by never elevating the app itself at all - instead, each of
+/// these two actions runs as its own tiny one-shot `pkexec` call
+/// (`run_privileged`, dispatched back into this same binary via
+/// `maybe_handle_privileged_cli` - see main()), and the app stays running
+/// as the real user the entire time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivilegedAction {
+    SetHosts,
+    ClearHosts,
+    InstallCa,
+    UninstallCa,
+}
 
-/// relaunch the whole process elevated via pkexec (the Linux/PolicyKit
-/// equivalent of a Windows UAC prompt) instead of asking for admin only for
-/// the hosts-file write; the whole app was already designed around
-/// "the process itself runs elevated" so this mirrors that shape.
-///
-/// Blocks until the relaunch is actually done (pkexec itself only returns
-/// once the program it launched has exited), returning whether it exited
-/// successfully. This used to just check that pkexec had *started*
-/// (`.spawn().is_ok()`), then immediately exit(0) - two real bugs stacked
-/// on that:
-///
-/// 1. pkexec resets its own environment for the process it launches (a
-///    deliberate security measure) - WAYLAND_DISPLAY/DISPLAY/
-///    XDG_RUNTIME_DIR/XAUTHORITY never reached the relaunched copy, so it
-///    couldn't attach to the display at all and died instantly (confirmed
-///    live: "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is
-///    set"). Fixed by forwarding them explicitly via `pkexec env VAR=val
-///    ... <program>`.
-/// 2. A short "is it still alive after N ms" heuristic (an earlier attempt
-///    at fixing this) doesn't work either: exiting the caller right after
-///    spawning cancels the still-pending polkit authentication dialog
-///    itself (confirmed live - the prompt appeared then closed instantly,
-///    before there was any chance to authenticate). pkexec's own
-///    authentication request stays live only as long as *something* is
-///    still waiting on it; blocking here properly (instead of trying to
-///    guess a safe moment to stop waiting) is what actually keeps the
-///    dialog up long enough for a real answer.
-///
-/// Callers that haven't shown a window yet (both of this app's pre-window
-/// startup checks) can call this directly - blocking there is invisible.
-/// A caller with an already-visible window (the in-app "Enable Spoofer"
-/// admin prompt) needs to call this from a background thread instead, or
-/// the whole UI freezes for as long as the elevated copy keeps running.
-pub fn run_elevated_relaunch() -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    let args: Vec<String> = std::env::args().skip(1).collect();
-
-    let mut command = std::process::Command::new("pkexec");
-    command.arg("env");
-    // pkexec also resets HOME to the target (root) user's home by default,
-    // same deliberate reason as the display vars above - but this app
-    // constantly reads the *real* user's own files while elevated (Steam
-    // shortcuts.vdf, Heroic's installed.json, Wine/Proton prefixes under
-    // ~/.steam or ~/Games/Heroic, its own ~/.config/hebnix), all resolved
-    // via dirs::home_dir()/$HOME. Left unforwarded, every one of those
-    // silently starts looking under /root instead and comes up empty -
-    // confirmed live: "Scan Steam shortcuts for Heroic" reporting no
-    // candidates once elevation started actually working, despite the
-    // real shortcuts.vdf parsing fine in isolation.
-    for var in [
-        "WAYLAND_DISPLAY",
-        "DISPLAY",
-        "XDG_RUNTIME_DIR",
-        "XAUTHORITY",
-        "HOME",
-    ] {
-        if let Ok(value) = std::env::var(var) {
-            command.arg(format!("{var}={value}"));
+impl PrivilegedAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SetHosts => "set-hosts",
+            Self::ClearHosts => "clear-hosts",
+            Self::InstallCa => "install-ca",
+            Self::UninstallCa => "uninstall-ca",
         }
     }
-    command.arg(exe).args(args).arg(SKIP_ELEVATE_ARG);
 
-    tracing::info!("spoofer: relaunching elevated via: {command:?}");
-    // dropped once we're actually root - the elevated copy needs it free
-    // to acquire its own single-instance lock (see winutil for why).
-    crate::winutil::release_single_instance_lock();
-    let ok = match command.status() {
-        Ok(status) => {
-            tracing::info!("spoofer: elevated relaunch finished: {status}");
-            status.success()
+    fn from_str(value: &str) -> Option<Self> {
+        Some(match value {
+            "set-hosts" => Self::SetHosts,
+            "clear-hosts" => Self::ClearHosts,
+            "install-ca" => Self::InstallCa,
+            "uninstall-ca" => Self::UninstallCa,
+            _ => return None,
+        })
+    }
+
+    fn run(self, base_dir: &Path) -> Result<(), String> {
+        match self {
+            Self::SetHosts => hosts::set_redirects(&REDIRECT_HOSTS),
+            Self::ClearHosts => hosts::clear(),
+            Self::InstallCa => ca::install(base_dir),
+            Self::UninstallCa => ca::uninstall(base_dir),
         }
+    }
+}
+
+/// hidden CLI entry point: `hebnix-app --priv-action <action> <base_dir>`.
+/// Called at the very top of main(), before logging/GUI setup - a plain,
+/// no-GUI, near-instant helper invocation, always run via `pkexec` from
+/// `run_privileged` below. Returns the process exit code to use if this
+/// process was invoked this way, or None if it's a normal launch.
+pub const PRIV_ARG: &str = "--priv-action";
+
+pub fn maybe_handle_privileged_cli() -> Option<i32> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some(PRIV_ARG) {
+        return None;
+    }
+    let action = args.next().as_deref().and_then(PrivilegedAction::from_str);
+    let base_dir = args.next().map(PathBuf::from);
+    let (Some(action), Some(base_dir)) = (action, base_dir) else {
+        eprintln!("usage: hebnix-app {PRIV_ARG} <action> <base_dir>");
+        return Some(1);
+    };
+    match action.run(&base_dir) {
+        Ok(()) => Some(0),
         Err(error) => {
-            tracing::warn!("spoofer: pkexec spawn failed: {error}");
-            false
-        }
-    };
-    if !ok {
-        // the elevated copy never took over (or already exited on its
-        // own) - this process is continuing non-elevated, so it still
-        // needs to enforce single-instance for anyone launched after it.
-        if let Some(lock) = crate::winutil::acquire_single_instance() {
-            crate::winutil::hold_single_instance_lock(lock);
+            eprintln!("{error}");
+            Some(1)
         }
     }
-    ok
+}
+
+/// runs one of the two privileged actions, elevating via a one-shot
+/// `pkexec` call if not already root. Blocks until it's done (including
+/// however long a real polkit auth prompt takes) - unlike the old
+/// whole-app relaunch this replaced, this never exits or replaces the
+/// caller, it just waits and returns, since it's a single quick action
+/// rather than "become the new long-running process."
+pub fn run_privileged(action: PrivilegedAction, base_dir: &Path) -> Result<(), String> {
+    if is_admin() {
+        return action.run(base_dir);
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return Err("could not find our own executable path".to_string());
+    };
+    tracing::info!("spoofer: running privileged action {:?} via pkexec", action.as_str());
+    let status = std::process::Command::new("pkexec")
+        .arg(exe)
+        .arg(PRIV_ARG)
+        .arg(action.as_str())
+        .arg(base_dir)
+        .status()
+        .map_err(|error| format!("could not run pkexec: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "elevated {} failed or was declined",
+            action.as_str()
+        ))
+    }
 }
 
 fn marker_path(base_dir: &Path) -> PathBuf {
@@ -141,7 +163,14 @@ pub fn restore_if_crashed(base_dir: &Path) {
     let _ = std::fs::remove_file(marker_path(base_dir));
     if hosts::has_redirects() {
         tracing::warn!("stale hosts redirect, clearing it");
-        let _ = hosts::clear();
+        // best-effort: this may prompt for auth right at startup for a
+        // redirect left over from an unclean exit. Leaving a stale MITM
+        // redirect in place silently is worse, so this is deliberately not
+        // swallowed the way it briefly was - if declined, it just tries
+        // again next launch.
+        if let Err(error) = run_privileged(PrivilegedAction::ClearHosts, base_dir) {
+            tracing::warn!("spoofer: couldn't clear the stale hosts redirect: {error}");
+        }
     }
 }
 
@@ -380,9 +409,6 @@ impl SpooferManager {
                     .into(),
             );
         }
-        if !hosts::is_writable() {
-            return Err("The hosts file needs root, restart Hebnix elevated".into());
-        }
         let mut real_ips = HashMap::new();
         for host in REDIRECT_HOSTS {
             real_ips.insert(host.to_string(), dns::resolve_a(host)?);
@@ -404,7 +430,11 @@ impl SpooferManager {
         ]);
         self.ensure_crl(&ca);
         let proxy = SocketProxy::start(ca, rules, self.tx.clone(), real_ips)?;
-        if let Err(error) = hosts::set_redirects(&REDIRECT_HOSTS) {
+        // one-shot pkexec, blocking (see run_privileged's doc) - matches
+        // the existing "Install Certificate" button, which was already a
+        // synchronous, potentially slow/prompting UI action even before
+        // this refactor.
+        if let Err(error) = run_privileged(PrivilegedAction::SetHosts, &self.base_dir) {
             proxy.stop();
             return Err(error);
         }
@@ -416,7 +446,7 @@ impl SpooferManager {
         if self.http_active.load(Ordering::Relaxed) || self.socket_active.load(Ordering::Relaxed) {
             return;
         }
-        let _ = hosts::clear();
+        let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
         if let Ok(mut slot) = self.reverse_proxy.lock() {
             if let Some(proxy) = slot.take() {
                 proxy.stop();
@@ -430,7 +460,7 @@ impl SpooferManager {
         self.stop_socket();
         self.stop_http();
         // Clear a redirect even if the socket failed to start or its state was lost.
-        let _ = hosts::clear();
+        let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
         hosts::flush_dns();
     }
 }

@@ -65,8 +65,6 @@ pub struct SettingsCfg {
     pub suppress_left_alerts: bool,
     pub suppress_fullscreen_warning: bool,
     pub suppress_statsapi_rate_warning: bool,
-    /// relaunch elevated on start, the hosts file needs admin
-    pub run_as_admin: bool,
 }
 
 impl Default for SettingsCfg {
@@ -81,7 +79,6 @@ impl Default for SettingsCfg {
             suppress_left_alerts: false,
             suppress_fullscreen_warning: false,
             suppress_statsapi_rate_warning: false,
-            run_as_admin: false,
         }
     }
 }

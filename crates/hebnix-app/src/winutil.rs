@@ -56,30 +56,6 @@ pub fn acquire_single_instance() -> Option<SingleInstanceLock> {
     acquire_lock("single_instance")
 }
 
-// held here (instead of just as a local in main()) so a relaunch triggered
-// from deep inside App (spoofer's elevate-on-enable, not just main()'s own
-// pre-window check) can release it first. Without this, the still-running
-// original process holds the flock for its whole lifetime (that's the
-// whole point of it), so the freshly pkexec'd elevated copy hits its own
-// single-instance check within milliseconds of starting, finds the lock
-// still held, and silently exits via focus_existing_instance() before ever
-// showing a window - confirmed live: the elevated relaunch traced as
-// "still alive" past a 400ms grace check, then vanished with no window and
-// no error, at the same moment the original process's exit(0) would have
-// otherwise dropped the lock a few hundred ms later anyway.
-static SINGLE_INSTANCE_LOCK: std::sync::Mutex<Option<SingleInstanceLock>> =
-    std::sync::Mutex::new(None);
-
-pub fn hold_single_instance_lock(lock: SingleInstanceLock) {
-    *SINGLE_INSTANCE_LOCK.lock().unwrap() = Some(lock);
-}
-
-/// drop the lock we're holding, if any, so a relaunched copy of this same
-/// process can acquire it immediately instead of racing our own exit.
-pub fn release_single_instance_lock() {
-    SINGLE_INSTANCE_LOCK.lock().unwrap().take();
-}
-
 /// a second instance calls this before exiting. We have no reliable
 /// client-side way to raise another process's window on Wayland, so this
 /// just logs -- the user has to alt-tab/click the taskbar entry themselves.

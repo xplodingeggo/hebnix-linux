@@ -144,62 +144,16 @@ pub fn find_heroic_shortcuts() -> Vec<ShortcutCandidate> {
     candidates
 }
 
-/// Steam and Heroic (Electron-based) both flatly refuse to start as root -
-/// a real, deliberate safety check in each, not a bug in either. While
-/// spoofer is enabled this whole app runs elevated via pkexec, so anything
-/// it spawns inherits root too unless explicitly dropped back down first.
-/// pkexec sets `PKEXEC_UID` to the original (non-root) caller's uid
-/// specifically so an elevated process can do this - drop to that uid/gid
-/// (and its supplementary groups, for GPU/input device access) in a
-/// pre_exec hook, same "only this one child, not our own process" shape as
-/// multiplayer_lan::tap's CAP_NET_ADMIN scoping. A no-op when not actually
-/// running elevated.
-fn de_elevate_for_child(cmd: &mut std::process::Command) {
-    if !crate::spoofer::is_admin() {
-        return;
-    }
-    let Ok(uid) = std::env::var("PKEXEC_UID").and_then(|s| {
-        s.parse::<u32>()
-            .map_err(|_| std::env::VarError::NotPresent)
-    }) else {
-        tracing::warn!("rl_launch: running elevated but PKEXEC_UID is unset, can't de-elevate the child - it'll likely refuse to start as root");
-        return;
-    };
-    let uid = nix::unistd::Uid::from_raw(uid);
-    let Ok(Some(user)) = nix::unistd::User::from_uid(uid) else {
-        tracing::warn!("rl_launch: couldn't look up uid {uid} to de-elevate the child");
-        return;
-    };
-    let gid = user.gid;
-    let name = user.name.clone();
-    use std::os::unix::process::CommandExt;
-    unsafe {
-        cmd.pre_exec(move || {
-            if let Ok(cname) = std::ffi::CString::new(name.clone()) {
-                let _ = nix::unistd::initgroups(&cname, gid);
-            }
-            nix::unistd::setgid(gid).map_err(std::io::Error::from)?;
-            nix::unistd::setuid(uid).map_err(std::io::Error::from)?;
-            Ok(())
-        });
-    }
-}
-
 fn launch_uri(uri: &str) -> Result<(), String> {
     tracing::info!("rl_launch: opening {uri}");
     if uri.starts_with("steam://") {
-        let mut command = std::process::Command::new("steam");
-        command.arg(uri);
-        de_elevate_for_child(&mut command);
-        match command.spawn() {
+        match std::process::Command::new("steam").arg(uri).spawn() {
             Ok(_) => return Ok(()),
             Err(error) => tracing::warn!("rl_launch: 'steam' binary spawn failed ({error}), falling back to xdg-open"),
         }
     }
-    let mut command = std::process::Command::new("xdg-open");
-    command.arg(uri);
-    de_elevate_for_child(&mut command);
-    command
+    std::process::Command::new("xdg-open")
+        .arg(uri)
         .spawn()
         .map(|_| ())
         .map_err(|error| {
@@ -221,10 +175,8 @@ fn heroic_launch(cfg: &RlLaunchCfg, multihome: Option<&str>) -> Result<(), Strin
         "rl_launch: spawning '{}' --no-gui --no-sandbox {uri}",
         cfg.heroic_binary
     );
-    let mut command = std::process::Command::new(&cfg.heroic_binary);
-    command.args(["--no-gui", "--no-sandbox", &uri]);
-    de_elevate_for_child(&mut command);
-    command
+    std::process::Command::new(&cfg.heroic_binary)
+        .args(["--no-gui", "--no-sandbox", &uri])
         .spawn()
         .map(|_| ())
         .map_err(|error| {

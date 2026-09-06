@@ -1,7 +1,7 @@
-//! hosts file redirect, the game ignores any http proxy config. needs root
-//! (the whole process is expected to already be running elevated via
-//! `spoofer::spawn_elevated_relaunch`/pkexec when this is used, mirroring
-//! how the windows build re-launches itself as admin).
+//! hosts file redirect, the game ignores any http proxy config. needs root -
+//! callers go through `spoofer::run_privileged` (a one-shot pkexec call for
+//! just this action) rather than expecting the whole process to already be
+//! running elevated.
 
 use std::path::{Path, PathBuf};
 
@@ -10,13 +10,6 @@ pub const MARK: &str = "# hebnix spoofer";
 
 pub fn hosts_path() -> PathBuf {
     PathBuf::from("/etc/hosts")
-}
-
-pub fn is_writable() -> bool {
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(hosts_path())
-        .is_ok()
 }
 
 fn line_for(host: &str) -> String {

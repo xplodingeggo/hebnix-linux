@@ -140,6 +140,16 @@ fn main() -> eframe::Result {
         std::env::set_var("GDK_BACKEND", "wayland");
     }
 
+    // hidden one-shot helper mode (`--priv-action <action> <base_dir>`),
+    // always invoked via pkexec by spoofer::run_privileged for just the two
+    // things this app ever needs root for - see PrivilegedAction's doc.
+    // Checked before any of the normal startup (base_dir/logging/single-
+    // instance/GUI) since it's a completely separate, near-instant,
+    // no-window invocation.
+    if let Some(code) = spoofer::maybe_handle_privileged_cli() {
+        std::process::exit(code);
+    }
+
     let base_dir = config::base_dir();
     if let Some(parent_pid) = watchdog::parent_pid() {
         watchdog::run(parent_pid);
@@ -155,25 +165,11 @@ fn main() -> eframe::Result {
 
     let cfg = config::Config::load(&base_dir);
 
-    // relaunch elevated (via pkexec) if the user asked for it. --no-elevate
-    // comes back when the polkit auth dialog was declined
-    let skip_elevate = std::env::args().any(|a| a == spoofer::SKIP_ELEVATE_ARG);
-    if cfg.settings.run_as_admin && !skip_elevate && !spoofer::is_admin() {
-        if spoofer::run_elevated_relaunch() {
-            return Ok(());
-        }
-        tracing::warn!("couldnt spawn the elevated relaunch helper (is polkit/pkexec installed?)");
-    }
-
-    // single instance guard. held in a process-wide static (not just this
-    // local binding) so a relaunch triggered later from deep inside App
-    // (spoofer's elevate-on-enable) can release it first - see
-    // winutil::release_single_instance_lock for why that matters.
-    let Some(lock) = winutil::acquire_single_instance() else {
+    // single instance guard
+    let Some(_lock) = winutil::acquire_single_instance() else {
         winutil::focus_existing_instance();
         return Ok(());
     };
-    winutil::hold_single_instance_lock(lock);
 
     spoofer::restore_if_crashed(&base_dir);
     let _ = watchdog::spawn();

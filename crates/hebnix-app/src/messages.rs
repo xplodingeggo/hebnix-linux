@@ -113,12 +113,6 @@ pub enum AppMsg {
     NetAdminGranted {
         result: Result<(), String>,
     },
-    /// the elevated relaunch (spoofer's "Enable Spoofer" admin prompt)
-    /// either couldn't start or exited without ever taking over - run on a
-    /// background thread so the UI doesn't freeze for however long the
-    /// elevated copy runs, so this comes back as a message rather than a
-    /// direct call.
-    SpooferElevateFailed,
     PluginUpdatesFound {
         updates: Result<Vec<Value>, String>,
     },

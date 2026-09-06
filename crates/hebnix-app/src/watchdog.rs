@@ -18,13 +18,11 @@ fn pid_alive(pid: u32) -> bool {
     kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
-/// spawn the watchdog subprocess. Only makes sense once we're already
-/// running as root (it exists to clean up /etc/hosts edits, which need
-/// root) -- mirrors the windows version's admin-only gate.
+/// spawn the watchdog subprocess. Doesn't need to already be root itself -
+/// its own hosts-file cleanup goes through spoofer::run_privileged (a
+/// one-shot pkexec call) the same as everywhere else in spoofer, not by
+/// assuming it inherited root.
 pub fn spawn() -> bool {
-    if !crate::spoofer::is_admin() {
-        return false;
-    }
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
@@ -53,7 +51,13 @@ pub fn run(parent_pid: u32) {
     while pid_alive(parent_pid) {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    let _ = crate::spoofer::hosts::clear();
+    if crate::spoofer::hosts::has_redirects() {
+        let base_dir = crate::config::base_dir();
+        let _ = crate::spoofer::run_privileged(
+            crate::spoofer::PrivilegedAction::ClearHosts,
+            &base_dir,
+        );
+    }
     while hebnix_sdk::process::is_rocket_league_running() {
         if replacement_is_running(parent_pid) {
             return;

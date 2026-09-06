@@ -188,9 +188,8 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|e| format!("cant write {}: {e}", path.display()))
 }
 
-/// make it if missing, then trust it system-wide via p11-kit. needs root
-/// (run through the same pkexec-elevated relaunch path as the rest of
-/// spoofer -- see `spoofer::spawn_elevated_relaunch`).
+/// make it if missing, then trust it system-wide via p11-kit. needs root -
+/// callers go through `spoofer::run_privileged` (a one-shot pkexec call).
 pub fn install(base_dir: &Path) -> Result<(), String> {
     ensure(base_dir)?;
     let der = der_path(base_dir);
