@@ -1684,11 +1684,18 @@ impl WorkshopState {
             return;
         }
         let arena = arena.trim_end_matches(".upk");
-        if let Some((target, map)) = self.manager.active_maps().into_iter().find(|(target, _)| {
+        let active = self.manager.active_maps();
+        let found = active.into_iter().find(|(target, _)| {
             target_filename(target)
                 .map(|name| name.trim_end_matches(".upk").eq_ignore_ascii_case(arena))
                 .unwrap_or_else(|| target.trim_end_matches(".upk").eq_ignore_ascii_case(arena))
-        }) {
+        });
+        tracing::debug!(
+            "workshop: stats reported arena='{arena}', active targets={:?}, matched={}",
+            self.manager.active_maps().keys().cloned().collect::<Vec<_>>(),
+            found.is_some(),
+        );
+        if let Some((target, map)) = found {
             self.multiplayer.wizard_check.detected_map =
                 Some(str_of(&map, "name", &target).to_string());
             self.multiplayer.detected_target = Some(target);
