@@ -159,7 +159,7 @@ fn main() -> eframe::Result {
     // comes back when the polkit auth dialog was declined
     let skip_elevate = std::env::args().any(|a| a == spoofer::SKIP_ELEVATE_ARG);
     if cfg.settings.run_as_admin && !skip_elevate && !spoofer::is_admin() {
-        if spoofer::spawn_elevated_relaunch() {
+        if spoofer::run_elevated_relaunch() {
             return Ok(());
         }
         tracing::warn!("couldnt spawn the elevated relaunch helper (is polkit/pkexec installed?)");

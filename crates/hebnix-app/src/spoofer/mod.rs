@@ -40,22 +40,35 @@ pub const SKIP_ELEVATE_ARG: &str = "--no-elevate";
 /// the hosts-file write; the whole app was already designed around
 /// "the process itself runs elevated" so this mirrors that shape.
 ///
-/// pkexec resets its own environment for the process it launches (a
-/// deliberate security measure, not a bug) - WAYLAND_DISPLAY/DISPLAY/
-/// XDG_RUNTIME_DIR/XAUTHORITY do NOT pass through just because this
-/// (non-root) process has them set, even via Command::env (that only
-/// affects pkexec's own env, not what it hands to its target). Without
-/// them the relaunched GUI process can't attach to the display at all and
-/// exits immediately (confirmed live: "neither WAYLAND_DISPLAY nor
-/// WAYLAND_SOCKET nor DISPLAY is set"), while the caller here had already
-/// assumed success and exited - the whole app just vanished with nothing
-/// on screen to explain why. Fixed by forwarding them explicitly through
-/// `pkexec env VAR=val ... <program>`, and by giving the relaunch a brief
-/// grace period to prove it's actually still alive (catches this and an
-/// auth dialog decline, which also exits pkexec almost immediately)
-/// before reporting success - not a perfect guarantee for a fire-and-
-/// forget relaunch, but enough to stop lying about instant failures.
-pub fn spawn_elevated_relaunch() -> bool {
+/// Blocks until the relaunch is actually done (pkexec itself only returns
+/// once the program it launched has exited), returning whether it exited
+/// successfully. This used to just check that pkexec had *started*
+/// (`.spawn().is_ok()`), then immediately exit(0) - two real bugs stacked
+/// on that:
+///
+/// 1. pkexec resets its own environment for the process it launches (a
+///    deliberate security measure) - WAYLAND_DISPLAY/DISPLAY/
+///    XDG_RUNTIME_DIR/XAUTHORITY never reached the relaunched copy, so it
+///    couldn't attach to the display at all and died instantly (confirmed
+///    live: "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is
+///    set"). Fixed by forwarding them explicitly via `pkexec env VAR=val
+///    ... <program>`.
+/// 2. A short "is it still alive after N ms" heuristic (an earlier attempt
+///    at fixing this) doesn't work either: exiting the caller right after
+///    spawning cancels the still-pending polkit authentication dialog
+///    itself (confirmed live - the prompt appeared then closed instantly,
+///    before there was any chance to authenticate). pkexec's own
+///    authentication request stays live only as long as *something* is
+///    still waiting on it; blocking here properly (instead of trying to
+///    guess a safe moment to stop waiting) is what actually keeps the
+///    dialog up long enough for a real answer.
+///
+/// Callers that haven't shown a window yet (both of this app's pre-window
+/// startup checks) can call this directly - blocking there is invisible.
+/// A caller with an already-visible window (the in-app "Enable Spoofer"
+/// admin prompt) needs to call this from a background thread instead, or
+/// the whole UI freezes for as long as the elevated copy keeps running.
+pub fn run_elevated_relaunch() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
@@ -71,28 +84,28 @@ pub fn spawn_elevated_relaunch() -> bool {
     command.arg(exe).args(args).arg(SKIP_ELEVATE_ARG);
 
     tracing::info!("spoofer: relaunching elevated via: {command:?}");
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+    // dropped once we're actually root - the elevated copy needs it free
+    // to acquire its own single-instance lock (see winutil for why).
+    crate::winutil::release_single_instance_lock();
+    let ok = match command.status() {
+        Ok(status) => {
+            tracing::info!("spoofer: elevated relaunch finished: {status}");
+            status.success()
+        }
         Err(error) => {
             tracing::warn!("spoofer: pkexec spawn failed: {error}");
-            return false;
+            false
         }
     };
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    match child.try_wait() {
-        Ok(None) => {
-            tracing::info!("spoofer: elevated relaunch still alive after grace period");
-            true
-        }
-        Ok(Some(status)) => {
-            tracing::warn!("spoofer: elevated relaunch exited almost immediately: {status}");
-            false
-        }
-        Err(error) => {
-            tracing::warn!("spoofer: elevated relaunch try_wait failed: {error}");
-            false
+    if !ok {
+        // the elevated copy never took over (or already exited on its
+        // own) - this process is continuing non-elevated, so it still
+        // needs to enforce single-instance for anyone launched after it.
+        if let Some(lock) = crate::winutil::acquire_single_instance() {
+            crate::winutil::hold_single_instance_lock(lock);
         }
     }
+    ok
 }
 
 fn marker_path(base_dir: &Path) -> PathBuf {
