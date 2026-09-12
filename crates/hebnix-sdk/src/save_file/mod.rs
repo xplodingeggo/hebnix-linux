@@ -4,11 +4,16 @@
 pub mod accessors;
 pub mod binary_parser;
 pub mod binary_serializer;
+pub mod configuration;
 pub mod crypto;
 pub mod file_io;
 pub mod models;
 
 pub use accessors::SaveData;
+pub use configuration::{
+    ConfigurationEditorKind, ConfigurationValue, list_configuration, restore_configuration,
+    update_configuration, validate_configuration,
+};
 pub use file_io::{RawSave, assemble_savedata, parse_savedata};
 pub use models::*;
 

@@ -85,6 +85,7 @@ pub struct WindowState {
     pub pos: Option<(f32, f32)>,
     pub last_pos: Option<(f32, f32)>, // where it actually is, for persisting
     pub pos_dirty: bool,
+    pub close_button: bool,
 }
 
 impl Default for WindowState {
@@ -98,6 +99,7 @@ impl Default for WindowState {
             pos: None,
             last_pos: None,
             pos_dirty: false,
+            close_button: false,
         }
     }
 }
@@ -227,6 +229,58 @@ pub fn to_lua<T: serde::Serialize>(lua: &Lua, value: &T) -> mlua::Result<LuaValu
 fn tracker_client() -> &'static TrackerClient {
     static CLIENT: OnceLock<TrackerClient> = OnceLock::new();
     CLIENT.get_or_init(TrackerClient::default)
+}
+
+/// true xinput pads first (exact button/trigger shapes, matches RL's own
+/// bindings) - falls back to the generic `gamepads` crate below for anything
+/// xinput doesn't see (PS/8BitDo/etc pads with no xinput presence).
+fn xinput_controllers(lua: &Lua) -> mlua::Result<Option<Table>> {
+    use hebnix_sdk::input::xinput as xi;
+    let list = lua.create_table()?;
+    let mut output_index = 1;
+    for user_index in 0..4 {
+        let Some(state) = xi::get_xinput_state(user_index) else {
+            continue;
+        };
+        let axis = |value: i16| {
+            if value >= 0 {
+                value as f32 / i16::MAX as f32
+            } else {
+                value as f32 / 32768.0
+            }
+        };
+        let pad = lua.create_table()?;
+        pad.set("id", format!("xinput-{user_index}"))?;
+        pad.set("name", format!("XInput Controller {}", user_index + 1))?;
+        pad.set("kind", "xinput")?;
+        pad.set("lx", axis(state.thumb_lx))?;
+        pad.set("ly", axis(state.thumb_ly))?;
+        pad.set("rx", axis(state.thumb_rx))?;
+        pad.set("ry", axis(state.thumb_ry))?;
+        pad.set("lt", state.left_trigger as f32 / 255.0)?;
+        pad.set("rt", state.right_trigger as f32 / 255.0)?;
+        pad.set("btn_south", state.is_pressed(xi::XINPUT_A))?;
+        pad.set("btn_east", state.is_pressed(xi::XINPUT_B))?;
+        pad.set("btn_west", state.is_pressed(xi::XINPUT_X))?;
+        pad.set("btn_north", state.is_pressed(xi::XINPUT_Y))?;
+        pad.set("dpad_up", state.is_pressed(xi::XINPUT_DPAD_UP))?;
+        pad.set("dpad_down", state.is_pressed(xi::XINPUT_DPAD_DOWN))?;
+        pad.set("dpad_left", state.is_pressed(xi::XINPUT_DPAD_LEFT))?;
+        pad.set("dpad_right", state.is_pressed(xi::XINPUT_DPAD_RIGHT))?;
+        pad.set("bumper_l", state.is_pressed(xi::XINPUT_LB))?;
+        pad.set("bumper_r", state.is_pressed(xi::XINPUT_RB))?;
+        pad.set("trigger_l", state.left_trigger > 30)?;
+        pad.set("trigger_r", state.right_trigger > 30)?;
+        pad.set("stick_l", state.is_pressed(xi::XINPUT_LS))?;
+        pad.set("stick_r", state.is_pressed(xi::XINPUT_RS))?;
+        pad.set("select", state.is_pressed(xi::XINPUT_SELECT))?;
+        pad.set("start", state.is_pressed(xi::XINPUT_START))?;
+        pad.set("touchpad", false)?;
+        pad.set("meta", false)?;
+        list.set(output_index, pad)?;
+        output_index += 1;
+    }
+    Ok((output_index > 1).then_some(list))
 }
 
 // Async tracker fetches (shared across plugins; results poll-able from Lua)
@@ -1087,6 +1141,9 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
     hebnix.set(
         "controllers",
         lua.create_function(|lua, ()| {
+            if let Some(list) = xinput_controllers(lua)? {
+                return Ok(list);
+            }
             // Use a static OnceLock so the hardware context stays alive across frames
             static GAMEPADS: std::sync::OnceLock<std::sync::Mutex<gamepads::Gamepads>> =
                 std::sync::OnceLock::new();
@@ -1613,6 +1670,115 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         })?,
     )?;
 
+    hebnix.set(
+        "find_save_accounts",
+        lua.create_function(|lua, ()| {
+            to_lua(lua, &hebnix_sdk::save_file::find_save_accounts(None))
+        })?,
+    )?;
+    hebnix.set(
+        "find_save_files",
+        lua.create_function(|lua, ()| {
+            let files = lua.create_table()?;
+            let Some(dir) = hebnix_sdk::save_file::detect_save_data_path() else {
+                return Ok(files);
+            };
+            let mut paths: Vec<_> = std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("save"))
+                })
+                .collect();
+            paths.sort();
+            for (index, path) in paths.iter().enumerate() {
+                files.set(index + 1, path.to_string_lossy().to_string())?;
+            }
+            Ok(files)
+        })?,
+    )?;
+    hebnix.set(
+        "load_save_configuration",
+        lua.create_function(|lua, path: Option<String>| {
+            let Some(path) = path
+                .map(std::path::PathBuf::from)
+                .or_else(|| hebnix_sdk::save_file::find_save_file(None))
+            else {
+                let result = lua.create_table()?;
+                result.set("error", "no .save file found")?;
+                return Ok(result);
+            };
+            let result = lua.create_table()?;
+            result.set("path", path.to_string_lossy().to_string())?;
+            match hebnix_sdk::save_file::list_configuration(&path) {
+                Ok(values) => result.set("values", to_lua(lua, &values)?)?,
+                Err(error) => result.set("error", error.to_string())?,
+            }
+            Ok(result)
+        })?,
+    )?;
+    hebnix.set(
+        "update_save_configuration",
+        lua.create_function(|lua, (path, id, value): (String, String, String)| {
+            let result = lua.create_table()?;
+            match hebnix_sdk::save_file::update_configuration(
+                std::path::Path::new(&path),
+                &id,
+                &value,
+            ) {
+                Ok(backup) => {
+                    result.set("ok", true)?;
+                    result.set("backup", backup.to_string_lossy().to_string())?;
+                }
+                Err(error) => result.set("error", error.to_string())?,
+            }
+            Ok(result)
+        })?,
+    )?;
+    hebnix.set(
+        "restore_save_configuration",
+        lua.create_function(|lua, (path, backup): (String, String)| {
+            let result = lua.create_table()?;
+            match hebnix_sdk::save_file::restore_configuration(
+                std::path::Path::new(&path),
+                std::path::Path::new(&backup),
+            ) {
+                Ok(safety_backup) => {
+                    result.set("ok", true)?;
+                    result.set("backup", safety_backup.to_string_lossy().to_string())?;
+                }
+                Err(error) => result.set("error", error.to_string())?,
+            }
+            Ok(result)
+        })?,
+    )?;
+    hebnix.set(
+        "backup_save_configuration",
+        lua.create_function(|lua, path: String| {
+            let result = lua.create_table()?;
+            let source = std::path::Path::new(&path);
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let backup = std::path::PathBuf::from(format!(
+                "{}.backup-{stamp}.save",
+                source.to_string_lossy()
+            ));
+            match std::fs::copy(source, &backup) {
+                Ok(_) => {
+                    result.set("ok", true)?;
+                    result.set("backup", backup.to_string_lossy().to_string())?;
+                }
+                Err(error) => result.set("error", error.to_string())?,
+            }
+            Ok(result)
+        })?,
+    )?;
+
     // Save file access (read-only). Blocking: decrypt + parse takes a
     // moment, so call from a button/on_load, not every frame.
     hebnix.set(
@@ -1731,6 +1897,9 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
                     }
                     if let Ok(o) = opts.get::<f32>("opacity") {
                         win.opacity = o.clamp(0.0, 1.0); // 0 for a bare overlay
+                    }
+                    if let Ok(close_button) = opts.get::<bool>("close_button") {
+                        win.close_button = close_button;
                     }
                 }
                 if win.title.is_empty() {
