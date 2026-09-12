@@ -1013,8 +1013,24 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
             let open_key = hebnix_sdk::input::chat_channel_bind(&channel);
             hebnix_sdk::input::tap_key(&open_key);
             std::thread::sleep(Duration::from_millis(100));
-            hebnix_sdk::input::type_text(&message);
+            if !hebnix_sdk::process::is_rocket_league_focused() {
+                return Err(mlua::Error::runtime(
+                    "hebnix.chat.send stopped because Rocket League lost focus",
+                ));
+            }
+            if !hebnix_sdk::input::type_text_while(&message, || {
+                hebnix_sdk::process::is_rocket_league_focused()
+            }) {
+                return Err(mlua::Error::runtime(
+                    "hebnix.chat.send stopped because Rocket League lost focus",
+                ));
+            }
             std::thread::sleep(Duration::from_millis(30));
+            if !hebnix_sdk::process::is_rocket_league_focused() {
+                return Err(mlua::Error::runtime(
+                    "hebnix.chat.send stopped because Rocket League lost focus",
+                ));
+            }
             hebnix_sdk::input::tap_key("enter");
             Ok(())
         })?,
@@ -1128,6 +1144,10 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
     hebnix.set(
         "is_action_pressed",
         lua.create_function(|_, action: String| Ok(hebnix_sdk::input::is_action_pressed(&action)))?,
+    )?;
+    hebnix.set(
+        "ui_scale",
+        lua.create_function(|_, ()| Ok(hebnix_sdk::input::ui_scale()))?,
     )?;
     hebnix.set(
         "refresh_action_binds",

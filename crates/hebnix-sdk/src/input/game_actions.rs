@@ -11,6 +11,7 @@ struct ActionBindingCache {
     checked_at: Option<Instant>,
     path: Option<PathBuf>,
     modified: Option<SystemTime>,
+    ui_scale: f64,
     bindings: HashMap<String, Vec<String>>,
     // Keyboard-only chat channel binds ("global" | "team" | "party" -> key).
     // Kept separate from `bindings` because the chat channel actions aren't
@@ -26,6 +27,7 @@ impl Default for ActionBindingCache {
             checked_at: None,
             path: None,
             modified: None,
+            ui_scale: 1.0,
             bindings: HashMap::new(),
             chat_binds: HashMap::new(),
         }
@@ -218,6 +220,7 @@ fn refresh_cache(cache: &mut ActionBindingCache) {
 
     let mut bindings = HashMap::new();
     let mut chat_binds = HashMap::new();
+    let mut ui_scale = 1.0;
     if let Some(path) = path.as_ref() {
         if let Ok(save) = crate::save_file::load(path, false) {
             if let Some(controls) = save.controls() {
@@ -227,13 +230,30 @@ fn refresh_cache(cache: &mut ActionBindingCache) {
             if let Some(gamepad) = save.gamepad_bindings() {
                 collect_bindings(&gamepad.raw_bindings, true, &mut bindings);
             }
+            // UIScale is only written once it leaves 1.0, parse_gameplay_display defaults it to 0.0
+            if let Some(display) = save.gameplay_display() {
+                if display.ui_scale > 0.0 {
+                    ui_scale = display.ui_scale;
+                }
+            }
         }
     }
 
     cache.path = path;
     cache.modified = modified;
+    cache.ui_scale = ui_scale;
     cache.bindings = bindings;
     cache.chat_binds = chat_binds;
+}
+
+/// options > interface > UIScale, 1.0 when the save never wrote it. rides the
+/// bind cache, the save is already loaded there and rl rewrites it as it plays
+pub fn ui_scale() -> f64 {
+    let Ok(mut cache) = cache().lock() else {
+        return 1.0;
+    };
+    refresh_cache(&mut cache);
+    cache.ui_scale
 }
 
 /// Keyboard key bound to a text chat channel ("global", "team" or "party"),

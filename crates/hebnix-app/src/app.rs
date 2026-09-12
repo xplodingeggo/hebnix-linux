@@ -321,6 +321,7 @@ enum PatcherSubTab {
     Ball,
     BoostMeter,
     Decal,
+    Colours,
     Swapper(crate::swapper::SwapCategory),
     Active,
     Presets,
@@ -498,6 +499,7 @@ pub struct HebnixApp {
     patcher_ball: crate::ball::PatcherState,
     patcher_boost: crate::boost_patcher::BoostPatcherState,
     patcher_decal: crate::decal_patcher::DecalPatcherState,
+    colours: crate::colours::ColoursState,
     swapper: crate::swapper::SwapperState,
     owned_proxy_prompt_open: bool,
     presets: crate::presets::PresetStore,
@@ -785,6 +787,7 @@ impl HebnixApp {
         let patcher_ball = crate::ball::PatcherState::new(&base_dir, &config);
         let patcher_boost = crate::boost_patcher::BoostPatcherState::new(&base_dir, &config);
         let patcher_decal = crate::decal_patcher::DecalPatcherState::new(&base_dir, &config);
+        let colours = crate::colours::ColoursState::new();
         let swapper = crate::swapper::SwapperState::new(&base_dir);
         let cert_installed = spoofer::ca::is_current_installed(&base_dir);
         let rl_launch_unconfigured =
@@ -883,6 +886,7 @@ impl HebnixApp {
             patcher_ball,
             patcher_boost,
             patcher_decal,
+            colours,
             swapper,
             owned_proxy_prompt_open: false,
             presets: crate::presets::PresetStore::new(&base_dir.clone()),
@@ -4763,6 +4767,11 @@ impl eframe::App for HebnixApp {
                                             PatcherSubTab::Decal,
                                             "Decal Patcher",
                                         );
+                                        ui.selectable_value(
+                                            &mut self.patcher_subtab,
+                                            PatcherSubTab::Colours,
+                                            "Colours",
+                                        );
                                         ui.separator();
                                         for category in crate::swapper::SwapCategory::ALL {
                                             ui.selectable_value(
@@ -4818,6 +4827,24 @@ impl eframe::App for HebnixApp {
                                         ctx,
                                         &mut self.config,
                                     );
+                                }
+                                PatcherSubTab::Colours => {
+                                    self.colours.poll();
+                                    if let Some(action) = self.colours.render(ui, &backups_dir) {
+                                        if hebnix_sdk::process::is_rocket_league_running() {
+                                            self.console.write(
+                                                "[Colours] Close Rocket League before changing game files.",
+                                            );
+                                        } else {
+                                            self.colours.begin(
+                                                action,
+                                                &cooked_pc,
+                                                &backups_dir,
+                                                &self.tx,
+                                                ctx,
+                                            );
+                                        }
+                                    }
                                 }
                                 PatcherSubTab::Swapper(category) => {
                                     let owned_ids = self.spoofer_mgr.owned_product_ids();

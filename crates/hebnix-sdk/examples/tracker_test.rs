@@ -1,4 +1,4 @@
-//! diagnostic: live tracker.gg fetch (needs the bundled curl-impersonate).
+//! diagnostic: live rocket league profile fetch via req.hebnix.com.
 //! run: cargo run -p hebnix-sdk --example tracker_test
 
 use hebnix_sdk::tracker::TrackerClient;

@@ -388,11 +388,22 @@ fn char_to_code(c: char) -> Option<(KeyCode, bool)> {
 /// only see real key events, same as this app's own bind-capture reading
 /// real key events rather than IME/text composition.
 pub fn type_text(text: &str) {
+    let _ = type_text_while(text, || true);
+}
+
+/// type text while the supplied guard remains true.
+pub fn type_text_while<F>(text: &str, should_continue: F) -> bool
+where
+    F: Fn() -> bool,
+{
     let Some(mutex) = virtual_keyboard() else {
-        return;
+        return false;
     };
     let mut dev = mutex.lock().unwrap();
     for c in text.chars() {
+        if !should_continue() {
+            return false;
+        }
         let Some((code, need_shift)) = char_to_code(c) else {
             continue;
         };
@@ -406,4 +417,5 @@ pub fn type_text(text: &str) {
             std::thread::sleep(TAP_GAP);
         }
     }
+    true
 }

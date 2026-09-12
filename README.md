@@ -155,31 +155,12 @@ until it's fixed.
 SDL-style mapping (`kind = "universal"`, `btn_south`/`btn_east`/`dpad_*`/
 `lx`/`ly`/etc) — this is the same fallback path the Windows build uses for
 anything that isn't a real Xbox controller (what Windows calls a DirectInput
-device), so DInput-style pads already just work here with no extra code:
-Linux's evdev/joystick layer doesn't distinguish XInput from DirectInput at
-the OS level the way Windows does, one generic path covers both. Only real
-Xbox controllers get a narrower Windows-only `kind = "xinput"` fast path with
-the raw `XINPUT_*` fields; on Linux they report as `"universal"` too and are
-still fully readable through the same fields plugins already use for any
-other pad.
-
-## Optional: avatar/tracker.gg lookups
-
-Plugins that fetch player stats or avatars from tracker.gg need
-[`curl-impersonate`](https://github.com/lexiforest/curl-impersonate) (the
-site blocks by TLS fingerprint, so a plain HTTP client gets rejected).
-Hebnix looks for it, in order: the `HEBNIX_CURL_IMPERSONATE` env var, a
-`curl-impersonate/curl-impersonate` folder next to the `hebnix` binary, then
-`$PATH`. So either install the AUR `curl-impersonate` package (or any
-build of it that ends up on your `PATH`), or download a prebuilt release
-and place the binary at:
-
-```
-<next to hebnix>/curl-impersonate/curl-impersonate
-```
-
-Without it, stats/avatar fetches just fail gracefully — everything else
-works fine.
+device), so DInput-style pads already just work here with no extra code.
+Real Xbox/xinput controllers additionally get a narrower `kind = "xinput"`
+fast path with the raw `XINPUT_*` fields on both platforms, backed on Linux
+by evdev/hidraw instead of the XInput API; every pad also still reports as
+`"universal"` too and is fully readable through the same fields plugins
+already use for any other pad.
 
 ## Known limitations
 

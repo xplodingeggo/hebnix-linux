@@ -6,6 +6,9 @@ mod ball {
 mod boost_patcher {
     pub use crate::patcher::boost_patcher::*;
 }
+mod colours {
+    pub use crate::patcher::colours::*;
+}
 mod config;
 mod rl_launch;
 mod cosmetic_thumbnail {

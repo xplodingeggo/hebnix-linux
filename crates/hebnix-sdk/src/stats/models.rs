@@ -71,6 +71,7 @@ pub struct PlayerState {
     pub touches: i64,
     pub car_touches: i64,
     pub demos: i64,
+    pub loadout: Vec<String>,
     // spectator-only
     pub has_car: bool,
     pub speed: f64,
@@ -82,6 +83,7 @@ pub struct PlayerState {
     pub demolished: bool,
     pub supersonic: bool,
     pub attacker: Option<PlayerRef>,
+    pub pickup_class: String,
 }
 
 // Game (UpdateState)

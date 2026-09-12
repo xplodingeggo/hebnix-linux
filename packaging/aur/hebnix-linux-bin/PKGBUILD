@@ -31,7 +31,6 @@ depends=(
 	'libayatana-appindicator'
 )
 optdepends=(
-	'curl-impersonate: tracker.gg player stats/avatar lookups (AUR)'
 	'kdotool: window focus tracking on KDE/Plasma (AUR)'
 	'kscreen: kscreen-doctor, used for monitor info on KDE/Plasma'
 )

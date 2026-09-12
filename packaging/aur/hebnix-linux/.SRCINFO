@@ -1,6 +1,6 @@
 pkgbase = hebnix-linux
 	pkgdesc = Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), built from source
-	pkgver = 0.1.2
+	pkgver = 0.1.5
 	pkgrel = 1
 	url = https://github.com/xplodingeggo/hebnix-linux
 	install = hebnix.install
@@ -18,13 +18,12 @@ pkgbase = hebnix-linux
 	depends = wayland
 	depends = libxkbcommon
 	depends = libayatana-appindicator
-	optdepends = curl-impersonate: tracker.gg player stats/avatar lookups (AUR)
 	optdepends = kdotool: window focus tracking on KDE/Plasma (AUR)
 	optdepends = kscreen: kscreen-doctor, used for monitor info on KDE/Plasma
 	provides = hebnix
 	conflicts = hebnix-linux-bin
 	options = !lto
-	source = hebnix-linux-0.1.2.tar.gz::https://github.com/xplodingeggo/hebnix-linux/archive/refs/tags/v0.1.2.tar.gz
+	source = hebnix-linux-0.1.5.tar.gz::https://github.com/xplodingeggo/hebnix-linux/archive/refs/tags/v0.1.5.tar.gz
 	sha256sums = SKIP
 
 pkgname = hebnix-linux

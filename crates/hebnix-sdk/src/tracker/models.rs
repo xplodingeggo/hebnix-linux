@@ -16,6 +16,7 @@ pub struct PlaylistRank {
     pub division_name: String,
     pub mmr: i64,
     pub matches_played: i64,
+    pub placement_matches_played: i64,
     pub peak_mmr: i64,
     pub peak_tier_id: i64,
     pub peak_div_id: i64,
@@ -68,7 +69,9 @@ pub struct PlayerStats {
     pub display_name: String,
     pub platform: String,
     pub platform_user_handle: String,
+    pub platform_user_id: String,
     pub avatar_url: Option<String>,
+    pub best: String,
     pub player_id: i64,
     pub ranks: HashMap<i64, PlaylistRank>,
     pub lifetime: Option<LifetimeStats>,
@@ -78,6 +81,9 @@ pub struct PlayerStats {
     pub current_season: i64,
     /// unix secs when this profile was fetched.
     pub fetched_at: f64,
+    pub cached: bool,
+    pub season_reward_level: i64,
+    pub season_reward_wins: i64,
     pub error: Option<String>,
     pub not_found: bool,
 }

@@ -175,12 +175,6 @@ echo ""
 
 # Check for optional dependencies
 echo -e "${BLUE}[5/6] Checking optional dependencies...${NC}"
-if check_command curl-impersonate; then
-    print_info "curl-impersonate found (for tracker.gg lookups)"
-else
-    MISSING_OPTIONAL_DEPS=1
-    print_warning "curl-impersonate not found (optional, for tracker.gg lookups)"
-fi
 
 # Check for KDE tools if on KDE
 if [ "$XDG_CURRENT_DESKTOP" = "KDE" ] || [ "$DESKTOP_SESSION" = "plasma" ]; then
@@ -311,10 +305,6 @@ if [ $MISSING_OPTIONAL_DEPS -eq 1 ]; then
     echo -e "${YELLOW}========================================${NC}"
     echo -e "${YELLOW}   Optional Dependencies Missing${NC}"
     echo -e "${YELLOW}========================================${NC}\n"
-    print_info "curl-impersonate: For tracker.gg player stats/avatar lookups"
-    print_info "Download from: https://github.com/lexiforest/curl-impersonate"
-    echo ""
-
     if [ "$XDG_CURRENT_DESKTOP" = "KDE" ] || [ "$DESKTOP_SESSION" = "plasma" ]; then
         print_info "kdotool: For window focus tracking on KDE/Plasma"
         print_info "Install from AUR: yay -S kdotool-bin"
