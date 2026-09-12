@@ -57,6 +57,12 @@ pub fn run(parent_pid: u32) {
             crate::spoofer::PrivilegedAction::ClearHosts,
             &base_dir,
         );
+        // only flush if we actually just cleared something - resolvectl
+        // flush-caches needs its own separate polkit authorization on some
+        // setups, so calling it unconditionally at the end of every run()
+        // was a second, unrelated auth prompt on every close even when the
+        // hosts file was never touched this session.
+        crate::spoofer::hosts::flush_dns();
     }
     while hebnix_sdk::process::is_rocket_league_running() {
         if replacement_is_running(parent_pid) {
@@ -72,7 +78,6 @@ pub fn run(parent_pid: u32) {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     let _ = crate::multiplayer_lan::cleanup_system_state();
-    crate::spoofer::hosts::flush_dns();
     if watchdog_owner().is_some_and(|owner| owner == parent_pid) {
         let _ = std::fs::remove_file(watchdog_owner_path());
     }

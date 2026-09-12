@@ -511,10 +511,14 @@ impl SpooferManager {
         // Clear a redirect even if the socket failed to start or its state
         // was lost - but stop_socket()/stop_http() above already did this
         // via stop_reverse_if_unused() in the normal case, so skip the
-        // redundant (and potentially auth-prompting) third call.
+        // redundant (and potentially auth-prompting) third call. Only flush
+        // DNS if we actually just cleared something here - `resolvectl
+        // flush-caches` needs its own separate polkit authorization on some
+        // setups, so calling it unconditionally on every close was itself a
+        // second auth prompt even when spoofer was never enabled this run.
         if hosts::has_redirects() {
             let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
+            hosts::flush_dns();
         }
-        hosts::flush_dns();
     }
 }
