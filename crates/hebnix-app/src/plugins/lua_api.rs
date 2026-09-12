@@ -1120,6 +1120,13 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         "is_bind_pressed",
         lua.create_function(|_, bind: String| Ok(hebnix_sdk::input::is_bind_pressed(&bind)))?,
     )?;
+    hebnix.set(
+        "monotonic_seconds",
+        lua.create_function(|_, ()| {
+            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            Ok(START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64())
+        })?,
+    )?;
     // "(Xinput)" / "(Playstation)" / "(Dinput)" / "" (keyboard) - pair with
     // ui.bind_icon to show the user which input method a bind came from.
     hebnix.set(

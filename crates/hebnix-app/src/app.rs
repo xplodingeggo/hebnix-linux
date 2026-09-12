@@ -29,7 +29,7 @@ pub const APP_VERSION: &str = "2.1.7";
 /// the actual hebnix-linux release version (shown in the About tab), as
 /// opposed to APP_VERSION above which tracks Windows Hebnix's engine/plugin
 /// compat version and is unrelated to this port's own release numbering.
-pub const LINUX_PORT_VERSION: &str = "0.1.6";
+pub const LINUX_PORT_VERSION: &str = "0.1.7";
 
 pub const DEFAULT_WIDTH: f32 = 1000.0;
 pub const DEFAULT_HEIGHT: f32 = 600.0;
@@ -3569,7 +3569,7 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Hebnix For Linux");
         ui.add_space(10.0);
         ui.label(format!(
-            "Version {LINUX_PORT_VERSION}\n\nA safe, EAC-compliant Mod Loader for Rocket League + Spoofer + Item Changer.\n"
+            "Version {LINUX_PORT_VERSION} (based on Hebnix Windows {APP_VERSION})\n\nA safe, EAC-compliant Mod Loader for Rocket League + Spoofer + Item Changer.\n"
         ));
 
         ui.hyperlink_to("hebnix.com", "https://hebnix.com");
