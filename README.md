@@ -41,10 +41,10 @@ unset)
 ### Requirements
 
 - **Rust** (stable), via [rustup](https://rustup.rs)
-- A C compiler (`gcc`/`clang`) — needed to build vendored Lua and a couple of
-  other native dependencies
-- System libraries: GTK3, Wayland client headers, and an app-indicator
-  library (for the system tray icon)
+- A C compiler (`gcc`/`clang`), for vendored Lua and a couple other native
+  deps
+- GTK3, Wayland client headers, and an app-indicator library (for the
+  system tray icon)
 
 ### Arch Linux
 
@@ -69,8 +69,8 @@ sudo dnf install gcc gtk3-devel libappindicator-gtk3-devel wayland-devel libxkbc
   libXi-devel webkit2gtk4.1-devel libsoup3-devel gtk-layer-shell-devel
 ```
 
-(`install.sh` below checks all of these for you and prints the right command
-for your distro if anything's missing.)
+Don't want to copy-paste package lists? `install.sh` checks all of this
+for you and tells you what's missing.
 
 ## Build & install
 
@@ -80,49 +80,47 @@ cd hebnix-linux
 ./install.sh
 ```
 
-`install.sh` checks dependencies, offers to set up optional hotkey/uinput
-device access (see below), then builds and installs via `make install` —
-the same canonical build (`make release`) and install (`make DESTDIR=...
-PREFIX=... install`) path used by CI, the AppImage, and the AUR packages.
-It installs the `hebnix` command to `~/.local/bin`, plus a `.desktop` entry
-and icon, no sudo needed for any of that. Just building without installing:
+`install.sh` checks your dependencies, offers to set up hotkey/uinput
+access and the Workshop LAN multiplayer permission (both below), then
+builds and installs with `make install`. No sudo needed for the build or
+install itself — it just drops `hebnix` into `~/.local/bin` along with a
+`.desktop` entry and icon.
+
+To do it by hand instead:
 
 ```sh
-make release       # binary lands at target/release/hebnix-app
-make install        # -> ~/.local/bin/hebnix (override with PREFIX=/some/where)
+make release   # binary lands at target/release/hebnix-app
+make install    # -> ~/.local/bin/hebnix (override with PREFIX=/some/where)
 ```
 
 Run it with `hebnix` (make sure `~/.local/bin` is on your `PATH`) or from
-your application menu. On first run it creates an empty `plugins/` folder
-under `$XDG_CONFIG_HOME/hebnix` (see [Where your data lives](#where-your-data-lives)).
-Plugins aren't bundled in this repo; install them either through the app's
-own Plugins tab, or by cloning a plugin repo (e.g.
+your application menu. First run creates an empty `plugins/` folder under
+`$XDG_CONFIG_HOME/hebnix` (see [Where your data lives](#where-your-data-lives)).
+Plugins aren't bundled in this repo — install them from the app's own
+Plugins tab, or clone a plugin repo (e.g.
 [`rl-profiles-linux`](https://github.com/xplodingeggo/rl-profiles-linux))
 into that `plugins/` folder yourself.
 
 ## Optional: hotkeys, binds & chat-send plugins
 
-Reading key/controller state (the show/hide hotkey, `hebnix.is_bind_pressed`,
-etc) goes through `/dev/input/event*`, which needs your user in the `input`
-group:
+Reading the show/hide hotkey, controller binds, `hebnix.is_bind_pressed`,
+etc goes through `/dev/input/event*`, so your user needs to be in the
+`input` group:
 
 ```sh
 sudo usermod -aG input $USER
-# then log out and back in (or reboot) for the new group to apply
+# log out and back in (or reboot) for it to take effect
 ```
 
-Plugins that *send* synthetic input (`hebnix.input.send`, `hebnix.chat.send`
-— e.g. quick-chat plugins) additionally need a virtual keyboard via
-`/dev/uinput`, which isn't group-`input`-writable by default on most distros
-(unlike `/dev/input/event*`, which already is via systemd's own udev rules).
+Plugins that *send* input — `hebnix.input.send`, `hebnix.chat.send`, e.g.
+quick-chat plugins — also need a virtual keyboard via `/dev/uinput`. That
+device isn't `input`-group-writable by default, so it needs its own kernel
+module + udev rule.
 
-**AUR installs** (`hebnix-linux`/`hebnix-linux-bin`) already ship the
-`uinput` module-load config and udev rule as package-owned files — you only
-need the one-time group membership step above.
-
-**Manual/source installs**: `install.sh` checks for both and offers to set
-them up interactively (module + udev rule need sudo once). To do it by
-hand instead:
+AUR installs (`hebnix-linux`/`hebnix-linux-bin`) already ship that module
+config and udev rule, so you only need the group step above. Building from
+source, `install.sh` offers to set both up for you (needs sudo once). To do
+it by hand:
 
 ```sh
 echo uinput | sudo tee /etc/modules-load.d/uinput.conf
@@ -133,23 +131,34 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger /dev/uinput
 ```
 
-Neither of these is a hard requirement — without them the app runs fine,
-hotkeys/binds just read as "not pressed" and chat-send plugins fail to type
+Neither of these is required — without them the app still runs fine,
+hotkeys/binds just read as "not pressed" and chat-send plugins can't type
 until it's fixed.
+
+## Workshop LAN multiplayer
+
+LAN multiplayer sets up a virtual network adapter and nftables rules,
+which needs `CAP_NET_ADMIN` on the `hebnix` binary. `install.sh` offers to
+grant this for you after installing; to do it yourself:
+
+```sh
+sudo setcap cap_net_admin+eip ~/.local/bin/hebnix
+```
+
+Everything else in the app works fine without it — this only gates LAN
+multiplayer.
 
 ## Controllers
 
-`hebnix.controllers()` reports every connected gamepad through a generic
-SDL-style mapping (`kind = "universal"`, `btn_south`/`btn_east`/`dpad_*`/
-`lx`/`ly`/etc) — this is the same fallback path the Windows build uses for
-anything that isn't a real Xbox controller (what Windows calls a DirectInput
-device), so DInput-style pads already just work here with no extra code.
-Real Xbox/xinput controllers additionally get a narrower `kind = "xinput"`
-fast path with the raw `XINPUT_*` fields on both platforms, backed on Linux
-by evdev/hidraw instead of the XInput API; every pad also still reports as
-`"universal"` too and is fully readable through the same fields plugins
-already use for any other pad.
+`hebnix.controllers()` reports every connected gamepad with a generic
+mapping (`kind = "universal"`: `btn_south`/`btn_east`/`dpad_*`/`lx`/`ly`/etc),
+the same as the Windows build uses for anything that isn't a real Xbox
+controller — so DInput-style pads just work here too. Real Xbox/xinput
+controllers additionally get a `kind = "xinput"` fast path with raw
+`XINPUT_*` fields, backed on Linux by evdev/hidraw instead of the XInput
+API. Every pad still reports as `"universal"` as well, so plugins that only
+handle that path work with any controller.
 
 ## Known limitations
 
-- On kde plasma, you need kdotool for some stuff to work
+- On KDE Plasma, you'll need `kdotool` for some things to work.
