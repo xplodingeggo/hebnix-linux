@@ -9,20 +9,11 @@ not been tested against a real Plasma session — see [Known limitations](#known
 
 ### Arch Linux
 
-- **[`hebnix-linux-bin`](https://aur.archlinux.org/packages/hebnix-linux-bin)**
-  (AUR) — recommended for most users. Installs the prebuilt upstream
-  binary, no Rust toolchain or compile time needed.
-- **[`hebnix-linux`](https://aur.archlinux.org/packages/hebnix-linux)** (AUR)
-  — builds from source, for anyone who wants to build against their own
-  toolchain or track a specific release.
-
-```sh
-yay -S hebnix-linux-bin   # or: yay -S hebnix-linux
-```
-
-Either way pacman/yay/paru owns updates — Hebnix does not update or
-overwrite `/usr/bin/hebnix` itself.
-
+- Add it as a custom repository to pacman
+`echo -e "\n[hebnix-linux]\nSigLevel = Optional TrustAll\nServer = https://repo.xplodingeggo.space/x86_64/" | sudo tee -a /etc/pacman.conf`
+- then install it whichever way you choose
+prebuilt binary: `sudo pacman -S hebnix-linux-bin`
+build from source `sudo pacman -S hebnix-linux`
 ### Other distros
 
 - **AppImage** (recommended) — download the latest `Hebnix-*-x86_64.AppImage`
@@ -41,12 +32,9 @@ onto them.
 
 ## Where your data lives
 
-Config, plugins, and themes are managed by Hebnix itself at
+Config, plugins, and themes are stored at
 `$XDG_CONFIG_HOME/hebnix` (falling back to `~/.config/hebnix` if that's
-unset) — never inside a read-only package or AppImage, and never touched by
-installing, upgrading, or removing any of the above. Installs from before
-this layout (config used to live next to the executable) are migrated
-automatically the first time you run the new version.
+unset) 
 
 ## Building from source
 
@@ -164,13 +152,4 @@ already use for any other pad.
 
 ## Known limitations
 
-- **KDE/Plasma**: window focus tracking, popping the app over a fullscreened
-  game, and monitor geometry go through [`kdotool`](https://github.com/jinliu/kdotool)
-  (AUR: `kdotool-bin`) and `kscreen-doctor` instead of Hyprland's IPC socket.
-  This was written against those tools' own source/docs but **has not been
-  run on a real Plasma session** — if you hit issues there, please open one.
-- **Other Wayland compositors** (Sway, etc.) get the in-game overlay (if
-  `wlr-layer-shell` is supported) but no window focus/geometry tracking —
-  the app falls back to "always focused" so binds/overlays don't just go
-  dead, but features like popping the window over a fullscreened game won't
-  work.
+- On kde plasma, you need kdotool for some stuff to work
