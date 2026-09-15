@@ -36,41 +36,19 @@ Config, plugins, and themes are stored at
 `$XDG_CONFIG_HOME/hebnix` (falling back to `~/.config/hebnix` if that's
 unset) 
 
-## Building from source
 
-### Requirements
+## Workshop LAN multiplayer
 
-- **Rust** (stable), via [rustup](https://rustup.rs)
-- A C compiler (`gcc`/`clang`), for vendored Lua and a couple other native
-  deps
-- GTK3, Wayland client headers, and an app-indicator library (for the
-  system tray icon)
-
-### Arch Linux
+LAN multiplayer sets up a virtual network adapter and nftables rules,
+which needs `CAP_NET_ADMIN` on the `hebnix` binary. `install.sh` offers to
+grant this for you after installing; to do it yourself:
 
 ```sh
-sudo pacman -S --needed base-devel gtk3 libayatana-appindicator wayland libxkbcommon \
-  systemd-libs alsa-lib openssl xdotool libx11 libxtst libxi webkit2gtk-4.1 libsoup3 gtk-layer-shell
+sudo setcap cap_net_admin+eip ~/.local/bin/hebnix
 ```
 
-### Debian / Ubuntu
-
-```sh
-sudo apt install build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev \
-  libwayland-dev libxkbcommon-dev libudev-dev libasound2-dev libssl-dev libxdo-dev \
-  libx11-dev libxtst-dev libxi-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-layer-shell-dev
-```
-
-### Fedora
-
-```sh
-sudo dnf install gcc gtk3-devel libappindicator-gtk3-devel wayland-devel libxkbcommon-devel \
-  systemd-devel alsa-lib-devel openssl-devel libxdo-devel libX11-devel libXtst-devel \
-  libXi-devel webkit2gtk4.1-devel libsoup3-devel gtk-layer-shell-devel
-```
-
-Don't want to copy-paste package lists? `install.sh` checks all of this
-for you and tells you what's missing.
+Everything else in the app works fine without it — this only gates LAN
+multiplayer.
 
 ## Build & install
 
@@ -135,30 +113,48 @@ Neither of these is required — without them the app still runs fine,
 hotkeys/binds just read as "not pressed" and chat-send plugins can't type
 until it's fixed.
 
-## Workshop LAN multiplayer
+## Building from source
 
-LAN multiplayer sets up a virtual network adapter and nftables rules,
-which needs `CAP_NET_ADMIN` on the `hebnix` binary. `install.sh` offers to
-grant this for you after installing; to do it yourself:
+### Requirements
+
+- **Rust** (stable), via [rustup](https://rustup.rs)
+- A C compiler (`gcc`/`clang`), for vendored Lua and a couple other native
+  deps
+- GTK3, Wayland client headers, and an app-indicator library (for the
+  system tray icon)
+
+### Arch Linux
 
 ```sh
-sudo setcap cap_net_admin+eip ~/.local/bin/hebnix
+sudo pacman -S --needed base-devel gtk3 libayatana-appindicator wayland libxkbcommon \
+  systemd-libs alsa-lib openssl xdotool libx11 libxtst libxi webkit2gtk-4.1 libsoup3 gtk-layer-shell
 ```
 
-Everything else in the app works fine without it — this only gates LAN
-multiplayer.
+### Debian / Ubuntu
+
+```sh
+sudo apt install build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev \
+  libwayland-dev libxkbcommon-dev libudev-dev libasound2-dev libssl-dev libxdo-dev \
+  libx11-dev libxtst-dev libxi-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-layer-shell-dev
+```
+
+### Fedora
+
+```sh
+sudo dnf install gcc gtk3-devel libappindicator-gtk3-devel wayland-devel libxkbcommon-devel \
+  systemd-devel alsa-lib-devel openssl-devel libxdo-devel libX11-devel libXtst-devel \
+  libXi-devel webkit2gtk4.1-devel libsoup3-devel gtk-layer-shell-devel
+```
+
+Don't want to copy-paste package lists? `install.sh` checks all of this
+for you and tells you what's missing.
+
+
 
 ## Controllers
-
-`hebnix.controllers()` reports every connected gamepad with a generic
-mapping (`kind = "universal"`: `btn_south`/`btn_east`/`dpad_*`/`lx`/`ly`/etc),
-the same as the Windows build uses for anything that isn't a real Xbox
-controller — so DInput-style pads just work here too. Real Xbox/xinput
-controllers additionally get a `kind = "xinput"` fast path with raw
-`XINPUT_*` fields, backed on Linux by evdev/hidraw instead of the XInput
-API. Every pad still reports as `"universal"` as well, so plugins that only
-handle that path work with any controller.
+everything will work bro.
+As long as it works with evdev it will work.
 
 ## Known limitations
-
 - On KDE Plasma, you'll need `kdotool` for some things to work.
+- idk much about other DEs/WMs icl but the main problem you will have there (if any) will just be problems with the window not coming to the front or the window not disappearing properly when you press f2 however rest should work as long as you have gtk3 and wayland
