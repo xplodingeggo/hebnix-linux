@@ -333,6 +333,22 @@ pub fn is_rocket_league_focused() -> bool {
     }
 }
 
+/// does the window owned by `pid` have focus right now. False when the
+/// compositor can't say (unlike `is_rocket_league_focused`, which assumes
+/// focus there), so callers gating global key reads on this stay inert
+/// instead of listening to every keystroke on the desktop.
+pub fn is_pid_focused(pid: u32) -> bool {
+    match compositor() {
+        Compositor::Hyprland => hyprctl_json("activewindow")
+            .and_then(|json| json.get("pid").and_then(Value::as_i64))
+            == Some(pid as i64),
+        Compositor::Kwin => kdotool_line(&["getactivewindow", "getwindowpid"])
+            .and_then(|active| active.parse::<u32>().ok())
+            == Some(pid),
+        Compositor::Other => false,
+    }
+}
+
 /// (left, top, right, bottom) pixel rect of the RL window
 pub fn get_rocket_league_window_rect() -> Option<(i32, i32, i32, i32)> {
     let pid = cached_rl_pid()?;

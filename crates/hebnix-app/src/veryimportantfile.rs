@@ -27,9 +27,18 @@ impl SecretSequenceListener {
                 let mut was_down = [false; 6];
                 let mut progress = 0usize;
                 let mut last_key_at: Option<Instant> = None;
+                // asking the compositor costs a process spawn or socket
+                // round trip, so refresh focus a few times a second rather
+                // than on every 10ms key poll
+                let mut focused = false;
+                let mut focus_checked_at: Option<Instant> = None;
 
                 while !stop.load(Ordering::Relaxed) {
-                    if !crate::winutil::foreground_window_is_ours() {
+                    if focus_checked_at.is_none_or(|t| t.elapsed() > Duration::from_millis(250)) {
+                        focused = crate::winutil::hebnix_window_focused();
+                        focus_checked_at = Some(Instant::now());
+                    }
+                    if !focused {
                         progress = 0;
                         last_key_at = None;
                         was_down = [false; 6];

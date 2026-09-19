@@ -96,6 +96,14 @@ pub fn foreground_window_is_ours() -> bool {
     false
 }
 
+/// is Hebnix's own window the focused one, asked of the compositor.
+/// `foreground_window_is_ours` above stays a constant false because other
+/// callers depend on it, so this is the real answer for anything that has to
+/// know (it shells out to the compositor - don't call it in a tight loop).
+pub fn hebnix_window_focused() -> bool {
+    hebnix_sdk::process::window::is_pid_focused(std::process::id())
+}
+
 pub fn main_window_hidden() -> bool {
     MAIN_HIDDEN.load(Ordering::Relaxed)
 }
