@@ -2953,6 +2953,159 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         )?;
     }
 
+    // StatsAPI socket commands.
+    {
+        const PERSPECTIVES: [&str; 6] = [
+            "Fly",
+            "SoftAttach",
+            "HardAttach",
+            "PlayerView",
+            "AutoCam",
+            "Camera_Director",
+        ];
+
+        fn send_cmd(tx: &Sender<AppMsg>, name: &str, data: serde_json::Value) {
+            let _ = tx.send(AppMsg::SendWsCommand(
+                hebnix_sdk::stats::websocket::WsCommand {
+                    command: name.to_string(),
+                    data: Some(data),
+                },
+            ));
+        }
+
+        let command = lua.create_table()?;
+
+        // any time youre spectating
+        {
+            let host = Rc::clone(&host);
+            command.set(
+                "change_pov",
+                lua.create_function(move |_, opts: Table| {
+                    let focus: Option<String> = opts.get("focus")?;
+                    let perspective: Option<String> = opts.get("perspective")?;
+                    if focus.is_none() && perspective.is_none() {
+                        return Err(mlua::Error::runtime(
+                            "change_pov needs focus, perspective, or both",
+                        ));
+                    }
+                    let mut data = serde_json::Map::new();
+                    if let Some(focus) = focus {
+                        let ok = focus == "Ball"
+                            || (!focus.is_empty() && focus.bytes().all(|c| c.is_ascii_digit()));
+                        if !ok {
+                            return Err(mlua::Error::runtime(
+                                "change_pov focus is \"Ball\" or a shortcut like \"1\"",
+                            ));
+                        }
+                        data.insert("Focus".into(), focus.into());
+                    }
+                    if let Some(perspective) = perspective {
+                        if !PERSPECTIVES.contains(&perspective.as_str()) {
+                            return Err(mlua::Error::runtime(format!(
+                                "change_pov perspective must be one of {}",
+                                PERSPECTIVES.join(", ")
+                            )));
+                        }
+                        data.insert("Perspective".into(), perspective.into());
+                    }
+                    send_cmd(&host.tx, "ChangePOV", data.into());
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        {
+            let host = Rc::clone(&host);
+            command.set(
+                "load_replay",
+                lua.create_function(move |_, opts: Table| {
+                    let file_name: Option<String> = opts.get("file_name")?;
+                    let path: Option<String> = opts.get("path")?;
+                    let mut data = serde_json::Map::new();
+                    if let Some(file_name) = file_name.filter(|v| !v.is_empty()) {
+                        data.insert("FileName".into(), file_name.into());
+                    } else if let Some(path) = path.filter(|v| !v.is_empty()) {
+                        data.insert("Path".into(), path.into());
+                    } else {
+                        return Err(mlua::Error::runtime("load_replay needs file_name or path"));
+                    }
+                    send_cmd(&host.tx, "LoadReplay", data.into());
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        // only while watching a replay file
+        {
+            let host = Rc::clone(&host);
+            command.set(
+                "seek_replay",
+                lua.create_function(move |_, opts: Table| {
+                    let frame: Option<i64> = opts.get("frame")?;
+                    let seconds: Option<f64> = opts.get("time_seconds")?;
+                    let mut data = serde_json::Map::new();
+                    if let Some(frame) = frame {
+                        data.insert("Frame".into(), frame.into());
+                    } else if let Some(seconds) = seconds {
+                        data.insert("TimeSeconds".into(), seconds.into());
+                    } else {
+                        return Err(mlua::Error::runtime(
+                            "seek_replay needs frame or time_seconds",
+                        ));
+                    }
+                    send_cmd(&host.tx, "SeekReplay", data.into());
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        // only while watching a replay file
+        {
+            let host = Rc::clone(&host);
+            command.set(
+                "set_game_speed",
+                lua.create_function(move |_, speed: f64| {
+                    if speed.is_nan() || speed < 0.0 {
+                        return Err(mlua::Error::runtime("set_game_speed wants 0 or more"));
+                    }
+                    let mut data = serde_json::Map::new();
+                    data.insert("Speed".into(), speed.into());
+                    send_cmd(&host.tx, "SetGameSpeed", data.into());
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        {
+            let host = Rc::clone(&host);
+            command.set(
+                "set_hud_visibility",
+                lua.create_function(move |_, visible: bool| {
+                    let mut data = serde_json::Map::new();
+                    data.insert("bVisible".into(), visible.into());
+                    send_cmd(&host.tx, "SetHUDVisibility", data.into());
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        {
+            let host = Rc::clone(&host);
+            // private match with admin mode
+            command.set(
+                "set_match_paused",
+                lua.create_function(move |_, paused: bool| {
+                    let mut data = serde_json::Map::new();
+                    data.insert("bPaused".into(), paused.into());
+                    send_cmd(&host.tx, "SetMatchPaused", data.into());
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        hebnix.set("command", command)?;
+    }
+
     // Analog Gamepads Crate Integration
     hebnix.set(
         "poll_gamepads",
@@ -3777,6 +3930,26 @@ fn build_ui_table(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<Table> {
                         }
                     });
                 });
+            });
+            Ok(())
+        })?,
+    )?;
+
+    // ui.collapsing("Label", function(ui) ... end) -- starts folded
+    ui.set(
+        "collapsing",
+        lua.create_function(|lua, (label, f): (String, mlua::Function)| {
+            let ui_tbl: Table = ui_table(lua)?;
+            with_current_ui(|outer| {
+                egui::CollapsingHeader::new(&label)
+                    .id_salt(&label)
+                    .show(outer, |inner| {
+                        with_ui_scope(inner, || {
+                            if let Err(e) = f.call::<()>(ui_tbl.clone()) {
+                                tracing::warn!("plugin ui.collapsing callback error: {e}");
+                            }
+                        });
+                    });
             });
             Ok(())
         })?,
