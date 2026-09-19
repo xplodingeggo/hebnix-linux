@@ -119,10 +119,55 @@ fn rocket_league_launched_with_multihome(address: &str) -> bool {
     rocket_league_multihome_address().is_some_and(|found| found == address)
 }
 
+/// `-multihome=<address>` out of a Rocket League command line / Launch.log
+/// line, if the address is in the Workshop subnet.
+fn workshop_multihome_in(line: &str) -> Option<String> {
+    let line = line.to_ascii_lowercase();
+    let start = line.find("-multihome=")? + "-multihome=".len();
+    let address: String = line[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect();
+    address
+        .starts_with(&format!("{}.", crate::multiplayer_lan::VPN_SUBNET))
+        .then_some(address)
+}
+
+/// The live Rocket League process's own command line. Unlike Launch.log this
+/// can never be a stale file from the previous session while the game is
+/// still starting up.
+fn running_rocket_league_multihome() -> Option<String> {
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+        {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let cmdline = String::from_utf8_lossy(&raw).replace('\0', " ");
+        if !cmdline.to_ascii_lowercase().contains("rocketleague.exe") {
+            continue;
+        }
+        if let Some(address) = workshop_multihome_in(&cmdline) {
+            return Some(address);
+        }
+    }
+    None
+}
+
 fn rocket_league_multihome_address() -> Option<String> {
-    // same Wine/Proton-prefix bug already fixed for save_file::detect_save_data_path()
-    // and log::parser::find_launch_log() - Launch.log lives under whatever
-    // prefix RL is actually running in, never the host's real ~/Documents.
+    if let Some(address) = running_rocket_league_multihome() {
+        return Some(address);
+    }
+    // fall back to Launch.log. Same Wine/Proton-prefix bug already fixed for
+    // save_file::detect_save_data_path() and log::parser::find_launch_log() -
+    // Launch.log lives under whatever prefix RL is actually running in, never
+    // the host's real ~/Documents.
     let rel = Path::new("My Games/Rocket League/TAGame/Logs/Launch.log");
     let mut candidates: Vec<PathBuf> = hebnix_sdk::process::candidate_documents_dirs()
         .into_iter()
@@ -136,17 +181,7 @@ fn rocket_league_multihome_address() -> Option<String> {
         .filter(|p| p.is_file())
         .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())?;
     let log = std::fs::read_to_string(path).ok()?;
-    log.lines().take(300).find_map(|line| {
-        let line = line.to_ascii_lowercase();
-        let start = line.find("-multihome=")? + "-multihome=".len();
-        let address: String = line[start..]
-            .chars()
-            .take_while(|character| character.is_ascii_digit() || *character == '.')
-            .collect();
-        address
-            .starts_with(&format!("{}.", crate::multiplayer_lan::VPN_SUBNET))
-            .then_some(address)
-    })
+    log.lines().take(300).find_map(workshop_multihome_in)
 }
 
 pub const WORKSHOP_PLUGIN_ID: &str = "workshop_map_loader";
@@ -1115,6 +1150,7 @@ impl WorkshopState {
                         ui.add_space(8.0);
                         ui.strong(format!("Hosting PIN: {pin}"));
                         ui.label("This session refreshes every five minutes.");
+                        ui.small(self.multiplayer.hosted.as_ref().unwrap().reachability.summary());
                         let stats = &self.multiplayer.hosted.as_ref().unwrap().stats;
                         ui.small(format!(
                             "Tunnel: {} · sent {} · received {} · delivered {}",
@@ -1199,6 +1235,8 @@ impl WorkshopState {
                             "Tunnel: {} · sent {} · received {} · delivered {}",
                             if session.stats.connected.load(Ordering::Relaxed) {
                                 "host connected"
+                            } else if session.stats.join_failed.load(Ordering::Relaxed) {
+                                "could not reach host"
                             } else {
                                 "waiting for host"
                             },
@@ -1206,6 +1244,15 @@ impl WorkshopState {
                             session.stats.received.load(Ordering::Relaxed),
                             session.stats.delivered.load(Ordering::Relaxed)
                         ));
+                        if session.stats.join_failed.load(Ordering::Relaxed)
+                            && !session.stats.connected.load(Ordering::Relaxed)
+                        {
+                            ui.small(
+                                "The host did not answer. Their network may block inbound UDP \
+                                 (CGNAT, or no port forward); ask them to check the network \
+                                 status shown while hosting.",
+                            );
+                        }
                         if let Ok(flow) = session.stats.last_sent_lan_udp.lock() {
                             if !flow.is_empty() {
                                 ui.small(format!("Rocket League LAN UDP out: {flow}"));
@@ -1610,6 +1657,10 @@ impl WorkshopState {
             }
             let rl_open = hebnix_sdk::process::is_rocket_league_running();
             let launch_ready = rl_open && rocket_league_launched_with_multihome(&address);
+            tracing::info!(
+                "workshop lan: wizard check address={address} rl_open={rl_open} tap_ready={tap_ready} launch_ready={launch_ready} found={:?}",
+                rocket_league_multihome_address()
+            );
             let _ = tx.send(AppMsg::WorkshopWizardCheck {
                 rl_open,
                 tap_ready,
@@ -1640,6 +1691,12 @@ impl WorkshopState {
             self.multiplayer.multihome_check_attempts =
                 self.multiplayer.multihome_check_attempts.saturating_add(1);
         }
+    }
+
+    /// Rocket League started or stopped: any earlier give-up on the launch
+    /// check no longer applies to this process.
+    pub fn note_rl_state_changed(&mut self) {
+        self.multiplayer.multihome_check_attempts = 0;
     }
 
     pub fn retry_multihome_check(&self) -> bool {

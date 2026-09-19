@@ -29,7 +29,7 @@ pub const APP_VERSION: &str = "2.1.7";
 /// the actual hebnix-linux release version (shown in the About tab), as
 /// opposed to APP_VERSION above which tracks Windows Hebnix's engine/plugin
 /// compat version and is unrelated to this port's own release numbering.
-pub const LINUX_PORT_VERSION: &str = "0.1.7";
+pub const LINUX_PORT_VERSION: &str = "0.1.8";
 
 pub const DEFAULT_WIDTH: f32 = 1000.0;
 pub const DEFAULT_HEIGHT: f32 = 600.0;
@@ -1318,6 +1318,7 @@ impl HebnixApp {
                         self.check_web_port();
                     }
                     if rl_state_changed || platform_changed {
+                        self.workshop.note_rl_state_changed();
                         self.workshop.refresh_wizard_status(&self.tx, ctx);
                     }
                 }
