@@ -54,6 +54,7 @@ re!(re_browse_local, r"DevNet: Browse: (\S+)");
 re!(re_build_id, r"Log: BuildID: (\d+) from GPsyonixBuildID");
 re!(re_browse_game, r"[?&]Game=([^?&]+)");
 re!(re_browse_tags, r"[?&]GameTags=([^?&]+)");
+re!(re_loadmap_offline, r"LoadMap: \S*[?&]Offline(?:[?&]|\s|$)");
 
 fn find_last<'t>(re: &Regex, text: &'t str) -> Option<regex::Captures<'t>> {
     re.captures_iter(text).last()
@@ -288,11 +289,16 @@ fn parse_game_info(
         ..Default::default()
     };
 
-    // playlist id
-    if let Some(c) = find_last(re_playlist_id(), text) {
-        game.playlist_id = c[1].parse().ok();
-    } else if let Some(c) = find_last(re_playlist(), text) {
-        game.playlist_id = c[1].parse().ok();
+    // playlist id. an offline match queues nothing, so a stale id from the last
+    // online one is still sitting in the log
+    game.offline = last_map_load_is_offline(text);
+    if !game.offline {
+        let queued = since_last_menu_load(text);
+        if let Some(c) = find_last(re_playlist_id(), queued) {
+            game.playlist_id = c[1].parse().ok();
+        } else if let Some(c) = find_last(re_playlist(), queued) {
+            game.playlist_id = c[1].parse().ok();
+        }
     }
     if let Some(pid) = game.playlist_id {
         game.playlist_name = online_playlists.get(&pid).cloned();
@@ -376,6 +382,25 @@ fn parse_game_info(
     }
 
     game
+}
+
+/// the menu load between two matches, so a queue cannot outlive its own match
+fn since_last_menu_load(text: &str) -> &str {
+    match text.rfind("LoadMap: MENU_Main_p") {
+        Some(pos) => &text[pos..],
+        None => text,
+    }
+}
+
+/// exhibition and season write ?Offline? on the load, private matches do not
+fn last_map_load_is_offline(text: &str) -> bool {
+    let Some(pos) = text.rfind("LoadMap:") else {
+        return false;
+    };
+    text[pos..]
+        .lines()
+        .next()
+        .is_some_and(|line| re_loadmap_offline().is_match(line))
 }
 
 /// map name from a browse url path

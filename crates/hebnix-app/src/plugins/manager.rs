@@ -17,6 +17,24 @@ use crate::plugins::lua_api::{self, HostCtx, HostShared, WindowState};
 use crate::plugins::manifest::{DiscoveredPlugin, PluginManifest, discover_plugins};
 use crate::plugins::store::PluginStore;
 
+/// expand windows %VAR% env placeholders in a manifest path. unknown vars are
+/// left verbatim, so canonicalize just drops the root.
+fn expand_env_vars(input: &str) -> String {
+    let mut out = String::new();
+    for (i, part) in input.split('%').enumerate() {
+        if i % 2 == 0 {
+            out.push_str(part);
+        } else if let Ok(val) = std::env::var(part) {
+            out.push_str(&val);
+        } else {
+            out.push('%');
+            out.push_str(part);
+            out.push('%');
+        }
+    }
+    out
+}
+
 pub struct PluginRuntime {
     lua: Lua,
     plugin_table: RegistryKey,
@@ -75,6 +93,7 @@ impl PluginManager {
                 app_version: app_version.to_string(),
                 platform: String::new(),
                 suppress_plugin_logs: false,
+                rl_config_dir: PathBuf::new(),
             })),
             last_pos_flush: std::time::Instant::now(),
         }
@@ -86,6 +105,7 @@ impl PluginManager {
 
     /// full refresh: unload all, re-discover, load the enabled ones
     pub fn refresh(&mut self, config: &mut Config, _verbose: bool) {
+        self.update_rl_config_dir(config);
         for plugin in &mut self.plugins {
             if plugin.enabled {
                 Self::call_on_unload(plugin);
@@ -162,6 +182,7 @@ impl PluginManager {
 
     /// enable+(re)load or disable+unload one plugin, returns success
     pub fn set_enabled(&mut self, slug: &str, enabled: bool, config: &mut Config) -> bool {
+        self.update_rl_config_dir(config);
         let Some(idx) = self.plugins.iter().position(|p| p.slug == slug) else {
             return false;
         };
@@ -219,6 +240,29 @@ impl PluginManager {
         }
     }
 
+    /// Refresh one plugin after its files were replaced by an auto-update.
+    /// Disabled plugins remain disabled; enabled plugins are re-instantiated from disk.
+    pub fn reload_updated_plugin(&mut self, slug: &str, was_enabled: bool, config: &mut Config) {
+        if was_enabled {
+            let _ = self.set_enabled(slug, true, config);
+            return;
+        }
+
+        let Some(index) = self.plugins.iter().position(|plugin| plugin.slug == slug) else {
+            return;
+        };
+        if let Some(discovered) = discover_plugins(&self.plugin_dir)
+            .into_iter()
+            .find(|plugin| plugin.slug == slug && plugin.error.is_none())
+        {
+            self.plugins[index].filename = discovered.filename();
+            self.plugins[index].manifest = discovered.manifest;
+            self.plugins[index].load_error = None;
+        }
+        self.plugins[index].enabled = false;
+        self.plugins[index].runtime = None;
+        config.plugins.insert(slug.to_string(), false);
+    }
     /// Recreate enabled plugin runtimes after an actual Steam/Epic transition.
     /// This intentionally emits no success messages; plugins simply receive the
     /// updated shared platform on their next `on_load` call.
@@ -237,8 +281,27 @@ impl PluginManager {
         self.shared.borrow_mut().suppress_plugin_logs = false;
     }
 
+    fn update_rl_config_dir(&self, _config: &Config) {
+        self.shared.borrow_mut().rl_config_dir =
+            hebnix_sdk::utils::system_settings::find_system_settings()
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+    }
+
     fn instantiate(&self, disc: &DiscoveredPlugin) -> Result<PluginRuntime, String> {
         let lua = Lua::new();
+
+        // expand + canonicalize the plugin's declared read roots; a root that
+        // doesn't resolve is simply dropped (reads under it then return nil).
+        let read_roots = disc
+            .manifest
+            .permissions
+            .read_roots
+            .iter()
+            .map(|r| expand_env_vars(r))
+            .filter_map(|p| std::path::Path::new(&p).canonicalize().ok())
+            .collect::<Vec<_>>();
 
         // plugins that download assets at runtime (avatars, icons, ...)
         // write into <plugin>/assets/cache/ but neither this app nor a
@@ -258,6 +321,7 @@ impl PluginManager {
             text_bufs: RefCell::new(Default::default()),
             dir: self.plugin_dir.join(&disc.slug),
             assets: RefCell::new(Default::default()),
+            read_roots,
         });
 
         lua_api::install_api(&lua, Rc::clone(&host)).map_err(|e| e.to_string())?;
@@ -595,6 +659,97 @@ impl PluginManager {
             Self::call_on_unload(&mut self.plugins[idx]);
             self.plugins[idx].runtime = None;
         }
+    }
+
+    /// dispatch a websocket callback (on_ws_open/on_ws_message/on_ws_close) to
+    /// the plugin that opened the connection.
+    fn on_ws_event(&mut self, slug: &str, cb: &str, id: &str, extra: Option<&str>) {
+        let Some(idx) = self.plugins.iter().position(|p| p.slug == slug) else {
+            return;
+        };
+        let plugin = &self.plugins[idx];
+        if !plugin.enabled {
+            return;
+        }
+        let Some(rt) = &plugin.runtime else {
+            return;
+        };
+        let name = plugin.display_name().to_string();
+
+        let call = (|| -> mlua::Result<()> {
+            let table: Table = rt.lua.registry_value(&rt.plugin_table)?;
+            let func: LuaValue = table.get(cb)?;
+            if let LuaValue::Function(f) = func {
+                match extra {
+                    Some(e) => f.call::<()>((id, e))?,
+                    None => f.call::<()>(id)?,
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = call {
+            self.log(format!(
+                "[Core] Critical Error in '{name}' {cb}: {e}. Force disabling."
+            ));
+            self.plugins[idx].enabled = false;
+            Self::call_on_unload(&mut self.plugins[idx]);
+            self.plugins[idx].runtime = None;
+        }
+    }
+
+    /// generic http result including response headers (JSON object string).
+    /// body is raw bytes, handed to Lua as a byte-safe string.
+    pub fn on_http_result(
+        &mut self,
+        slug: &str,
+        req_id: &str,
+        status: u16,
+        body: &[u8],
+        headers: &str,
+    ) {
+        let Some(idx) = self.plugins.iter().position(|p| p.slug == slug) else {
+            return;
+        };
+        let plugin = &self.plugins[idx];
+        if !plugin.enabled {
+            return;
+        }
+        let Some(rt) = &plugin.runtime else {
+            return;
+        };
+        let name = plugin.display_name().to_string();
+
+        let call = (|| -> mlua::Result<()> {
+            let table: Table = rt.lua.registry_value(&rt.plugin_table)?;
+            let func: LuaValue = table.get("on_http_result")?;
+            if let LuaValue::Function(f) = func {
+                let lua_body = rt.lua.create_string(body)?;
+                f.call::<()>((req_id, status, lua_body, headers))?;
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = call {
+            self.log(format!(
+                "[Core] Critical Error in '{name}' on_http_result: {e}. Force disabling."
+            ));
+            self.plugins[idx].enabled = false;
+            Self::call_on_unload(&mut self.plugins[idx]);
+            self.plugins[idx].runtime = None;
+        }
+    }
+
+    pub fn on_ws_open(&mut self, slug: &str, id: &str) {
+        self.on_ws_event(slug, "on_ws_open", id, None);
+    }
+
+    pub fn on_ws_message(&mut self, slug: &str, id: &str, data: &str) {
+        self.on_ws_event(slug, "on_ws_message", id, Some(data));
+    }
+
+    pub fn on_ws_close(&mut self, slug: &str, id: &str, reason: &str) {
+        self.on_ws_event(slug, "on_ws_close", id, Some(reason));
     }
 
     /// render a plugin's settings ui. Err(msg) if the callback raised, so the

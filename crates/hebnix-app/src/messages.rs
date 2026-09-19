@@ -31,6 +31,7 @@ pub enum AppMsg {
     WorkshopOpDone {
         message: String,
     },
+    BackgroundChangerDone(Result<String, String>),
     WorkshopMultiplayerProgress(String),
     WorkshopMultiplayerPrepared {
         result: Result<
@@ -102,6 +103,27 @@ pub enum AppMsg {
         req_id: String,
         status: u16,
         body: String,
+    },
+    PluginHttpResult {
+        slug: String,
+        req_id: String,
+        status: u16,
+        body: Vec<u8>,
+        headers: String,
+    },
+    PluginWsOpen {
+        slug: String,
+        id: String,
+    },
+    PluginWsMessage {
+        slug: String,
+        id: String,
+        data: String,
+    },
+    PluginWsClose {
+        slug: String,
+        id: String,
+        reason: String,
     },
     /// fired once at startup to kick off the plugin-update check (Hebnix
     /// itself has no self-updater on Linux - the AUR package/tarball/

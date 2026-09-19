@@ -25,16 +25,16 @@ use crate::ui::console::ConsoleState;
 use crate::ui::workshop::{ImageState, WorkshopState};
 use crate::winutil;
 
-pub const APP_VERSION: &str = "2.1.7";
+pub const APP_VERSION: &str = "2.1.8";
 /// the actual hebnix-linux release version (shown in the About tab), as
 /// opposed to APP_VERSION above which tracks Windows Hebnix's engine/plugin
 /// compat version and is unrelated to this port's own release numbering.
 pub const LINUX_PORT_VERSION: &str = "0.1.8";
 
-pub const DEFAULT_WIDTH: f32 = 1000.0;
-pub const DEFAULT_HEIGHT: f32 = 600.0;
-pub const MIN_WIDTH: f32 = DEFAULT_WIDTH * 0.7;
-pub const MIN_HEIGHT: f32 = DEFAULT_HEIGHT * 0.7;
+pub const DEFAULT_WIDTH: f32 = 1250.0;
+pub const DEFAULT_HEIGHT: f32 = 700.0;
+pub const MIN_WIDTH: f32 = DEFAULT_WIDTH;
+pub const MIN_HEIGHT: f32 = DEFAULT_HEIGHT;
 
 fn get_retry(url: &str, timeout: Duration) -> Result<ureq::Response, String> {
     let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).build();
@@ -337,6 +337,7 @@ enum SettingsSubTab {
 enum HebnixSettingsTab {
     Interface,
     Directories,
+    Discord,
     System,
 }
 
@@ -412,9 +413,11 @@ pub struct HebnixApp {
     ws_stats: Arc<hebnix_sdk::stats::websocket::WsStatsClient>,
     stats_tx: crossbeam_channel::Sender<hebnix_sdk::stats::StatsEvent>,
     monitor: Monitor,
+    discord_presence: crate::discord_presence::DiscordPresence,
     plugin_mgr: PluginManager,
     tray: Option<Tray>,
     hotkey: Option<ToggleHotkey>,
+    _secretsequence: crate::veryimportantfile::SecretSequenceListener,
 
     tab: Tab,
     settings_subtab: SettingsSubTab,
@@ -430,6 +433,7 @@ pub struct HebnixApp {
     last_rl_open: bool,
     last_api_open: bool,
     in_match: bool,
+    discord_match: Option<crate::discord_presence::MatchInfo>,
     /// true once MatchEnded fires, until MatchDestroyed/disconnect. while
     /// set, UpdateState (which keeps arriving through the post-game screen)
     /// doesn't re-set in_match, so hebnix.input.send unlocks right at the
@@ -633,6 +637,9 @@ impl HebnixApp {
             });
         }
 
+        let secretsequence = crate::veryimportantfile::SecretSequenceListener::new();
+        secretsequence.start();
+
         if let Some(hwnd) = winutil::main_window_hwnd() {
             crate::dpi_fix::install(hwnd);
             winutil::install_minimize_hook(hwnd, &cc.egui_ctx);
@@ -793,6 +800,13 @@ impl HebnixApp {
         let rl_launch_unconfigured =
             config.rl_launch.mode == crate::config::RlLaunchMode::Unconfigured;
 
+        let discord_presence =
+            crate::discord_presence::DiscordPresence::start(config.settings.discord_rich_presence);
+        discord_presence.set_idle(
+            &config.settings,
+            hebnix_sdk::process::is_rocket_league_running(),
+        );
+
         let mut app = Self {
             base_dir: base_dir.clone(),
             themes_dir,
@@ -805,9 +819,11 @@ impl HebnixApp {
             ws_stats,
             stats_tx,
             monitor,
+            discord_presence,
             plugin_mgr,
             tray,
             hotkey,
+            _secretsequence: secretsequence,
             tab: Tab::Console,
             settings_subtab: SettingsSubTab::Hebnix,
             hebnix_settings_tab: HebnixSettingsTab::Interface,
@@ -821,6 +837,7 @@ impl HebnixApp {
             last_rl_open: false,
             last_api_open: false,
             in_match: false,
+            discord_match: None,
             match_ended: false,
             first_status: true,
             status_text: String::new(),
@@ -1256,6 +1273,7 @@ impl HebnixApp {
         self.stats.stop();
         self.ws_stats.stop();
         self.monitor.stop();
+        self.discord_presence.stop();
         self.tray = None;
         std::process::exit(0);
     }
@@ -1381,6 +1399,10 @@ impl HebnixApp {
                                     update.get("name").and_then(|v| v.as_str()).unwrap_or("");
                                 let author =
                                     update.get("author").and_then(|v| v.as_str()).unwrap_or("");
+                                let update_version = update
+                                    .get("version")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
 
                                 if id.is_empty() {
                                     continue;
@@ -1392,15 +1414,14 @@ impl HebnixApp {
                                     let slug = local_p.slug.clone();
                                     let was_enabled = local_p.enabled;
 
-                                    self.console.write(format!(
-                                        "[Core] Downloading update for plugin '{name}'..."
-                                    ));
                                     self.plugin_mgr.set_enabled(&slug, false, &mut self.config);
                                     self.save_config();
 
                                     let plugin_dir = self.plugin_dir.clone();
                                     let id_str = id.to_string();
                                     let name_str = name.to_string();
+                                    let version_str = update_version.to_string();
+                                    let slug_str = slug.clone();
                                     let tx = self.tx.clone();
 
                                     std::thread::spawn(move || {
@@ -1419,10 +1440,17 @@ impl HebnixApp {
                                                 .join(format!("temp_plugin_{id_str}.zip"));
                                             std::fs::write(&temp_zip, &bytes)
                                                 .map_err(|e| e.to_string())?;
-                                            let extract = install_zip(&temp_zip, &plugin_dir);
+                                            let extract = install_plugin_update(
+                                                &temp_zip,
+                                                &plugin_dir,
+                                                &slug_str,
+                                                &id_str,
+                                            );
                                             let _ = std::fs::remove_file(&temp_zip);
                                             extract?;
-                                            Ok(format!("Plugin '{name_str}' updated successfully."))
+                                            Ok(format!(
+                                                "Successfully updated {name_str} to {version_str}."
+                                            ))
                                         })(
                                         );
                                         let _ = tx.send(AppMsg::PluginAutoUpdateDone {
@@ -1444,10 +1472,8 @@ impl HebnixApp {
                 } => match result {
                     Ok(msg) => {
                         self.console.write(format!("[Console] {msg}"));
-                        self.plugin_mgr.refresh(&mut self.config, true);
-                        if was_enabled {
-                            self.plugin_mgr.set_enabled(&slug, true, &mut self.config);
-                        }
+                        self.plugin_mgr
+                            .reload_updated_plugin(&slug, was_enabled, &mut self.config);
                         self.save_config();
                     }
                     Err(e) => {
@@ -1537,6 +1563,10 @@ impl HebnixApp {
                 AppMsg::WorkshopOpDone { message } => {
                     self.console.write(message);
                     self.workshop.finish_op();
+                }
+                AppMsg::BackgroundChangerDone(result) => {
+                    let message = self.workshop.finish_background_changer(result);
+                    self.console.write(message);
                 }
                 AppMsg::WorkshopMultiplayerProgress(status) => {
                     self.workshop.set_multiplayer_progress(status);
@@ -1648,6 +1678,29 @@ impl HebnixApp {
                         .on_http_upload_response(&slug, &req_id, status, &body);
                     ctx.request_repaint();
                 }
+                AppMsg::PluginHttpResult {
+                    slug,
+                    req_id,
+                    status,
+                    body,
+                    headers,
+                } => {
+                    self.plugin_mgr
+                        .on_http_result(&slug, &req_id, status, &body, &headers);
+                    ctx.request_repaint();
+                }
+                AppMsg::PluginWsOpen { slug, id } => {
+                    self.plugin_mgr.on_ws_open(&slug, &id);
+                    ctx.request_repaint();
+                }
+                AppMsg::PluginWsMessage { slug, id, data } => {
+                    self.plugin_mgr.on_ws_message(&slug, &id, &data);
+                    ctx.request_repaint();
+                }
+                AppMsg::PluginWsClose { slug, id, reason } => {
+                    self.plugin_mgr.on_ws_close(&slug, &id, &reason);
+                    ctx.request_repaint();
+                }
             }
         }
     }
@@ -1655,6 +1708,7 @@ impl HebnixApp {
     fn handle_game_event(&mut self, event: hebnix_sdk::stats::StatsEvent) {
         match event.event_type.as_str() {
             "UpdateState" => {
+                let entered_match = !self.in_match && !self.match_ended;
                 if !self.match_ended {
                     self.in_match = true;
                     self.plugin_mgr.shared.borrow_mut().in_match = true;
@@ -1662,6 +1716,18 @@ impl HebnixApp {
                 if let Some(state) = event.update_state() {
                     self.workshop
                         .update_workshop_map_from_stats(&state.game.arena, &self.tx);
+                    if entered_match {
+                        let log = hebnix_sdk::log::parse_launch_log(None, true, "INT");
+                        self.discord_match = Some(crate::discord_presence::MatchInfo::from_state(
+                            state,
+                            log.game.as_ref(),
+                        ));
+                    } else if let Some(info) = self.discord_match.as_mut() {
+                        info.update_state(state);
+                    }
+                    if let Some(info) = self.discord_match.as_ref() {
+                        self.discord_presence.set_match(&self.config.settings, info);
+                    }
                 }
                 self.plugin_mgr.dispatch_game_event(&event);
             }
@@ -1669,12 +1735,15 @@ impl HebnixApp {
                 self.in_match = false;
                 self.match_ended = true;
                 self.plugin_mgr.shared.borrow_mut().in_match = false;
+                self.refresh_discord_presence();
                 self.plugin_mgr.dispatch_game_event(&event);
             }
             "MatchDestroyed" => {
                 self.in_match = false;
                 self.match_ended = false;
                 self.plugin_mgr.shared.borrow_mut().in_match = false;
+                self.discord_match = None;
+                self.refresh_discord_presence();
                 if !self.config.settings.suppress_left_alerts {
                     self.console
                         .write("[Core] Left match or game closed. Resetting plugin metrics.");
@@ -1760,7 +1829,22 @@ impl HebnixApp {
         }
 
         self.plugin_mgr.shared.borrow_mut().rl_connected = self.currently_connected;
+        if !self.in_match && !self.match_ended {
+            self.discord_presence
+                .set_idle(&self.config.settings, rl_open);
+        }
         self.first_status = false;
+    }
+
+    fn refresh_discord_presence(&self) {
+        if (self.in_match || self.match_ended)
+            && let Some(info) = self.discord_match.as_ref()
+        {
+            self.discord_presence.set_match(&self.config.settings, info);
+        } else {
+            self.discord_presence
+                .set_idle(&self.config.settings, self.last_rl_open);
+        }
     }
 
     fn update_hotkey(&mut self, key_name: &str) {
@@ -1856,6 +1940,9 @@ impl HebnixApp {
         self.patcher_ball.active_ball = self.config.patcher.active_ball.clone();
         self.patcher_boost.active_boost = self.config.patcher.active_boost.clone();
         self.patcher_decal.active_decals = self.config.patcher.active_decals.clone();
+        self.patcher_ball.source = self.config.patcher.ball_source;
+        self.patcher_boost.source = self.config.patcher.boost_source;
+        self.patcher_decal.source = self.config.patcher.decal_source;
         self.patcher_ball.refresh_balls();
         self.patcher_boost.refresh_boosts();
         self.patcher_decal.refresh_decals();
@@ -3137,6 +3224,11 @@ impl HebnixApp {
                             HebnixSettingsTab::System,
                             "System",
                         );
+                        ui.selectable_value(
+                            &mut self.hebnix_settings_tab,
+                            HebnixSettingsTab::Discord,
+                            "Discord",
+                        );
                     });
             });
 
@@ -3150,6 +3242,7 @@ impl HebnixApp {
                     ui.heading(match self.hebnix_settings_tab {
                         HebnixSettingsTab::Interface => "Interface Configuration",
                         HebnixSettingsTab::Directories => "Directories & Files Configuration",
+                        HebnixSettingsTab::Discord => "Discord",
                         HebnixSettingsTab::System => "System Configuration",
                     });
                     ui.add_space(8.0);
@@ -3384,6 +3477,108 @@ impl HebnixApp {
                                     .size(11.0)
                                     .color(egui::Color32::GRAY),
                             );
+                        }
+
+                        HebnixSettingsTab::Discord => {
+                            let mut changed = false;
+                            if ui
+                                .checkbox(
+                                    &mut self.config.settings.discord_rich_presence,
+                                    "Enable Discord Rich Presence",
+                                )
+                                .changed()
+                            {
+                                self.discord_presence
+                                    .configure(self.config.settings.discord_rich_presence);
+                                changed = true;
+                            }
+                            ui.add_space(8.0);
+                            ui.label("Message:");
+                            let mut game_state = self.config.settings.discord_game_state;
+                            if ui.checkbox(&mut game_state, "Game State").changed() {
+                                self.config.settings.discord_game_state = game_state;
+                                changed = true;
+                            }
+
+                            let selected = self.config.settings.discord_show_score as u8
+                                + self.config.settings.discord_show_map as u8
+                                + self.config.settings.discord_show_gamemode as u8;
+                            if ui
+                                .add_enabled(
+                                    !self.config.settings.discord_show_score || selected > 1,
+                                    egui::Checkbox::new(
+                                        &mut self.config.settings.discord_show_score,
+                                        "Show score",
+                                    ),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                            let selected = self.config.settings.discord_show_score as u8
+                                + self.config.settings.discord_show_map as u8
+                                + self.config.settings.discord_show_gamemode as u8;
+                            if ui
+                                .add_enabled(
+                                    !self.config.settings.discord_show_map || selected > 1,
+                                    egui::Checkbox::new(
+                                        &mut self.config.settings.discord_show_map,
+                                        "Show map",
+                                    ),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                            let selected = self.config.settings.discord_show_score as u8
+                                + self.config.settings.discord_show_map as u8
+                                + self.config.settings.discord_show_gamemode as u8;
+                            if ui
+                                .add_enabled(
+                                    !self.config.settings.discord_show_gamemode || selected > 1,
+                                    egui::Checkbox::new(
+                                        &mut self.config.settings.discord_show_gamemode,
+                                        "Show gamemode",
+                                    ),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+
+                            ui.horizontal(|ui| {
+                                let mut custom = !self.config.settings.discord_game_state;
+                                if ui.checkbox(&mut custom, "Custom").changed() {
+                                    self.config.settings.discord_game_state = !custom;
+                                    changed = true;
+                                }
+                                if ui
+                                    .add_enabled(
+                                        custom,
+                                        egui::TextEdit::singleline(
+                                            &mut self.config.settings.discord_custom_message,
+                                        )
+                                        .hint_text("Custom message")
+                                        .desired_width(280.0),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
+                            });
+                            if self.config.settings.discord_game_state {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "The custom message is disabled while Game State is selected.",
+                                    )
+                                    .size(11.0)
+                                    .color(egui::Color32::GRAY),
+                                );
+                            }
+                            if changed {
+                                self.save_config();
+                                self.refresh_discord_presence();
+                            }
                         }
 
                         HebnixSettingsTab::System => {
@@ -4576,6 +4771,56 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
     }
 }
 
+fn install_plugin_update(
+    zip_path: &std::path::Path,
+    plugin_dir: &std::path::Path,
+    slug: &str,
+    plugin_id: &str,
+) -> Result<(), String> {
+    let target = plugin_dir.join(slug);
+    let backup = plugin_dir.join(format!(".{slug}.updating"));
+    let _ = std::fs::remove_dir_all(&backup);
+    if target.exists() {
+        std::fs::rename(&target, &backup).map_err(|error| error.to_string())?;
+    }
+    let result = (|| {
+        install_zip(zip_path, plugin_dir)?;
+        let extracted = std::fs::read_dir(plugin_dir)
+            .map_err(|error| error.to_string())?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.is_dir()
+                    && path != &backup
+                    && std::fs::read_to_string(path.join("plugin.toml"))
+                        .ok()
+                        .and_then(|text| {
+                            toml::from_str::<crate::plugins::manifest::PluginManifest>(&text).ok()
+                        })
+                        .and_then(|manifest| manifest.plugin_id)
+                        .as_deref()
+                        == Some(plugin_id)
+            })
+            .ok_or_else(|| format!("Updated archive did not contain plugin ID {plugin_id}"))?;
+        if extracted != target {
+            std::fs::rename(&extracted, &target).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            let _ = std::fs::remove_dir_all(&backup);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&target);
+            if backup.exists() {
+                let _ = std::fs::rename(&backup, &target);
+            }
+            Err(error)
+        }
+    }
+}
 fn install_zip(zip_path: &std::path::Path, plugin_dir: &std::path::Path) -> Result<(), String> {
     let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -4589,6 +4834,7 @@ impl Drop for HebnixApp {
         // explicit tray/window quit handler.
         self.spoofer_mgr.shutdown();
         self.workshop.suspend_multiplayer();
+        self.discord_presence.stop();
     }
 }
 
@@ -4600,6 +4846,11 @@ impl eframe::App for HebnixApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
         self.handle_messages(ctx);
+
+        // rl_path can change after startup, no-ops if unchanged
+        crate::patcher::rl_font::set_install_dir(std::path::Path::new(
+            &self.config.settings.rl_path,
+        ));
 
         // linux-port: exempt_own_window_decorations() (main.rs) runs
         // before our window exists, as a static windowrule Hyprland only
@@ -4685,7 +4936,7 @@ impl eframe::App for HebnixApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.tab, Tab::Console, "Console");
-                    ui.selectable_value(&mut self.tab, Tab::Workshop, "Workshop Maps");
+                    ui.selectable_value(&mut self.tab, Tab::Workshop, "Maps");
                     ui.selectable_value(&mut self.tab, Tab::Spoofer, "Spoofer");
                     ui.selectable_value(&mut self.tab, Tab::Patcher, "Items");
                     ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
@@ -4972,17 +5223,45 @@ impl eframe::App for HebnixApp {
                                     }
                                     let active_boost = self.patcher_boost.active_boost.clone();
                                     if let Some(name) = active_boost {
-                                        let image = self
+                                        let images = self
                                             .patcher_boost
                                             .boosts
                                             .iter()
                                             .find(|item| item.name == name)
-                                            .and_then(|item| item.background_image.clone().or_else(|| item.fill_image.clone()));
+                                            .map(|item| {
+                                                (
+                                                    item.background_image.clone(),
+                                                    item.fill_image.clone(),
+                                                    item.glow_image.clone(),
+                                                    item.tint_image.clone(),
+                                                )
+                                            });
                                         ui.horizontal(|ui| {
-                                            if let Some(image) = image {
-                                                ui.add(egui::Image::from_bytes(
-                                                    format!("bytes://active/boost/{name}"), image,
-                                                ).fit_to_exact_size(egui::vec2(90.0, 58.0)));
+                                            if let Some((background, fill, glow, tint)) = images {
+                                                let size = egui::vec2(90.0, 58.0);
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    size,
+                                                    egui::Sense::hover(),
+                                                );
+                                                for (layer, image) in [
+                                                    ("background", background),
+                                                    ("fill", fill),
+                                                    ("glow", glow),
+                                                    ("tint", tint),
+                                                ] {
+                                                    if let Some(image) = image {
+                                                        ui.put(
+                                                            rect,
+                                                            egui::Image::from_bytes(
+                                                                format!(
+                                                                    "bytes://active/boost/{name}/{layer}"
+                                                                ),
+                                                                image,
+                                                            )
+                                                            .fit_to_exact_size(size),
+                                                        );
+                                                    }
+                                                }
                                             }
                                             ui.vertical(|ui| {
                                                 ui.strong(&name);

@@ -86,6 +86,61 @@ pub fn rect(x: f32, y: f32, w: f32, h: f32, color: Rgba, width: f32, filled: boo
     });
 }
 
+/// rounded-rectangle outline; `radius` is clamped to half the shorter side
+fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<tiny_skia::Path> {
+    let r = radius.max(0.0).min(w.abs().min(h.abs()) / 2.0);
+    let mut pb = PathBuilder::new();
+    if r <= 0.0 {
+        pb.push_rect(tiny_skia::Rect::from_xywh(x, y, w, h)?);
+        return pb.finish();
+    }
+    // cubic approximation of a quarter circle
+    let k = r * 0.552_284_75;
+    let (right, bottom) = (x + w, y + h);
+    pb.move_to(x + r, y);
+    pb.line_to(right - r, y);
+    pb.cubic_to(right - r + k, y, right, y + r - k, right, y + r);
+    pb.line_to(right, bottom - r);
+    pb.cubic_to(right, bottom - r + k, right - r + k, bottom, right - r, bottom);
+    pb.line_to(x + r, bottom);
+    pb.cubic_to(x + r - k, bottom, x, bottom - r + k, x, bottom - r);
+    pb.line_to(x, y + r);
+    pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
+    pb.close();
+    pb.finish()
+}
+
+/// linear gradient from `c1` to `c2` across the box at `angle` degrees
+/// (0 = left to right), optionally with rounded corners
+#[allow(clippy::too_many_arguments)]
+pub fn gradient(x: f32, y: f32, w: f32, h: f32, c1: Rgba, c2: Rgba, radius: f32, angle: f32) {
+    with_canvas(|canvas| {
+        let Some(path) = rounded_rect_path(x, y, w, h, radius) else {
+            return;
+        };
+        let rad = angle.to_radians();
+        let (dx, dy) = (rad.cos(), rad.sin());
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        let half = (w.abs() * dx.abs() + h.abs() * dy.abs()) / 2.0;
+        let Some(shader) = tiny_skia::LinearGradient::new(
+            tiny_skia::Point::from_xy(cx - dx * half, cy - dy * half),
+            tiny_skia::Point::from_xy(cx + dx * half, cy + dy * half),
+            vec![
+                tiny_skia::GradientStop::new(0.0, c1.to_color()),
+                tiny_skia::GradientStop::new(1.0, c2.to_color()),
+            ],
+            tiny_skia::SpreadMode::Pad,
+            Transform::identity(),
+        ) else {
+            return;
+        };
+        let mut paint = Paint::default();
+        paint.shader = shader;
+        paint.anti_alias = true;
+        canvas.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+    });
+}
+
 pub fn circle(x: f32, y: f32, radius: f32, color: Rgba, width: f32, filled: bool) {
     with_canvas(|canvas| {
         let mut pb = PathBuilder::new();
@@ -116,30 +171,69 @@ fn font() -> &'static ab_glyph::FontArc {
     })
 }
 
-pub fn text(x: f32, y: f32, s: &str, color: Rgba, size: f32, halign: &str) {
+/// extra advance added per glyph for synthetic bold (the bundled font has a
+/// single weight, so bold is faked by drawing each glyph twice, offset)
+fn bold_extra(size: f32, bold: bool) -> f32 {
+    if bold { (size * 0.04).max(0.5) } else { 0.0 }
+}
+
+/// pixel width of a string in the overlay font, for text layout without a
+/// live canvas
+pub fn measure_text(s: &str, size: f32, bold: bool) -> f32 {
     use ab_glyph::{Font, ScaleFont};
 
     let font = font();
     let scale = font.pt_to_px_scale(size).unwrap_or(ab_glyph::PxScale::from(size));
     let scaled = font.as_scaled(scale);
+    s.chars().map(|c| scaled.h_advance(font.glyph_id(c))).sum::<f32>() + bold_extra(size, bold)
+}
+
+/// `font` is accepted for API parity with the Windows overlay; only the
+/// bundled font is available here. `clip` is a (width, height) box anchored
+/// at the start of the text line; glyph pixels outside it are dropped.
+#[allow(clippy::too_many_arguments)]
+pub fn text(
+    x: f32,
+    y: f32,
+    s: &str,
+    color: Rgba,
+    size: f32,
+    halign: &str,
+    _font: &str,
+    bold: bool,
+    clip: Option<(f32, f32)>,
+) {
+    use ab_glyph::{Font, ScaleFont};
+
+    let font = font();
+    let scale = font.pt_to_px_scale(size).unwrap_or(ab_glyph::PxScale::from(size));
+    let scaled = font.as_scaled(scale);
+    let extra = bold_extra(size, bold);
 
     // pre-measure total advance so center/right alignment can offset the
     // whole line before laying out glyphs.
-    let total_advance: f32 = s.chars().map(|c| scaled.h_advance(font.glyph_id(c))).sum();
+    let total_advance: f32 =
+        s.chars().map(|c| scaled.h_advance(font.glyph_id(c))).sum::<f32>() + extra;
     let start_x = match halign {
         "center" => x - total_advance / 2.0,
         "right" => x - total_advance,
         _ => x,
     };
     let baseline_y = y + scaled.ascent();
+    let clip_box = clip.map(|(w, h)| (start_x, y, start_x + w, y + h));
+    let passes: &[f32] = if bold { &[0.0, extra] } else { &[0.0] };
 
     with_canvas(|canvas| {
         let mut pen_x = start_x;
         for c in s.chars() {
             let glyph_id = font.glyph_id(c);
-            let glyph = glyph_id.with_scale_and_position(scale, ab_glyph::point(pen_x, baseline_y));
             let advance = scaled.h_advance(glyph_id);
-            if let Some(outlined) = font.outline_glyph(glyph) {
+            for dx in passes {
+                let glyph =
+                    glyph_id.with_scale_and_position(scale, ab_glyph::point(pen_x + dx, baseline_y));
+                let Some(outlined) = font.outline_glyph(glyph) else {
+                    continue;
+                };
                 let bounds = outlined.px_bounds();
                 let ox = bounds.min.x as i32;
                 let oy = bounds.min.y as i32;
@@ -151,6 +245,12 @@ pub fn text(x: f32, y: f32, s: &str, color: Rgba, size: f32, halign: &str) {
                     let py = oy + gy as i32;
                     if px < 0 || py < 0 || px as u32 >= canvas.width() || py as u32 >= canvas.height() {
                         return;
+                    }
+                    if let Some((left, top, right, bottom)) = clip_box {
+                        let (fx, fy) = (px as f32, py as f32);
+                        if fx < left || fx >= right || fy < top || fy >= bottom {
+                            return;
+                        }
                     }
                     let a = (color.3 as f32 * coverage.min(1.0)) as u8;
                     if a == 0 {
@@ -210,7 +310,7 @@ pub fn polygon(points: &[(f32, f32)], color: Rgba) {
 /// draws an image file scaled into the (x, y, w, h) box. decoded once per
 /// path and cached for the process lifetime (plugin overlays tend to draw
 /// the same handful of icons every frame).
-pub fn image(path: &str, x: f32, y: f32, w: f32, h: f32, opacity: f32) {
+pub fn image(path: &str, x: f32, y: f32, w: f32, h: f32, opacity: f32, radius: f32) {
     thread_local! {
         static CACHE: RefCell<std::collections::HashMap<String, Option<Pixmap>>> =
             RefCell::new(std::collections::HashMap::new());
@@ -234,7 +334,17 @@ pub fn image(path: &str, x: f32, y: f32, w: f32, h: f32, opacity: f32) {
                 opacity: opacity.clamp(0.0, 1.0),
                 ..Default::default()
             };
-            canvas.draw_pixmap(0, 0, src.as_ref(), &paint, transform, None);
+            // rounded corners: clip the draw with a mask of the rounded box
+            let mask = if radius > 0.0 {
+                rounded_rect_path(x, y, w, h, radius).and_then(|path| {
+                    let mut mask = tiny_skia::Mask::new(canvas.width(), canvas.height())?;
+                    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+                    Some(mask)
+                })
+            } else {
+                None
+            };
+            canvas.draw_pixmap(0, 0, src.as_ref(), &paint, transform, mask.as_ref());
         });
     });
 }

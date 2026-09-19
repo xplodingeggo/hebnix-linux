@@ -54,6 +54,7 @@ hex = "0.4"
 gamepads = "0.1"
 rodio = "0.17"
 tungstenite = { version = "0.21", features = ["native-tls"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
 
 # --- linux port additions ---
 sysinfo = "0.38.4"

@@ -168,7 +168,7 @@ impl TrackerClient {
         );
         let response = match ureq::get(&url)
             .set("Accept", "application/json")
-            .set("User-Agent", "Hebnix-Linux/2.1.7")
+            .set("User-Agent", "Hebnix-Linux/2.1.8")
             .timeout(self.timeout)
             .call()
         {
@@ -451,3 +451,4 @@ mod tests {
         assert_eq!(stats.best, "");
     }
 }
+

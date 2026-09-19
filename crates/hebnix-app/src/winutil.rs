@@ -75,6 +75,12 @@ pub fn main_window_hwnd() -> Option<WindowHandle> {
     None
 }
 
+/// Windows parents file dialogs to the Hebnix window; there is no equivalent
+/// to attach to here, so the dialog is returned unchanged.
+pub fn parent_file_dialog(dialog: rfd::FileDialog) -> rfd::FileDialog {
+    dialog
+}
+
 pub fn set_main_window_topmost(_topmost: bool) {}
 
 pub fn install_minimize_hook(_hwnd: WindowHandle, _ctx: &eframe::egui::Context) {}
