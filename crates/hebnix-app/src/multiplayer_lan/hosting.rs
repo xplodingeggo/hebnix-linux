@@ -308,25 +308,20 @@ mod tests {
     #[test]
     fn rewrites_the_physical_lan_endpoint_to_the_tap_host() {
         let payload = unreal_ansi_string("192.168.0.119:7777");
-        let (_, _, replacement) = find_unreal_lan_endpoint(&payload, "192.10.192.1")
+        let (_, _, replacement) = find_unreal_lan_endpoint(&payload, "10.242.77.1")
             .expect("the LAN endpoint should be found");
-        assert_eq!(replacement, unreal_ansi_string("192.10.192.1:7777"));
+        assert_eq!(replacement, unreal_ansi_string("10.242.77.1:7777"));
     }
     #[test]
     fn rewrites_binary_and_equal_length_lan_endpoints() {
         let mut binary = [172, 31, 64, 1, 0x1e, 0x61];
         assert!(replace_binary_lan_endpoint(&mut binary, HOST_ADDRESS_BYTES));
         assert_eq!(&binary[..4], &HOST_ADDRESS_BYTES);
-        // upstream's test used "192.10.192.1" here, one character longer than
-        // "172.31.64.1" - replace_equal_length_ascii_endpoint requires equal
-        // length by design (see its doc), so that combination can never
-        // succeed. Using a same-length replacement instead so this actually
-        // exercises the equal-length swap path.
         let mut text = b"172.31.64.1:7777".to_vec();
         assert!(replace_equal_length_ascii_endpoint(
             &mut text,
-            "192.10.64.1"
+            "10.242.77.1"
         ));
-        assert_eq!(text, b"192.10.64.1:7777");
+        assert_eq!(text, b"10.242.77.1:7777");
     }
 }

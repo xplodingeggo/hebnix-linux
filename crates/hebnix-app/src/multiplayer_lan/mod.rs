@@ -31,11 +31,11 @@ pub use tap::{
     has_net_bind_service_capability, is_configured, raise_net_admin_ambient,
 };
 
-pub const VPN_SUBNET: &str = "192.10.192";
-pub const HOST_ADDRESS: &str = "192.10.192.1";
-pub const HOST_ADDRESS_BYTES: [u8; 4] = [192, 10, 192, 1];
-pub const FIRST_GUEST_ADDRESS: &str = "192.10.192.2";
-pub const GUEST_ADDRESS_RANGE: &str = "192.10.192.2-192.10.192.8";
+pub const VPN_SUBNET: &str = "10.242.77";
+pub const HOST_ADDRESS: &str = "10.242.77.1";
+pub const HOST_ADDRESS_BYTES: [u8; 4] = [10, 242, 77, 1];
+pub const FIRST_GUEST_ADDRESS: &str = "10.242.77.2";
+pub const GUEST_ADDRESS_RANGE: &str = "10.242.77.2-10.242.77.8";
 pub const PACKET_PUMP_INTERVAL: Duration = Duration::from_millis(2);
 pub const SESSION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
 
