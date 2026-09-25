@@ -5,6 +5,10 @@ use serde_json::Value;
 #[derive(Debug)]
 pub enum AppMsg {
     Log(String),
+    ReloadCatalogs,
+    CatalogsFetched {
+        result: Result<std::collections::HashMap<String, Value>, String>,
+    },
     GameEvent(StatsEvent),
     // periodic RL monitor result. root_dir is the game install folder resolved
     // from the running process, used to auto-fill the configured paths.
@@ -69,7 +73,10 @@ pub enum AppMsg {
         bytes: Vec<u8>,
     },
     PluginDownloadDone {
-        result: Result<String, String>,
+        result: Result<(String, String), String>,
+    },
+    ThemeInstallDone {
+        result: Result<(String, String), String>,
     },
     // http result, slug picks the plugin that asked
     PluginHttpRes {

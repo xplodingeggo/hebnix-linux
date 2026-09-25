@@ -1,4 +1,4 @@
-//! Local PsyNet websocket bridge used by rank spoofing.
+//! Local PsyNet websocket bridge used by rank spoofing and item spawning.
 //!
 //! The config response is rewritten to point PerConURL/PerConURLv2 here. The
 //! bridge forwards every websocket frame to the real service and rewrites only
@@ -7,11 +7,11 @@
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::handshake::server::{Request, Response};
 use tungstenite::http::{HeaderName, HeaderValue};
@@ -32,6 +32,8 @@ const FORWARD_HEADERS: &[&str] = &[
 
 pub struct SkillBridge {
     running: Arc<AtomicBool>,
+    outbound: Sender<String>,
+    connections: Arc<AtomicUsize>,
 }
 
 impl SkillBridge {
@@ -49,6 +51,9 @@ impl SkillBridge {
             format!("Rank bridge listening on {LISTEN_ADDR}\n"),
         );
         let running = Arc::new(AtomicBool::new(true));
+        let (outbound, outbound_rx) = unbounded::<String>();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let thread_connections = Arc::clone(&connections);
         let thread_running = Arc::clone(&running);
         let thread_tx = tx.clone();
         std::thread::Builder::new()
@@ -62,8 +67,12 @@ impl SkillBridge {
                     let ranks = Arc::clone(&ranks);
                     let tx = thread_tx.clone();
                     let dump_path = dump_path.clone();
+                    let outbound_rx = outbound_rx.clone();
+                    let connections = Arc::clone(&thread_connections);
                     std::thread::spawn(move || {
-                        if let Err(error) = handle_connection(stream, ranks, &dump_path) {
+                        if let Err(error) =
+                            handle_connection(stream, ranks, outbound_rx, connections, &dump_path)
+                        {
                             let _ = tx.send(AppMsg::Log(format!(
                                 "[Spoofer] Rank websocket bridge: {error}"
                             )));
@@ -72,7 +81,17 @@ impl SkillBridge {
                 }
             })
             .map_err(|error| format!("cannot start rank websocket bridge: {error}"))?;
-        Ok(Self { running })
+        Ok(Self { running, outbound, connections })
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connections.load(Ordering::Relaxed) > 0
+    }
+
+    pub fn send_text(&self, message: String) -> Result<(), String> {
+        self.outbound
+            .send(message)
+            .map_err(|_| "PsyNet websocket bridge is not running".into())
     }
 
     pub fn stop(&self) {
@@ -84,6 +103,8 @@ impl SkillBridge {
 fn handle_connection(
     stream: TcpStream,
     ranks: Arc<Mutex<HashMap<i32, (i32, f64)>>>,
+    outbound: Receiver<String>,
+    connections: Arc<AtomicUsize>,
     dump_path: &std::path::Path,
 ) -> Result<(), String> {
     let request_state = Arc::new(Mutex::new(None::<(String, Vec<(String, String)>)>));
@@ -131,6 +152,12 @@ fn handle_connection(
     }
     let (mut upstream, _) =
         connect(request).map_err(|error| format!("upstream websocket failed: {error}"))?;
+    connections.fetch_add(1, Ordering::SeqCst);
+    struct ConnectionGuard(Arc<AtomicUsize>);
+    impl Drop for ConnectionGuard {
+        fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+    }
+    let _connection_guard = ConnectionGuard(connections);
 
     local
         .get_mut()
@@ -152,6 +179,12 @@ fn handle_connection(
     let rule = RankRule::new(ranks);
     loop {
         let mut progressed = false;
+        while let Ok(text) = outbound.try_recv() {
+            local
+                .send(Message::Text(text))
+                .map_err(|error| format!("send item reward to game failed: {error}"))?;
+            progressed = true;
+        }
         match local.read() {
             Ok(message) => {
                 progressed = true;

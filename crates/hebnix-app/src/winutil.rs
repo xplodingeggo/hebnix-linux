@@ -246,6 +246,25 @@ pub fn restart_rocket_league_multihome(
     crate::rl_launch::restart_multihome(launch_cfg, address)
 }
 
+/// Remove Rocket League's embedded-browser cache from every known Wine
+/// prefix's Documents folder (and the host's own, for native layouts).
+pub fn clear_rocket_league_web_cache() -> std::io::Result<()> {
+    let rel = std::path::Path::new("My Games/Rocket League/TAGame/Cache/WebCache");
+    let mut documents = hebnix_sdk::process::candidate_documents_dirs();
+    if let Some(host_docs) = dirs::document_dir() {
+        documents.push(host_docs);
+    }
+    let mut first_error = None;
+    for docs in documents {
+        match std::fs::remove_dir_all(docs.join(rel)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => first_error = first_error.or(Some(error)),
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 pub fn clear_rocket_league_multihome() -> Result<(), String> {
     // no-op: apply_epic_multihome's ini edits are Windows Epic-launcher-path
     // specific and multihome LAN isn't wired up on Linux (see

@@ -3,15 +3,18 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::upk_package::{ExportEntry, Prop, UpkPackage, strip};
+use super::upk_package::{strip, ExportEntry, Prop, UpkPackage};
 
 const BACKUP_SUFFIX: &str = ".hbnx_mapbak";
 const MANIFEST: &str = "background_swaps.json";
+const NO_BACKGROUND_DONOR: &str = "__HBNX_NO_BACKGROUND__";
 const SAFE_DONORS: &[&str] = &[
+    "ShatterShot_VFX",
     "BG_Stadium_10A_P",
     "BG_NeoTokyo_Arcade",
     "BG_NeoTokyo_Hax",
     "BG_Woods_Day_P",
+    "UtopiaStadium_P",
     "BG_FNI_Stadium",
 ];
 
@@ -48,12 +51,76 @@ pub fn run(
             host.ok_or("Missing host arena")?,
             donor.ok_or("Missing background donor")?,
         ),
+        "remove" => remove_background(cooked, state_dir, host.ok_or("Missing host arena")?),
         "undo" => undo(cooked, state_dir, host.ok_or("Missing host arena")?),
         "reset" => reset(cooked, state_dir),
         _ => Err("Invalid background changer command".into()),
     }
 }
 
+fn remove_background(cooked: &Path, state_dir: &Path, host_name: &str) -> Result<String, String> {
+    validate_name(host_name)?;
+    ensure_game_closed("removing a background")?;
+    let host_path = map_path(cooked, host_name);
+    if !host_path.is_file() {
+        return Err(format!("Host arena is missing: {host_name}.upk"));
+    }
+    let donor_name = SAFE_DONORS
+        .iter()
+        .find(|name| map_path(cooked, name).is_file())
+        .ok_or("No game-safe scenery package is installed to create an empty background.")?;
+    let mut state = load_state(state_dir)?;
+    undo_core(cooked, &mut state, host_name)?;
+    save_state(state_dir, &state)?;
+    let old_copies = matching_files(cooked, |name| {
+        name.starts_with("HBNX_") && name.ends_with(".upk")
+    });
+    let old_backups = matching_files(cooked, |name| name.ends_with(".upk.hbnx_mapbak"));
+    let backup = backup_path(&host_path);
+    if backup.exists() {
+        return Err("This arena has a background backup that Hebnix does not own. Restore it before changing this background.".into());
+    }
+    std::fs::copy(&host_path, &backup).map_err(|e| format!("Could not back up host arena: {e}"))?;
+    let result = remove_background_inner(cooked, &host_path, donor_name);
+    match result {
+        Ok((copy_name, patched_sub_levels)) => {
+            state.insert(
+                host_name.to_string(),
+                SwapState {
+                    donor: NO_BACKGROUND_DONOR.to_string(),
+                    copy_name,
+                    patched_sub_levels,
+                    extra_copies: Vec::new(),
+                },
+            );
+            if let Err(e) = save_state(state_dir, &state) {
+                let _ = undo_core(cooked, &mut state, host_name);
+                return Err(e);
+            }
+            Ok(format!(
+                "Removed {}'s fog, sky and background.",
+                friendly(host_name)
+            ))
+        }
+        Err(error) => {
+            for new_backup in matching_files(cooked, |name| name.ends_with(".upk.hbnx_mapbak"))
+                .difference(&old_backups)
+            {
+                let live =
+                    PathBuf::from(new_backup.to_string_lossy().trim_end_matches(BACKUP_SUFFIX));
+                let _ = restore_file(new_backup, &live);
+            }
+            for new_copy in matching_files(cooked, |name| {
+                name.starts_with("HBNX_") && name.ends_with(".upk")
+            })
+            .difference(&old_copies)
+            {
+                let _ = std::fs::remove_file(new_copy);
+            }
+            Err(error)
+        }
+    }
+}
 fn apply(
     cooked: &Path,
     state_dir: &Path,
@@ -208,6 +275,53 @@ fn apply_inner(
     Ok((copy_name, patched_sub_levels))
 }
 
+fn remove_background_inner(
+    cooked: &Path,
+    host_path: &Path,
+    donor_name: &str,
+) -> Result<(String, Vec<String>), String> {
+    let mut host = UpkPackage::load(host_path)?;
+    let slot = host
+        .find_stream_name_index()
+        .ok_or("This map has no streaming slot and cannot host a background")?;
+    let slot_name = host.names[slot].clone();
+    let copy_name = make_copy_name("EMPTY", slot_name.len())?;
+    let generated = map_path(cooked, &copy_name);
+    std::fs::copy(map_path(cooked, donor_name), &generated)
+        .map_err(|e| format!("Could not create empty scenery package: {e}"))?;
+    let mut generated_pkg = UpkPackage::load(&generated)?;
+    clear_scenery(&mut generated_pkg)?;
+    generated_pkg.save(&generated)?;
+    let stream_indices = host.find_all_stream_name_indices();
+    let mut patched_sub_levels = Vec::new();
+    for index in stream_indices.into_iter().filter(|i| *i != slot) {
+        let name = host.names[index].clone();
+        if !visible_sublevel(&name) {
+            continue;
+        }
+        let path = map_path(cooked, &name);
+        if !path.is_file() {
+            continue;
+        }
+        let backup = backup_path(&path);
+        if !backup.exists() {
+            std::fs::copy(&path, &backup)
+                .map_err(|e| format!("Could not back up sub-level {name}: {e}"))?;
+        }
+        let mut sub = UpkPackage::load(&backup)?;
+        let mut patches = host_sky_patches(&sub, false)?;
+        patches.extend(disable_old_atmosphere(&sub)?);
+        apply_patches(&mut sub, patches)?;
+        sub.save(&path)?;
+        patched_sub_levels.push(name);
+    }
+    host.rename_name(slot, &copy_name)?;
+    let mut patches = host_sky_patches(&host, false)?;
+    patches.extend(disable_old_atmosphere(&host)?);
+    apply_patches(&mut host, patches)?;
+    host.save(host_path)?;
+    Ok((copy_name, patched_sub_levels))
+}
 fn patch_donor_outside_only(package: &mut UpkPackage) -> Result<usize, String> {
     let mut patches = Vec::new();
     let mut retained = 0usize;
@@ -256,7 +370,21 @@ fn patch_donor_outside_only(package: &mut UpkPackage) -> Result<usize, String> {
                 }
             }
         }
-        if mesh_prop.is_some() || class.contains("Collision") || class == "BrushComponent" {
+        if is_gameplay_actor_class(class) {
+            for p in &props {
+                if p.tag_type == "ObjectProperty" {
+                    let off = e.serial_offset + p.value_offset;
+                    if package.read_int(off)? != 0 {
+                        patches.push((off, vec![0; 4]));
+                    }
+                }
+            }
+        }
+        if mesh_prop.is_some()
+            || class.contains("Collision")
+            || class == "BrushComponent"
+            || is_gameplay_actor_class(class)
+        {
             for p in &props {
                 if p.tag_type == "BoolProperty"
                     && (p.name.contains("Collide")
@@ -272,6 +400,39 @@ fn patch_donor_outside_only(package: &mut UpkPackage) -> Result<usize, String> {
     Ok(retained)
 }
 
+fn clear_scenery(package: &mut UpkPackage) -> Result<(), String> {
+    let mut patches = Vec::new();
+    for e in &package.exports {
+        let class_name = package.class_of(e);
+        let class = strip(&class_name);
+        let props = package.parse_props(e);
+        let mesh_property = match class {
+            "StaticMeshComponent" | "InstancedStaticMeshComponent" => "StaticMesh",
+            "SkeletalMeshComponent" => "SkeletalMesh",
+            _ => "",
+        };
+        for p in &props {
+            let offset = e.serial_offset + p.value_offset;
+            if (!mesh_property.is_empty()
+                && p.name == mesh_property
+                && p.tag_type == "ObjectProperty")
+                || (class == "ParticleSystemComponent"
+                    && p.name == "Template"
+                    && p.tag_type == "ObjectProperty")
+            {
+                patches.push((offset, vec![0; 4]));
+            }
+            if p.tag_type == "BoolProperty"
+                && (p.name.contains("Collide")
+                    || p.name.contains("Block")
+                    || p.name.contains("RigidBody"))
+            {
+                patches.push((offset - 1, vec![0]));
+            }
+        }
+    }
+    apply_patches(package, patches)
+}
 fn host_sky_patches(package: &UpkPackage, preserve_sky: bool) -> Result<Vec<Patch>, String> {
     let mut patches = Vec::new();
     for e in &package.exports {
@@ -464,6 +625,24 @@ fn ambient_particle(package: &UpkPackage, e: &ExportEntry, reference: i32) -> bo
     .iter()
     .any(|x| lower.contains(x))
 }
+fn is_gameplay_actor_class(class: &str) -> bool {
+    let n = class.to_ascii_lowercase();
+    [
+        "gameevent",
+        "gameinfo",
+        "goal",
+        "pylon_soccar",
+        "playerstart",
+        "spawnpoint",
+        "spectatorvolume",
+        "trigger",
+        "vehiclepickup",
+        "boostpickup",
+    ]
+    .iter()
+    .any(|hint| n.contains(hint))
+}
+
 fn donor_outside_scope(mesh: &str) -> bool {
     if is_gameplay_structure(mesh) {
         return false;
@@ -755,4 +934,168 @@ fn backup_path(path: &Path) -> PathBuf {
 }
 fn friendly(name: &str) -> String {
     name.replace('_', " ").trim().to_string()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn retained_meshes(package: &UpkPackage) -> Vec<String> {
+        let mut meshes = Vec::new();
+        for export in &package.exports {
+            let class_name = package.class_of(export);
+            let class = strip(&class_name);
+            let property = match class {
+                "StaticMeshComponent" | "InstancedStaticMeshComponent" => "StaticMesh",
+                "SkeletalMeshComponent" => "SkeletalMesh",
+                _ => continue,
+            };
+            let Some(prop) = package
+                .parse_props(export)
+                .into_iter()
+                .find(|prop| prop.name == property && prop.tag_type == "ObjectProperty")
+            else {
+                continue;
+            };
+            let reference = package
+                .read_int(export.serial_offset + prop.value_offset)
+                .unwrap();
+            if reference != 0 {
+                meshes.push(strip(&package.obj_name(reference)).to_string());
+            }
+        }
+        meshes.sort();
+        meshes.dedup();
+        meshes
+    }
+
+    fn assert_no_gameplay_links(package: &UpkPackage) {
+        for export in &package.exports {
+            let class_name = package.class_of(export);
+            let class = strip(&class_name);
+            if !is_gameplay_actor_class(class) {
+                continue;
+            }
+            for prop in package
+                .parse_props(export)
+                .into_iter()
+                .filter(|prop| prop.tag_type == "ObjectProperty")
+            {
+                assert_eq!(
+                    package
+                        .read_int(export.serial_offset + prop.value_offset)
+                        .unwrap(),
+                    0,
+                    "{class}.{} still points at gameplay data",
+                    prop.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn requested_backgrounds_are_approved_donors() {
+        assert!(SAFE_DONORS.contains(&"UtopiaStadium_P"));
+        assert!(SAFE_DONORS.contains(&"ShatterShot_VFX"));
+    }
+
+    #[test]
+    fn scenery_scope_keeps_requested_exteriors_and_rejects_arena_meshes() {
+        for mesh in [
+            "SkySphere01",
+            "SuperBuildings02",
+            "UTO_LowerFogSphere",
+            "UTO_FountainWater00",
+            "SM_SkySphere",
+            "BO_OOB_Building",
+            "BottomFogLines_SM",
+            "CloudPlane",
+        ] {
+            assert!(donor_outside_scope(mesh), "{mesh}");
+        }
+        for mesh in [
+            "Goal_Collision",
+            "BoostPad_Mat",
+            "GrassField",
+            "Arena_Cage",
+            "Stadium_Seating",
+            "FieldWall",
+        ] {
+            assert!(!donor_outside_scope(mesh), "{mesh}");
+        }
+    }
+
+    #[test]
+    fn gameplay_actor_classes_are_neutralised() {
+        for class in [
+            "GoalVolume_TA",
+            "GoalCrossbarVolumeManager_TA",
+            "Pylon_Soccar_TA",
+            "TriggerVolume",
+            "GameInfo_Soccar_TA",
+        ] {
+            assert!(is_gameplay_actor_class(class), "{class}");
+        }
+        for class in [
+            "ExponentialHeightFogComponent",
+            "PostProcessVolume",
+            "SkyLightVolume_TA",
+            "ParticleSystemComponent",
+        ] {
+            assert!(!is_gameplay_actor_class(class), "{class}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires HEBNIX_RL_COOKED and uses isolated package copies"]
+    fn real_requested_backgrounds_apply_without_arena_geometry() {
+        let cooked = PathBuf::from(std::env::var("HEBNIX_RL_COOKED").unwrap());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "hebnix-requested-backgrounds-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        for (donor, required_meshes) in [
+            (
+                "UtopiaStadium_P",
+                &["SkySphere01", "SuperBuildings02", "UTO_LowerFogSphere"][..],
+            ),
+            (
+                "ShatterShot_VFX",
+                &["SM_SkySphere", "BO_OOB_Building", "BottomFogLines_SM"][..],
+            ),
+        ] {
+            let case = root.join(donor);
+            std::fs::create_dir_all(&case).unwrap();
+            let host = map_path(&case, "Stadium_Day_P");
+            let donor_path = map_path(&case, donor);
+            std::fs::copy(map_path(&cooked, "Stadium_Day_P"), &host).unwrap();
+            std::fs::copy(map_path(&cooked, donor), &donor_path).unwrap();
+
+            let (copy_name, patched_sub_levels) =
+                apply_inner(&case, &host, &donor_path, donor).unwrap();
+            assert!(patched_sub_levels.is_empty());
+            UpkPackage::load(&host).unwrap();
+            let generated = UpkPackage::load(&map_path(&case, &copy_name)).unwrap();
+            let meshes = retained_meshes(&generated);
+            assert!(!meshes.is_empty(), "{donor}");
+            assert!(
+                meshes.iter().all(|mesh| donor_outside_scope(mesh)),
+                "{donor} retained non-scenery meshes: {meshes:?}"
+            );
+            for required in required_meshes {
+                assert!(
+                    meshes.iter().any(|mesh| mesh == required),
+                    "{donor}: {required}"
+                );
+            }
+            assert_no_gameplay_links(&generated);
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

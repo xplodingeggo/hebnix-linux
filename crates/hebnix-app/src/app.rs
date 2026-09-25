@@ -25,7 +25,7 @@ use crate::ui::console::ConsoleState;
 use crate::ui::workshop::{ImageState, WorkshopState};
 use crate::winutil;
 
-pub const APP_VERSION: &str = "2.1.8";
+pub const APP_VERSION: &str = "2.1.9";
 /// the actual hebnix-linux release version (shown in the About tab), as
 /// opposed to APP_VERSION above which tracks Windows Hebnix's engine/plugin
 /// compat version and is unrelated to this port's own release numbering.
@@ -35,6 +35,46 @@ pub const DEFAULT_WIDTH: f32 = 1250.0;
 pub const DEFAULT_HEIGHT: f32 = 700.0;
 pub const MIN_WIDTH: f32 = DEFAULT_WIDTH;
 pub const MIN_HEIGHT: f32 = DEFAULT_HEIGHT;
+
+const SWAP_CATALOG_NAMES: [&str; 13] = [
+    "antennas", "anthems", "banners", "bodies", "boosts", "borders", "engines", "finishes",
+    "goals", "skins", "toppers", "trails", "wheels",
+];
+
+/// Pull the live swapper catalogs from the API so items added by a game
+/// update show up without a new Hebnix release. The embedded copies keep the
+/// swapper usable offline; a successful fetch is also written next to the
+/// config so the next start begins from the fresh data.
+fn fetch_catalogs(tx: Sender<AppMsg>, ctx: egui::Context) {
+    std::thread::Builder::new()
+        .name("catalog-fetcher".into())
+        .spawn(move || {
+            let result = (|| {
+                let mut catalogs = HashMap::new();
+                for name in SWAP_CATALOG_NAMES {
+                    let url = format!("https://api.hebnix.com/catalogs/{name}.json");
+                    let response = get_retry(&url, Duration::from_secs(20))
+                        .map_err(|error| format!("Failed to fetch {name}.json: {error}"))?;
+                    let root: Value = response
+                        .into_json()
+                        .map_err(|error| format!("Failed to parse {name}.json: {error}"))?;
+                    let valid = if name == "skins" {
+                        root.get("cars").is_some_and(Value::is_object)
+                    } else {
+                        root.get(name).is_some_and(Value::is_array)
+                    };
+                    if !valid {
+                        return Err(format!("{name}.json has an invalid catalog structure"));
+                    }
+                    catalogs.insert(name.to_string(), root);
+                }
+                Ok(catalogs)
+            })();
+            let _ = tx.send(AppMsg::CatalogsFetched { result });
+            ctx.request_repaint();
+        })
+        .ok();
+}
 
 fn get_retry(url: &str, timeout: Duration) -> Result<ureq::Response, String> {
     let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).build();
@@ -317,6 +357,18 @@ enum Tab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemsMode {
+    Swapper,
+    Spawner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpawnerSubTab {
+    Tutorial,
+    Category(crate::swapper::SwapCategory),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PatcherSubTab {
     Ball,
     BoostMeter,
@@ -499,30 +551,36 @@ pub struct HebnixApp {
     spoofer_friends_enabled: bool,
     spoofer_friends: HashMap<String, FriendSpoofState>,
     friends_search: String,
+    item_spawner_enabled: bool,
+    items_mode: ItemsMode,
+    spawn_restart_pending: bool,
+    spawner_subtab: SpawnerSubTab,
+    spawner_enable_prompt_open: bool,
+    spawner_admin_requested: bool,
 
     patcher_ball: crate::ball::PatcherState,
     patcher_boost: crate::boost_patcher::BoostPatcherState,
     patcher_decal: crate::decal_patcher::DecalPatcherState,
     colours: crate::colours::ColoursState,
     swapper: crate::swapper::SwapperState,
+    plugin_delete_prompt: Option<String>,
+    catalogs_loading: bool,
+    catalogs_loaded: bool,
+    catalogs_error: Option<String>,
     owned_proxy_prompt_open: bool,
     presets: crate::presets::PresetStore,
 }
 
 fn clear_rl_cache(tx: &Sender<AppMsg>) {
-    let Ok(user_profile) = std::env::var("USERPROFILE") else {
-        return;
-    };
-    let cache_dir =
-        std::path::Path::new(&user_profile).join(r"Documents\My Games\Rocket League\TAGame\Cache");
-
-    if cache_dir.is_dir() {
-        if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-            let _ = tx.send(AppMsg::Log(format!("[Spoofer] cant clear cache: {e}")));
-            return;
+    match winutil::clear_rocket_league_web_cache() {
+        Ok(()) => {
+            let _ = tx.send(AppMsg::Log("[Spoofer] cleared Rocket League WebCache".into()));
         }
-        let _ = std::fs::create_dir_all(&cache_dir);
-        let _ = tx.send(AppMsg::Log("[Spoofer] cleared Rocket League cache".into()));
+        Err(error) => {
+            let _ = tx.send(AppMsg::Log(format!(
+                "[Spoofer] could not clear Rocket League WebCache: {error}"
+            )));
+        }
     }
 }
 
@@ -900,11 +958,21 @@ impl HebnixApp {
             spoofer_friends_enabled,
             spoofer_friends,
             friends_search: String::new(),
+            item_spawner_enabled: false,
+            items_mode: ItemsMode::Swapper,
+            spawn_restart_pending: false,
+            spawner_subtab: SpawnerSubTab::Tutorial,
+            spawner_enable_prompt_open: false,
+            spawner_admin_requested: false,
             patcher_ball,
             patcher_boost,
             patcher_decal,
             colours,
             swapper,
+            plugin_delete_prompt: None,
+            catalogs_loading: true,
+            catalogs_loaded: true,
+            catalogs_error: None,
             owned_proxy_prompt_open: false,
             presets: crate::presets::PresetStore::new(&base_dir.clone()),
         };
@@ -919,6 +987,7 @@ impl HebnixApp {
         app.save_friends_internal();
         app.save_ranks_internal();
         app.evaluate_proxies();
+        fetch_catalogs(app.tx.clone(), cc.egui_ctx.clone());
 
         app
     }
@@ -960,6 +1029,15 @@ impl HebnixApp {
         // app restarts and live store switches.
         let game_root = self.config.settings.rl_path.clone();
         self.remember_patcher_state(&game_root);
+    }
+
+    fn reload_catalogs(&mut self, ctx: &egui::Context) {
+        if self.catalogs_loading {
+            return;
+        }
+        self.catalogs_loading = true;
+        self.catalogs_error = None;
+        fetch_catalogs(self.tx.clone(), ctx.clone());
     }
 
     fn remember_username_spoof(&mut self) {
@@ -1143,6 +1221,13 @@ impl HebnixApp {
         let cache_cleared = false;
 
         if !self.spoofer_master {
+            if self.item_spawner_enabled {
+                self.item_spawner_enabled = false;
+                self.spawn_restart_pending = false;
+                self.spawner_subtab = SpawnerSubTab::Tutorial;
+                let _ = self.spoofer_mgr.set_item_spawner_enabled(false);
+                clear_rl_cache(&self.tx);
+            }
             if self.spoofer_mgr.socket_running() {
                 self.spoofer_mgr.stop_socket();
                 clear_rl_cache(&self.tx);
@@ -1157,6 +1242,7 @@ impl HebnixApp {
             && (self.spoofer_username_enabled
                 || self.spoofer_friends_enabled
                 || self.spoofer_rank_enabled
+                || self.item_spawner_enabled
                 || self.swapper.owned_only());
         if needs_http && !self.spoofer_mgr.http_running() {
             if let Err(e) = self.spoofer_mgr.start_http() {
@@ -1173,8 +1259,9 @@ impl HebnixApp {
         // Rank spoofing uses the same hosts-backed config.psynet.gg reverse
         // proxy as the C# implementation. PsyNet bypasses Windows' HTTP proxy
         // on current clients, so this must not depend on the Title toggle.
-        let needs_socket =
-            (self.spoofer_socket_proxy && self.spoofer_title_enabled) || self.spoofer_rank_enabled;
+        let needs_socket = (self.spoofer_socket_proxy && self.spoofer_title_enabled)
+            || self.spoofer_rank_enabled
+            || self.item_spawner_enabled;
         if needs_socket && !self.spoofer_mgr.socket_running() {
             if let Err(e) = self.spoofer_mgr.start_socket() {
                 self.console
@@ -1331,6 +1418,7 @@ impl HebnixApp {
                     self.handle_rl_status(rl_open, api_open);
 
                     if launched {
+                        self.spawn_restart_pending = false;
                         self.workshop.rocket_league_reopened();
                         self.check_statsapi_rate();
                         self.check_web_port();
@@ -1622,12 +1710,19 @@ impl HebnixApp {
                 AppMsg::PluginDownloadDone { result } => {
                     self.install_modal.downloading_id = None;
                     match result {
-                        Ok(msg) => {
-                            self.console.write(format!("[Console] {msg}"));
+                        Ok((plugin_id, message)) => {
+                            match self
+                                .plugin_mgr
+                                .enable_installed_plugin(&plugin_id, &mut self.config)
+                            {
+                                Ok(()) => self.console.write(format!("[Console] {message}")),
+                                Err(error) => self.console.write(format!(
+                                    "[Console] Plugin was installed but could not be enabled: {error}"
+                                )),
+                            }
                             if !self.install_modal.hebnix_stage {
                                 self.install_modal = InstallModal::default();
                             }
-                            self.plugin_mgr.refresh(&mut self.config, true);
                             self.save_config();
                         }
                         Err(e) => {
@@ -1645,6 +1740,37 @@ impl HebnixApp {
                         .on_http_response(&slug, &req_id, status, &body);
                     ctx.request_repaint();
                 }
+                AppMsg::ReloadCatalogs => {
+                    self.reload_catalogs(ctx);
+                }
+                AppMsg::CatalogsFetched { result } => {
+                    self.catalogs_loading = false;
+                    match result.and_then(|catalogs| {
+                        self.swapper.set_catalogs(&catalogs)?;
+                        for (name, root) in &catalogs {
+                            if let Ok(bytes) = serde_json::to_vec(root) {
+                                let _ = std::fs::write(self.base_dir.join(format!("{name}.json")), bytes);
+                            }
+                        }
+                        Ok(())
+                    }) {
+                        Ok(()) => self.catalogs_error = None,
+                        Err(error) => {
+                            self.catalogs_error = Some(error.clone());
+                            self.console.write(format!("[Catalogs] {error}"));
+                        }
+                    }
+                }
+                AppMsg::ThemeInstallDone { result } => match result {
+                    Ok((name, author)) => {
+                        self.theme_options = theme::list_themes(&self.themes_dir);
+                        self.console
+                            .write(format!("[Console] Installed Theme {name} by {author}"));
+                    }
+                    Err(error) => self
+                        .console
+                        .write(format!("[Console] Theme installation failed: {error}")),
+                },
                 AppMsg::OverlayPost { slug, data } => {
                     self.webview.deliver(&slug, &data);
                 }
@@ -2607,6 +2733,16 @@ impl HebnixApp {
                                         .checkbox(&mut self.spoofer_title_enabled, "Title:    ")
                                         .changed()
                                     {
+                                        if !self.spoofer_title_enabled {
+                                            match winutil::clear_rocket_league_web_cache() {
+                                                Ok(()) => self.console.write(
+                                                    "[Spoofer] Cleared Rocket League WebCache.",
+                                                ),
+                                                Err(error) => self.console.write(format!(
+                                                    "[Spoofer] Could not clear Rocket League WebCache: {error}"
+                                                )),
+                                            }
+                                        }
                                         title_changed = true;
                                         self.evaluate_proxies();
                                     }
@@ -3125,6 +3261,15 @@ impl HebnixApp {
                             toggles.push((plugin.slug.clone(), enabled));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new("🗑").color(egui::Color32::from_rgb(0xe7, 0x4c, 0x3c)),
+                                ))
+                                .on_hover_text("Delete plugin")
+                                .clicked()
+                            {
+                                self.plugin_delete_prompt = Some(plugin.slug.clone());
+                            }
                             let has_settings = plugin.has_settings();
                             if ui
                                 .add_enabled(has_settings && plugin.enabled, egui::Button::new("⚙"))
@@ -3500,51 +3645,64 @@ impl HebnixApp {
                                 changed = true;
                             }
 
-                            let selected = self.config.settings.discord_show_score as u8
-                                + self.config.settings.discord_show_map as u8
-                                + self.config.settings.discord_show_gamemode as u8;
-                            if ui
-                                .add_enabled(
-                                    !self.config.settings.discord_show_score || selected > 1,
-                                    egui::Checkbox::new(
-                                        &mut self.config.settings.discord_show_score,
-                                        "Show score",
-                                    ),
-                                )
-                                .changed()
-                            {
-                                changed = true;
-                            }
-                            let selected = self.config.settings.discord_show_score as u8
-                                + self.config.settings.discord_show_map as u8
-                                + self.config.settings.discord_show_gamemode as u8;
-                            if ui
-                                .add_enabled(
-                                    !self.config.settings.discord_show_map || selected > 1,
-                                    egui::Checkbox::new(
-                                        &mut self.config.settings.discord_show_map,
-                                        "Show map",
-                                    ),
-                                )
-                                .changed()
-                            {
-                                changed = true;
-                            }
-                            let selected = self.config.settings.discord_show_score as u8
-                                + self.config.settings.discord_show_map as u8
-                                + self.config.settings.discord_show_gamemode as u8;
-                            if ui
-                                .add_enabled(
-                                    !self.config.settings.discord_show_gamemode || selected > 1,
-                                    egui::Checkbox::new(
-                                        &mut self.config.settings.discord_show_gamemode,
-                                        "Show gamemode",
-                                    ),
-                                )
-                                .changed()
-                            {
-                                changed = true;
-                            }
+                            ui.indent("discord_game_state_fields", |ui| {
+                                ui.add_enabled_ui(
+                                    self.config.settings.discord_game_state,
+                                    |ui| {
+                                        let selected =
+                                            self.config.settings.discord_show_score as u8
+                                                + self.config.settings.discord_show_map as u8
+                                                + self.config.settings.discord_show_gamemode as u8;
+                                        if ui
+                                            .add_enabled(
+                                                !self.config.settings.discord_show_score
+                                                    || selected > 1,
+                                                egui::Checkbox::new(
+                                                    &mut self.config.settings.discord_show_score,
+                                                    "Show score",
+                                                ),
+                                            )
+                                            .changed()
+                                        {
+                                            changed = true;
+                                        }
+                                        let selected =
+                                            self.config.settings.discord_show_score as u8
+                                                + self.config.settings.discord_show_map as u8
+                                                + self.config.settings.discord_show_gamemode as u8;
+                                        if ui
+                                            .add_enabled(
+                                                !self.config.settings.discord_show_map
+                                                    || selected > 1,
+                                                egui::Checkbox::new(
+                                                    &mut self.config.settings.discord_show_map,
+                                                    "Show map",
+                                                ),
+                                            )
+                                            .changed()
+                                        {
+                                            changed = true;
+                                        }
+                                        let selected =
+                                            self.config.settings.discord_show_score as u8
+                                                + self.config.settings.discord_show_map as u8
+                                                + self.config.settings.discord_show_gamemode as u8;
+                                        if ui
+                                            .add_enabled(
+                                                !self.config.settings.discord_show_gamemode
+                                                    || selected > 1,
+                                                egui::Checkbox::new(
+                                                    &mut self.config.settings.discord_show_gamemode,
+                                                    "Show gamemode",
+                                                ),
+                                            )
+                                            .changed()
+                                        {
+                                            changed = true;
+                                        }
+                                    },
+                                );
+                            });
 
                             ui.horizontal(|ui| {
                                 let mut custom = !self.config.settings.discord_game_state;
@@ -3916,6 +4074,111 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
             self.apply_web_port_setting();
         } else if dismiss {
             self.web_port_notice = None;
+        }
+    }
+
+    fn disable_item_spawner(&mut self) {
+        self.item_spawner_enabled = false;
+        self.spawn_restart_pending = false;
+        self.spawner_subtab = SpawnerSubTab::Tutorial;
+        let _ = self.spoofer_mgr.set_item_spawner_enabled(false);
+        self.evaluate_proxies();
+        crate::spoofer::hosts::flush_dns();
+        clear_rl_cache(&self.tx);
+        self.console.write("[Item Spawner] Disabled and DNS flushed.");
+    }
+
+    /// Item spawning rides on the same hosts-file + PsyNet websocket proxy as
+    /// Title/Rank spoofing. Privilege escalation is per action (pkexec for
+    /// /etc/hosts and the CA), so unlike Windows nothing relaunches as admin.
+    fn enable_item_spawner(&mut self) {
+        if hebnix_sdk::process::is_rocket_league_running() {
+            self.console.write("[Item Spawner] Close Rocket League before enabling Item Spawner.");
+            return;
+        }
+        self.spoofer_master = true;
+        self.save_config();
+        match self.spoofer_mgr.set_item_spawner_enabled(true) {
+            Ok(()) => {
+                self.item_spawner_enabled = true;
+                self.evaluate_proxies();
+                if self.spoofer_mgr.socket_running() {
+                    self.spawn_restart_pending = true;
+                    self.console.write("[Item Spawner] Enabled. Start Rocket League to use Item Spawner.");
+                } else {
+                    self.disable_item_spawner();
+                    self.console.write("[Item Spawner] Could not start the PsyNet proxy. Grant the port 443 permission in the Spoofer settings and check the certificate.");
+                }
+            }
+            Err(error) => {
+                self.item_spawner_enabled = false;
+                self.console.write(format!("[Item Spawner] Could not enable: {error}"));
+            }
+        }
+    }
+
+    fn render_spawner_enable_prompt(&mut self, ctx: &egui::Context) {
+        if !self.spawner_enable_prompt_open { return; }
+        let mut enable = false;
+        let mut cancel = false;
+        egui::Window::new("Read the Item Spawner tutorial")
+            .collapsible(false).resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Read the Tutorial tab before enabling Item Spawner.");
+                ui.label("Rocket League must be closed first. Item spawning is temporary.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Continue").clicked() { enable = true; }
+                    if ui.button("Cancel").clicked() { cancel = true; }
+                });
+            });
+        if enable {
+            self.spawner_enable_prompt_open = false;
+            self.enable_item_spawner();
+        } else if cancel {
+            self.spawner_enable_prompt_open = false;
+        }
+    }
+
+    fn render_plugin_delete_prompt(&mut self, ctx: &egui::Context) {
+        let Some(slug) = self.plugin_delete_prompt.clone() else {
+            return;
+        };
+        let plugin_name = self
+            .plugin_mgr
+            .plugins
+            .iter()
+            .find(|plugin| plugin.slug == slug)
+            .map(|plugin| plugin.display_name().to_string())
+            .unwrap_or(slug.clone());
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new("Delete plugin?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("Are you sure you want to delete {plugin_name}?"));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Yes").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("No").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if confirm {
+            self.plugin_delete_prompt = None;
+            match self.plugin_mgr.delete_plugin(&slug, &mut self.config) {
+                Ok(()) => self.console.write(format!("[Plugins] Deleted {slug}.")),
+                Err(error) => self.console.write(format!("[Plugins] {error}")),
+            }
+            self.save_config();
+        } else if cancel {
+            self.plugin_delete_prompt = None;
         }
     }
 
@@ -4539,13 +4802,24 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
         });
     }
 
+    fn download_theme(&self, theme_id: &str) {
+        let theme_id = theme_id.to_string();
+        let themes_dir = self.themes_dir.clone();
+        let fonts_dir = self.fonts_dir.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::deep_link::install_theme(&theme_id, &themes_dir, &fonts_dir);
+            let _ = tx.send(AppMsg::ThemeInstallDone { result });
+        });
+    }
     fn download_hebnix_plugin(&mut self, plugin_id: &str) {
         self.install_modal.downloading_id = Some(plugin_id.to_string());
         let plugin_id = plugin_id.to_string();
         let plugin_dir = self.plugin_dir.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result: Result<String, String> = (|| {
+            let result: Result<(String, String), String> = (|| {
+                let (name, author) = crate::deep_link::plugin_identity(&plugin_id)?;
                 let url = format!("https://api.hebnix.com/download/plugin/{plugin_id}");
                 let resp = get_retry(&url, Duration::from_secs(20))?;
                 let mut bytes = Vec::new();
@@ -4556,7 +4830,10 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
                 let extract = install_zip(&temp_zip, &plugin_dir);
                 let _ = std::fs::remove_file(&temp_zip);
                 extract?;
-                Ok(format!("Plugin ID {plugin_id} installed."))
+                Ok((
+                    plugin_id.clone(),
+                    format!("{name} by {author} was installed."),
+                ))
             })();
             let _ = tx.send(AppMsg::PluginDownloadDone { result });
         });
@@ -4747,12 +5024,16 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
                     }
                     ui.separator();
 
-                    if let Err(e) = self.plugin_mgr.render_window(&slug, ui) {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(0xe7, 0x4c, 0x3c),
-                            format!("window error: {e}"),
-                        );
-                    }
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if let Err(e) = self.plugin_mgr.render_window(&slug, ui) {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(0xe7, 0x4c, 0x3c),
+                                    format!("window error: {e}"),
+                                );
+                            }
+                        });
                 });
 
                 if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
@@ -4830,6 +5111,7 @@ fn install_zip(zip_path: &std::path::Path, plugin_dir: &std::path::Path) -> Resu
 
 impl Drop for HebnixApp {
     fn drop(&mut self) {
+        if self.item_spawner_enabled { self.disable_item_spawner(); }
         // Covers normal eframe shutdown paths that do not go through the
         // explicit tray/window quit handler.
         self.spoofer_mgr.shutdown();
@@ -4845,6 +5127,12 @@ impl eframe::App for HebnixApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        for plugin_id in crate::deep_link::take_pending_plugin_ids(&self.base_dir) {
+            self.download_hebnix_plugin(&plugin_id);
+        }
+        for theme_id in crate::deep_link::take_pending_theme_ids(&self.base_dir) {
+            self.download_theme(&theme_id);
+        }
         self.handle_messages(ctx);
 
         // rl_path can change after startup, no-ops if unchanged
@@ -4991,6 +5279,89 @@ impl eframe::App for HebnixApp {
                     }
                     Tab::Spoofer => self.render_spoofer_tab(ui),
                     Tab::Patcher => {
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut self.items_mode, ItemsMode::Swapper, "Items Swapper");
+                            ui.selectable_value(&mut self.items_mode, ItemsMode::Spawner, "Items Spawner");
+                        });
+                        ui.separator();
+                        if self.items_mode == ItemsMode::Spawner {
+                            ui.horizontal(|ui| {
+                                let mut enabled = self.item_spawner_enabled;
+                                if ui.checkbox(&mut enabled, "Enable Items Spawner").changed() {
+                                    if enabled {
+                                        self.spawner_enable_prompt_open = true;
+                                    } else {
+                                        self.disable_item_spawner();
+                                    }
+                                }
+                                ui.weak("Read Tutorial before enabling.");
+                            });
+                            let cooked_pc = std::path::Path::new(&self.config.settings.rl_path)
+                                .join("TAGame").join("CookedPCConsole");
+                            egui::Panel::left("spawner_categories")
+                                .resizable(false).exact_size(150.0).show(ui, |ui| {
+                                    egui::ScrollArea::vertical().id_salt("spawner_subtabs").show(ui, |ui| {
+                                        ui.selectable_value(&mut self.spawner_subtab, SpawnerSubTab::Tutorial, "Tutorial");
+                                        ui.separator();
+                                        ui.add_enabled_ui(self.item_spawner_enabled && !self.spawn_restart_pending, |ui| {
+                                            for category in crate::swapper::SwapCategory::ALL {
+                                                ui.selectable_value(&mut self.spawner_subtab,
+                                                    SpawnerSubTab::Category(category), category.label());
+                                            }
+                                        });
+                                    });
+                                });
+                            egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+                                if !self.item_spawner_enabled || self.spawn_restart_pending {
+                                    self.spawner_subtab = SpawnerSubTab::Tutorial;
+                                }
+                                match self.spawner_subtab {
+                                    SpawnerSubTab::Tutorial => {
+                                        ui.heading("Item Spawner Tutorial");
+                                        ui.add_space(8.0);
+                                        ui.label("Rocket League must be closed before you enable the Item Spawner.");
+                                        ui.add_space(8.0);
+                                        ui.label("When you're finished, disable Item Spawner before closing Hebnix, or close Rocket League before closing Hebnix.");
+                                        ui.add_space(8.0);
+                                        ui.label("If you have problems connecting to Epic, open Hebnix while Rocket League is closed, enable Item Spawner and disable it again, then open Rocket League.");
+                                        ui.add_space(8.0);
+                                        ui.label("Spawned items can persist locally or disappear, including mid match.");
+                                        ui.add_space(8.0);
+                                        ui.label("Disabling Item Spawner stops interception but does not edit Rocket League account saves.");
+                                        ui.add_space(8.0);
+                                        if self.spawn_restart_pending {
+                                            ui.add_space(12.0);
+                                            ui.weak("Start Rocket League to use the item categories.");
+                                        }
+                                    }
+                                    SpawnerSubTab::Category(category) => {
+                                        if self.catalogs_loading {
+                                            ui.horizontal(|ui| { ui.spinner(); ui.label("Loading item catalogs..."); });
+                                        }
+                                        if let Some(error) = self.catalogs_error.clone() {
+                                            ui.colored_label(egui::Color32::from_rgb(0xe7, 0x4c, 0x3c),
+                                                format!("Catalog download failed: {error}"));
+                                            if ui.button("Reload Catalogs").clicked() { self.reload_catalogs(ctx); }
+                                        }
+                                        if self.catalogs_loaded {
+                                            if let Some((product_id, paint)) = self.swapper.render_spawn_tab(
+                                                ui, category, &cooked_pc, &self.tx) {
+                                                let request = crate::item_spawning::ItemSpawnRequest {
+                                                    product_id, series_id: 1, quality: 0, paint,
+                                                    certification: 0, quantity: 1,
+                                                };
+                                                match self.spoofer_mgr.spawn_item(&request) {
+                                                    Ok(()) => self.console.write(format!(
+                                                        "[Item Spawner] Queued product ID {product_id}.")),
+                                                    Err(error) => self.console.write(format!(
+                                                        "[Item Spawner] Could not spawn {product_id}: {error}")),
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        } else {
                         let rl_path = self.config.settings.rl_path.clone();
                         let cooked_pc = std::path::Path::new(&rl_path)
                             .join("TAGame")
@@ -5318,6 +5689,7 @@ impl eframe::App for HebnixApp {
                                     self.render_presets_tab(ui, &backups_dir);
                                 }
                             });
+                        }
                     }
                     Tab::Settings => self.render_settings_tab(ui),
                     Tab::Plugins => self.render_plugins_tab(ui),
@@ -5362,6 +5734,8 @@ impl eframe::App for HebnixApp {
         }
 
         if !self.hidden {
+            self.render_spawner_enable_prompt(ctx);
+            self.render_plugin_delete_prompt(ctx);
             self.render_owned_proxy_prompt(ctx);
             self.render_statsapi_notice(ctx);
             self.render_web_port_notice(ctx);

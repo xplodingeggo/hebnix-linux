@@ -133,14 +133,14 @@ fn idle_activity(
     settings: &crate::config::SettingsCfg,
     rocket_league_open: bool,
 ) -> (String, String) {
-    if !rocket_league_open {
-        return (String::new(), String::new());
-    }
     if !settings.discord_game_state {
         return (
             nonempty(&settings.discord_custom_message, "Playing Rocket League"),
             String::new(),
         );
+    }
+    if !rocket_league_open {
+        return (String::new(), String::new());
     }
     ("In Rocket League".to_string(), "Main menu".to_string())
 }
@@ -268,6 +268,9 @@ fn connect() -> io::Result<UnixStream> {
                     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
                     let handshake = serde_json::json!({"v": 1, "client_id": APPLICATION_ID});
                     write_frame(&mut socket, 0, &handshake)?;
+                    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    read_ready(&mut socket)?;
+                    socket.set_read_timeout(None)?;
                     return Ok(socket);
                 }
                 Err(error) => last_error = Some(error),
@@ -280,6 +283,36 @@ fn connect() -> io::Result<UnixStream> {
 
 /// Discord answers every frame; nothing here needs the replies, but unread
 /// data would eventually fill the socket buffer, so throw it away.
+fn read_ready(pipe: &mut UnixStream) -> io::Result<()> {
+    let mut header = [0_u8; 8];
+    pipe.read_exact(&mut header)?;
+    let opcode = u32::from_le_bytes(header[..4].try_into().expect("four-byte opcode"));
+    let length = u32::from_le_bytes(header[4..].try_into().expect("four-byte length")) as usize;
+    if opcode != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Discord returned unexpected handshake opcode {opcode}"),
+        ));
+    }
+    if length > 64 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Discord handshake response is too large",
+        ));
+    }
+
+    let mut body = vec![0_u8; length];
+    pipe.read_exact(&mut body)?;
+    let response: serde_json::Value = serde_json::from_slice(&body).map_err(io::Error::other)?;
+    if response.get("evt").and_then(serde_json::Value::as_str) != Some("READY") {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!("Discord rejected RPC handshake: {response}"),
+        ));
+    }
+    Ok(())
+}
+
 fn drain_replies(socket: &mut UnixStream) {
     let mut scratch = [0u8; 4096];
     if socket.set_nonblocking(true).is_err() {
@@ -426,6 +459,7 @@ fn playlist_fallback(id: i64) -> Option<&'static str> {
         44 => "Knockout",
         48 => "Tactical Rumble",
         49 => "Spring Loaded",
+        92 => "Bullet Ball Casual",
         _ => return None,
     })
 }
@@ -670,6 +704,20 @@ mod tests {
 
         assert_eq!(
             idle_activity(&settings, true),
+            ("Developing Hebnix".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn custom_message_is_published_when_hebnix_opens() {
+        let settings = crate::config::SettingsCfg {
+            discord_game_state: false,
+            discord_custom_message: "Developing Hebnix".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            idle_activity(&settings, false),
             ("Developing Hebnix".to_string(), String::new())
         );
     }

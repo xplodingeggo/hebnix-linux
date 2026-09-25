@@ -26,7 +26,10 @@ pub enum AppMsg {
         result: Result<Value, String>,
     },
     PluginDownloadDone {
-        result: Result<String, String>,
+        result: Result<(String, String), String>,
+    },
+    ThemeInstallDone {
+        result: Result<(String, String), String>,
     },
     PluginUpdatesFound {
         result: Result<Vec<Value>, String>,

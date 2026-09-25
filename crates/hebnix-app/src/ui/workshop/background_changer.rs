@@ -55,6 +55,7 @@ const ARENAS: &[(&str, &str)] = &[
 ];
 
 const SCENERY_DONORS: &[(&str, &str)] = &[
+    ("ShatterShot_VFX", "Core 707 — scenery"),
     (
         "BG_Stadium_10A_P",
         "DFH Stadium (10th Anniversary) — scenery",
@@ -62,8 +63,10 @@ const SCENERY_DONORS: &[(&str, &str)] = &[
     ("BG_NeoTokyo_Arcade", "Neo Tokyo (Arcade) — scenery"),
     ("BG_NeoTokyo_Hax", "Neo Tokyo (Hacked) — scenery"),
     ("BG_Woods_Day_P", "Drift Woods (Day) — scenery"),
+    ("UtopiaStadium_P", "Utopia Coliseum — scenery"),
     ("BG_FNI_Stadium", "Forbidden Temple (Fire & Ice) — scenery"),
 ];
+const NO_BACKGROUND: &str = "__HBNX_NO_BACKGROUND__";
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -119,6 +122,9 @@ impl BackgroundChangerState {
     }
 
     fn display_name(package: &str) -> &str {
+        if package == NO_BACKGROUND {
+            return "No background";
+        }
         ARENAS
             .iter()
             .chain(SCENERY_DONORS.iter())
@@ -145,8 +151,8 @@ impl BackgroundChangerState {
             .collect();
         self.installed_hosts
             .sort_by_key(|index| ARENAS[*index].1.to_ascii_lowercase());
-        // Dedicated BG_* packages are portable scenery layers. Restricting donors
-        // here prevents arena geometry and collision from being streamed as scenery.
+        // Approved packages are filtered into portable exterior-only layers.
+        // Full arena sources never stream their gameplay geometry or collision.
         self.installed_donors = SCENERY_DONORS
             .iter()
             .copied()
@@ -173,6 +179,7 @@ impl BackgroundChangerState {
             .installed_donors
             .iter()
             .any(|(package, _)| *package == self.donor)
+            && self.donor != NO_BACKGROUND
         {
             self.donor = self
                 .installed_donors
@@ -202,6 +209,7 @@ impl BackgroundChangerState {
         self.busy = true;
         self.status = match command {
             "apply" => "Applying fog, sky, and background…".to_string(),
+            "remove" => "Removing fog, sky, and background…".to_string(),
             "undo" => "Restoring the original arena…".to_string(),
             _ => "Restoring all original arenas…".to_string(),
         };
@@ -258,7 +266,7 @@ impl BackgroundChangerState {
         let ctx = ui.ctx().clone();
         ui.heading("Background Changer");
         ui.label("Keep an arena's gameplay and networking, but borrow another arena's fog, sky, buildings, and distant scenery.");
-        ui.small("Background sources are limited to dedicated scenery packages that Rocket League can load safely.");
+        ui.small("Approved sources are filtered to keep only sky, atmosphere, buildings, and distant scenery; donor arena geometry is removed.");
         ui.add_space(8.0);
         ui.colored_label(egui::Color32::from_rgb(230, 170, 60), "Close Rocket League before applying or restoring a background. Changes load when the game starts.");
         ui.add_space(12.0);
@@ -332,6 +340,12 @@ impl BackgroundChangerState {
                         }
                     });
                     ui.separator();
+                    ui.selectable_value(
+                        &mut self.donor,
+                        NO_BACKGROUND.to_string(),
+                        "No background",
+                    );
+                    ui.separator();
                     let query = self.donor_search.trim().to_ascii_lowercase();
                     let mut found = false;
                     for (package, display) in &self.installed_donors {
@@ -351,13 +365,24 @@ impl BackgroundChangerState {
             let valid = !self.busy
                 && !self.host.is_empty()
                 && !self.donor.is_empty()
-                && self.host != self.donor;
+                && (self.donor == NO_BACKGROUND || self.host != self.donor);
             if ui
-                .add_enabled(valid, egui::Button::new("Apply Background"))
+                .add_enabled(
+                    valid,
+                    egui::Button::new(if self.donor == NO_BACKGROUND {
+                        "Remove Background"
+                    } else {
+                        "Apply Background"
+                    }),
+                )
                 .clicked()
             {
                 self.launch(
-                    "apply",
+                    if self.donor == NO_BACKGROUND {
+                        "remove"
+                    } else {
+                        "apply"
+                    },
                     rl_path,
                     Some(self.host.clone()),
                     Some(self.donor.clone()),
@@ -365,7 +390,7 @@ impl BackgroundChangerState {
                     &ctx,
                 );
             }
-            if self.host == self.donor {
+            if self.host == self.donor && self.donor != NO_BACKGROUND {
                 ui.small("Choose two different arenas.");
             }
         });

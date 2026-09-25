@@ -20,9 +20,12 @@ mod cosmetic_upk {
 mod decal_patcher {
     pub use crate::patcher::decal_patcher::*;
 }
+mod deep_link;
 mod discord_presence;
 mod dpi_fix;
 mod hotkey;
+#[path = "item_spawning/mod.rs"]
+mod item_spawning;
 mod veryimportantfile;
 mod messages;
 mod monitor;
@@ -181,6 +184,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     setup_logging(&base_dir);
+    deep_link::register_and_queue_from_args(&base_dir);
     setup_panic_hook(&base_dir);
     tracing::info!("Hebnix {} starting", app::APP_VERSION);
     // no-op unless the binary was setcap'd with cap_net_admin+eip - lets

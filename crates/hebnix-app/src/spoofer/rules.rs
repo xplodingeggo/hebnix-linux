@@ -462,6 +462,7 @@ impl Rule for TitleRule {
 
 pub struct RankRule {
     pub spoofs: Arc<Mutex<HashMap<i32, (i32, f64)>>>,
+    bridge_enabled: Option<Arc<AtomicBool>>,
     announced: AtomicBool,
 }
 
@@ -469,6 +470,18 @@ impl RankRule {
     pub fn new(spoofs: Arc<Mutex<HashMap<i32, (i32, f64)>>>) -> Self {
         Self {
             spoofs,
+            bridge_enabled: None,
+            announced: AtomicBool::new(false),
+        }
+    }
+
+    pub fn with_bridge_signal(
+        spoofs: Arc<Mutex<HashMap<i32, (i32, f64)>>>,
+        bridge_enabled: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            spoofs,
+            bridge_enabled: Some(bridge_enabled),
             announced: AtomicBool::new(false),
         }
     }
@@ -479,9 +492,8 @@ impl Rule for RankRule {
         // Only the HTTP PsyNet RPC response contains PerConURL.  Never MITM
         // ws.rlpp.psynet.gg: that is a long-lived websocket and must be
         // tunnelled until the PerCon URL points it at the local bridge.
-        self.spoofs.lock().map(|spoofs| !spoofs.is_empty()).unwrap_or(false)
-            && (host.eq_ignore_ascii_case("api.rlpp.psynet.gg")
-                || host.eq_ignore_ascii_case("config.psynet.gg"))
+        host.eq_ignore_ascii_case("api.rlpp.psynet.gg")
+            || host.eq_ignore_ascii_case("config.psynet.gg")
     }
 
     fn strip_request_headers(&self) -> &[&str] {
@@ -658,7 +670,7 @@ fn config_psysignature(body: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
 }
 
-fn psy_response_signature(psy_time: &str, body: &[u8]) -> String {
+pub(crate) fn psy_response_signature(psy_time: &str, body: &[u8]) -> String {
     use base64::Engine;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
