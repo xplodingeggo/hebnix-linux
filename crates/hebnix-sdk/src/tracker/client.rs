@@ -166,12 +166,15 @@ impl TrackerClient {
             urlencode(platform),
             urlencode(platform_user_id)
         );
-        let response = match ureq::get(&url)
+        let mut request = ureq::get(&url)
             .set("Accept", "application/json")
             .set("User-Agent", "Hebnix-Linux/2.1.9")
-            .timeout(self.timeout)
-            .call()
-        {
+            .timeout(self.timeout);
+        // req.hebnix.com is moving to a per-app TOTP token to keep bots out.
+        if let Some(token) = crate::tracker::totp::current_token() {
+            request = request.set("X-App-Token", &token);
+        }
+        let response = match request.call() {
             Ok(response) => response,
             Err(ureq::Error::Status(404, _)) => {
                 return Err("NOT_FOUND_404: profile service returned 404".to_string());

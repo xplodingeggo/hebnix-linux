@@ -33,6 +33,11 @@ on:
 permissions:
   contents: write
 
+# TOTP secret for req.hebnix.com, baked in at build time (see hebnix-sdk/build.rs).
+# Set the HEBNIX_REQ_KEY repository secret; without it the build sends no token.
+env:
+  HEBNIX_REQ_KEY: ${{ secrets.HEBNIX_REQ_KEY }}
+
 jobs:
   release:
     runs-on: ubuntu-latest

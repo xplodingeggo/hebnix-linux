@@ -3,6 +3,7 @@
 pub mod cache;
 pub mod client;
 pub mod models;
+pub mod totp;
 
 pub use cache::TtlCache;
 pub use client::TrackerClient;

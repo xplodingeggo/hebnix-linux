@@ -28,7 +28,11 @@ pub fn register_and_queue_from_args(base_dir: &Path) {
 /// (a .desktop entry + xdg-mime default). Idempotent: only rewrites the
 /// entry when the executable path changed.
 fn register_protocol() -> Result<(), String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    // an AppImage's current_exe is a throwaway mount; register the image itself
+    let executable = match std::env::var_os("APPIMAGE").filter(|value| !value.is_empty()) {
+        Some(image) => std::path::PathBuf::from(image),
+        None => std::env::current_exe().map_err(|error| error.to_string())?,
+    };
     let executable = executable
         .to_str()
         .ok_or_else(|| "application path is not valid Unicode".to_string())?;
