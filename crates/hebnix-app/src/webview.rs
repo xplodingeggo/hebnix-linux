@@ -44,6 +44,33 @@ fn file_url(path: &Path) -> String {
         .unwrap_or_else(|_| format!("file://{}", path.display()))
 }
 
+/// `overlay_page` may carry a query string or fragment (`page.html?v=2`,
+/// used by plugins for cache busting). Only the path part is a filename, so
+/// joining the whole string and percent-encoding it turned `?` into `%3F`
+/// and the page never loaded.
+fn page_url(assets_dir: &Path, page: &str) -> String {
+    let split = page.find(['?', '#']).unwrap_or(page.len());
+    let (name, suffix) = page.split_at(split);
+    format!("{}{suffix}", file_url(&assets_dir.join(name)))
+}
+
+/// Replace the window's input region with the union of the rectangles the
+/// plugin pages report for their interactive elements; empty means fully
+/// click-through.
+fn apply_input_region(window: &gtk::Window, regions: &std::collections::HashMap<String, [f64; 4]>) {
+    let region = cairo::Region::create();
+    for [left, top, right, bottom] in regions.values() {
+        let rect = cairo::RectangleInt::new(
+            left.floor() as i32,
+            top.floor() as i32,
+            (right.ceil() - left.floor()).max(0.0) as i32,
+            (bottom.ceil() - top.floor()).max(0.0) as i32,
+        );
+        let _ = region.union_rectangle(&rect);
+    }
+    window.input_shape_combine_region(Some(&region));
+}
+
 fn json_escape(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
@@ -160,6 +187,47 @@ impl WebviewOverlay {
             false // let webkit show its own error page too
         });
 
+        // Plugin pages that set `plugin.clickable` report the rectangle of
+        // their interactive elements to the host page
+        // (`{__hebnixPointerHit:true, region:{left,top,right,bottom}|null}`,
+        // same message Windows' host consumes). The window stays fully
+        // click-through except for those rectangles.
+        if let Some(manager) = webkit2gtk::WebViewExt::user_content_manager(&webview) {
+            use javascriptcore::ValueExt;
+            use webkit2gtk::UserContentManagerExt;
+            manager.register_script_message_handler("hebnixptr");
+            let regions = std::rc::Rc::new(std::cell::RefCell::new(
+                std::collections::HashMap::<String, [f64; 4]>::new(),
+            ));
+            let region_window = window.clone();
+            manager.connect_script_message_received(Some("hebnixptr"), move |_, result| {
+                let Some(text) = result.js_value().map(|value| value.to_str().to_string()) else {
+                    return;
+                };
+                let Ok(message) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    return;
+                };
+                let Some(slug) = message.get("slug").and_then(|v| v.as_str()) else {
+                    return;
+                };
+                let mut regions = regions.borrow_mut();
+                match message.get("region").filter(|r| r.is_object()) {
+                    Some(r) => {
+                        let side = |key: &str| r.get(key).and_then(|v| v.as_f64());
+                        if let (Some(l), Some(t), Some(rt), Some(b)) =
+                            (side("left"), side("top"), side("right"), side("bottom"))
+                        {
+                            regions.insert(slug.to_string(), [l, t, rt, b]);
+                        }
+                    }
+                    None => {
+                        regions.remove(slug);
+                    }
+                }
+                apply_input_region(&region_window, &regions);
+            });
+        }
+
         window.add(&webview);
         window.show_all();
         // show_all() actually maps/shows the window -- keep `visible` in
@@ -226,7 +294,7 @@ impl WebviewOverlay {
 
         let mut iframes = String::new();
         for (slug, page, assets_dir) in pages {
-            let src = file_url(&assets_dir.join(page));
+            let src = page_url(assets_dir, page);
             tracing::info!(slug, src, "html overlay: iframe src");
             iframes.push_str(&format!(
                 "<iframe id=\"frame-{id}\" src=\"{src}\" \
@@ -239,6 +307,18 @@ impl WebviewOverlay {
              html,body{{margin:0;padding:0;background:transparent;overflow:hidden;}}\
              iframe{{pointer-events:none;background:transparent;}}\
              </style></head><body>{iframes}<script>\
+             window.addEventListener('message', function(e) {{\
+               var d = e.data;\
+               if (!d || !d.__hebnixPointerHit) return;\
+               var frames = document.querySelectorAll('iframe');\
+               for (var i = 0; i < frames.length; i++) {{\
+                 if (frames[i].contentWindow === e.source) {{\
+                   window.webkit.messageHandlers.hebnixptr.postMessage(JSON.stringify(\
+                     {{slug: frames[i].id, region: d.region || null}}));\
+                   return;\
+                 }}\
+               }}\
+             }});\
              window.__hebnixDeliver = function(slug, data) {{\
                var el = document.getElementById('frame-' + slug);\
                if (el && el.contentWindow) el.contentWindow.postMessage(data, '*');\
@@ -304,5 +384,22 @@ fn html_escape(s: &str) -> String {
 impl Default for WebviewOverlay {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod page_url_tests {
+    use super::page_url;
+    use std::path::Path;
+
+    #[test]
+    fn keeps_query_and_fragment_unescaped() {
+        let url = page_url(Path::new("/p/My Plugin/assets"), "page.html?v=2#top");
+        assert_eq!(url, "file:///p/My%20Plugin/assets/page.html?v=2#top");
+    }
+
+    #[test]
+    fn plain_page_is_unchanged() {
+        assert_eq!(page_url(Path::new("/a"), "x.html"), "file:///a/x.html");
     }
 }

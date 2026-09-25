@@ -2129,6 +2129,7 @@ dependencies = [
  "httparse",
  "igd-next",
  "image",
+ "javascriptcore-rs",
  "libc",
  "libloading 0.8.9",
  "mlua",
