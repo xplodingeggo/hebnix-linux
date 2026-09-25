@@ -4091,9 +4091,25 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
     /// Item spawning rides on the same hosts-file + PsyNet websocket proxy as
     /// Title/Rank spoofing. Privilege escalation is per action (pkexec for
     /// /etc/hosts and the CA), so unlike Windows nothing relaunches as admin.
-    fn enable_item_spawner(&mut self) {
+    fn enable_item_spawner(&mut self, ctx: &egui::Context) {
         if hebnix_sdk::process::is_rocket_league_running() {
             self.console.write("[Item Spawner] Close Rocket League before enabling Item Spawner.");
+            return;
+        }
+        // the PsyNet proxy binds port 443; without the capability it can never
+        // start, so ask for it now (the same one-shot prompt as the Spoofer
+        // tab's Grant Permission) instead of failing after the fact.
+        if !crate::multiplayer_lan::has_net_bind_service_capability() && !spoofer::is_admin() {
+            let tx = self.tx.clone();
+            let repaint = ctx.clone();
+            self.console.write(
+                "[Item Spawner] Needs a one-time permission to bind port 443. Approve the prompt; Hebnix will restart, then enable Item Spawner again.",
+            );
+            std::thread::spawn(move || {
+                let result = crate::multiplayer_lan::grant_via_pkexec();
+                let _ = tx.send(AppMsg::NetAdminGranted { result });
+                repaint.request_repaint();
+            });
             return;
         }
         self.spoofer_master = true;
@@ -4107,7 +4123,7 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
                     self.console.write("[Item Spawner] Enabled. Start Rocket League to use Item Spawner.");
                 } else {
                     self.disable_item_spawner();
-                    self.console.write("[Item Spawner] Could not start the PsyNet proxy. Grant the port 443 permission in the Spoofer settings and check the certificate.");
+                    self.console.write("[Item Spawner] Could not start the PsyNet proxy. See the [Spoofer] error above; the certificate may need installing in Spoofer settings.");
                 }
             }
             Err(error) => {
@@ -4135,7 +4151,7 @@ fn render_about_tab(&mut self, ui: &mut egui::Ui) {
             });
         if enable {
             self.spawner_enable_prompt_open = false;
-            self.enable_item_spawner();
+            self.enable_item_spawner(ctx);
         } else if cancel {
             self.spawner_enable_prompt_open = false;
         }
