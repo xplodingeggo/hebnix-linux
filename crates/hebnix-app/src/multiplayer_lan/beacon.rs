@@ -39,13 +39,13 @@ pub struct BeaconRelay {
     capture: Arc<RawCapture>,
 }
 
-struct RawCapture {
+pub(super) struct RawCapture {
     fd: OwnedFd,
-    stop: AtomicBool,
+    pub(super) stop: AtomicBool,
 }
 
 impl RawCapture {
-    fn open() -> Result<Self, String> {
+    pub(super) fn open() -> Result<Self, String> {
         let fd = unsafe {
             libc::socket(
                 libc::AF_PACKET,
@@ -87,6 +87,16 @@ impl RawCapture {
 
     /// Ok(None) on a timeout or a packet that wasn't sent by this machine
     fn recv(&self, buffer: &mut [u8]) -> std::io::Result<Option<usize>> {
+        self.recv_filtered(buffer, true)
+    }
+
+    /// like recv, but with `outgoing_only` false it returns received IPv4
+    /// packets too (the chat capture needs both directions)
+    pub(super) fn recv_filtered(
+        &self,
+        buffer: &mut [u8],
+        outgoing_only: bool,
+    ) -> std::io::Result<Option<usize>> {
         let mut address: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
         let mut address_len = std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t;
         let len = unsafe {
@@ -108,12 +118,14 @@ impl RawCapture {
                 _ => Err(error),
             };
         }
-        let outgoing_ipv4 = address.sll_pkttype == PACKET_OUTGOING
-            && u16::from_be(address.sll_protocol) == ETH_P_IP;
-        Ok(outgoing_ipv4.then_some(len as usize))
+        let wanted_direction = !outgoing_only || address.sll_pkttype == PACKET_OUTGOING;
+        // loopback shows every packet twice (once out, once in)
+        let loopback_copy = address.sll_ifindex == 1 && address.sll_pkttype == PACKET_OUTGOING;
+        let ipv4 = u16::from_be(address.sll_protocol) == ETH_P_IP;
+        Ok((ipv4 && wanted_direction && (outgoing_only || !loopback_copy)).then_some(len as usize))
     }
 
-    fn shutdown(&self) {
+    pub(super) fn shutdown(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
 }
@@ -221,7 +233,7 @@ fn spawn_capture_thread(tx: Sender<(Vec<u8>, SocketAddr, u16)>) -> Result<Arc<Ra
 /// IP packet - the SOCK_DGRAM packet socket hands us the packet starting at
 /// the IP header (the link-layer header is already stripped), so this is
 /// the same job a normal socket's recv_from would otherwise do
-fn parse_udp_payload(ip: &[u8]) -> Option<(Vec<u8>, SocketAddr, u16)> {
+pub(super) fn parse_udp_payload(ip: &[u8]) -> Option<(Vec<u8>, SocketAddr, u16)> {
     const UDP_PROTOCOL: u8 = 17;
 
     if ip.len() < 20 {
