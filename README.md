@@ -1,9 +1,9 @@
 # Hebnix (Linux)
 
-This is a Linux port of [Hebnix](https://hebnix.com), targeting **Hyprland**
+linux port of [Hebnix](https://hebnix.com), targeting **Hyprland**
 (or another wlroots-based Wayland compositor with `wlr-layer-shell` support, such as Sway).
 There are also backends for niri, i3 and EWMH X11 desktops (Linux Mint's Cinnamon, XFCE, MATE), and a
-best-effort one for KDE Plasma/KWin. Several of those have not been tested against a real session —
+best-effort one for KDE Plasma/KWin. Most havent been tested tho
 see [Known limitations](#known-limitations).
 
 ## Installing
@@ -20,21 +20,19 @@ build from source `sudo pacman -S hebnix-linux`
 - **AppImage** (recommended) — download the latest `Hebnix-*-x86_64.AppImage`
   from the [releases page](https://github.com/xplodingeggo/hebnix-linux/releases),
   `chmod +x` it, and run it. No install step, works on most distros.
-- **Build from source** (developers/advanced users) — see
+- **Build from source** (developers/contributors) — see
   [Building from source](#building-from-source) below.
 
 ### Development / nightly builds
 
 Bleeding-edge builds from `main` are published as the rolling
 [`nightly` prerelease](https://github.com/xplodingeggo/hebnix-linux/releases/tag/nightly)
-(tarball + AppImage). These are development builds, not stable releases —
-package-manager and stable-AppImage installs are never silently upgraded
-onto them.
+(tarball + AppImage).
 
 ## Where your data lives
 
 Config, plugins, and themes are stored at
-`$XDG_CONFIG_HOME/hebnix` (falling back to `~/.config/hebnix` if that's
+`$XDG_CONFIG_HOME/hebnix` (falling back to `~/.config/hebnix` if
 unset) 
 
 
@@ -45,7 +43,7 @@ session. Hebnix starts its **own** `tailscaled` with its own interface
 (`hebnixts0`), socket and state, separate from any Tailscale you already
 use, so you only need the `tailscale` package installed (Arch: `sudo pacman
 -S tailscale`; others: https://tailscale.com/download/linux). The system
-`tailscaled` service does not need to be enabled. No package? Put the
+`tailscaled` service does not need to be enabled. If you dont have them installed as a package, put the
 `tailscale` and `tailscaled` binaries in `~/.config/hebnix/tailscale-bin/`.
 
 It needs `CAP_NET_ADMIN` and `CAP_NET_RAW` on the `hebnix` binary (for the
@@ -57,18 +55,17 @@ do it after installing. To do it yourself:
 sudo setcap cap_net_admin,cap_net_raw+eip ~/.local/bin/hebnix
 ```
 
-Everything else in the app works fine without it — this only gates LAN
-multiplayer.
+Everything else in the app works fine without it and it only affects multiplayer.
 
-Using a VPN or proxy (Clash/Mihomo, Mullvad and so on), a firewall, or
-stuck? See [Workshop multiplayer help](docs/workshop-multiplayer-help.md).
+If you use a VPN or proxy (Clash/Mihomo, Mullvad and so on), a firewall, or
+have issues see this shit [Workshop multiplayer help](docs/workshop-multiplayer-help.md).
 
 ### Importing maps / Steam Workshop downloads
 
 The Import Map tab adds a `.upk`/`.udk` you already have, or a `.zip` with
-the map inside (unrelated files in the zip are skipped). It also lists the
+the map inside. It also lists the
 [RL Workshop Archive](https://xplodingeggo.github.io/RLWorkshopCollection/)
-for direct downloads; anyone can request a Workshop map there. Downloading
+for direct downloads; anyone can request a workshop map there. Downloading
 straight from the Steam Workshop by item id also needs a .NET 9 (or newer)
 runtime (`dotnet-runtime`) and DepotDownloaderMod's files in
 `~/.config/hebnix/depotdownloader/`.
@@ -83,8 +80,7 @@ cd hebnix-linux
 
 `install.sh` checks your dependencies, offers to set up hotkey/uinput
 access and the Workshop LAN multiplayer permission (both below), then
-builds and installs with `make install`. No sudo needed for the build or
-install itself — it just drops `hebnix` into `~/.local/bin` along with a
+builds and installs with `make install`. It just drops `hebnix` into `~/.local/bin` along with a
 `.desktop` entry and icon.
 
 To do it by hand instead:
@@ -118,7 +114,7 @@ quick-chat plugins — also need a virtual keyboard via `/dev/uinput`. That
 device isn't `input`-group-writable by default, so it needs its own kernel
 module + udev rule.
 
-AUR installs (`hebnix-linux`/`hebnix-linux-bin`) already ship that module
+pacman installs (`hebnix-linux`/`hebnix-linux-bin`) already ship that module
 config and udev rule, so you only need the group step above. Building from
 source, `install.sh` offers to set both up for you (needs sudo once). To do
 it by hand:
@@ -131,10 +127,7 @@ echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput
 sudo udevadm control --reload-rules
 sudo udevadm trigger /dev/uinput
 ```
-
-Neither of these is required — without them the app still runs fine,
-hotkeys/binds just read as "not pressed" and chat-send plugins can't type
-until it's fixed.
+Those macros/sendinput functions wont work without this!
 
 ## Building from source
 
@@ -169,8 +162,8 @@ sudo dnf install gcc gtk3-devel libappindicator-gtk3-devel wayland-devel libxkbc
   libXi-devel webkit2gtk4.1-devel libsoup3-devel gtk-layer-shell-devel
 ```
 
-Don't want to copy-paste package lists? `install.sh` checks all of this
-for you and tells you what's missing.
+ `install.sh` checks all of this
+for you and tells you what's missing if you dont want to paste those lits in
 
 
 
