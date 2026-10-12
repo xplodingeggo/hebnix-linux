@@ -37,17 +37,11 @@ fn main() {
     let epic = eos::get_eos_token(Platform::Epic);
     show("EPIC", &epic);
 
-    // Exercise refresh + save/load if we got a Steam token.
+    // Exercise refresh if we got a Steam token.
     if let Some(t) = &steam {
         if !t.refresh_token.is_empty() {
             let refreshed = eos::load_from_refresh(&t.refresh_token);
             show("STEAM (refreshed)", &refreshed);
-        }
-        let path = std::env::temp_dir().join("EOS_token.txt");
-        if eos::save_to(t, &path).is_ok() {
-            println!("\nsaved token to {}", path.display());
-            let reloaded = eos::load_from(&path);
-            println!("reload ok?    : {}", reloaded.is_some());
         }
     }
 }

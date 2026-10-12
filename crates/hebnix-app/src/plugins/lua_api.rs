@@ -655,7 +655,7 @@ fn play_audio(
 // network / the Steam DLL / the bridge subprocess). Plugins enqueue work and
 // poll for the result, mirroring the tracker pattern above.
 
-use hebnix_sdk::eos::{self, EOSToken, Platform as EosPlatform};
+use hebnix_sdk::eos::Platform as EosPlatform;
 use hebnix_sdk::rlapi::session::shared_game_session;
 
 /// parse a user platform string into an eos platform
@@ -675,64 +675,6 @@ fn resolve_platform(host: &Rc<HostCtx>, explicit: Option<String>) -> Option<EosP
     }
     let detected = host.shared.borrow().platform.clone();
     parse_eos_platform(&detected).or(Some(EosPlatform::Steam))
-}
-
-// --- EOS tokens (keyed by platform; cached, re-fetched when expired) ---
-
-enum AsyncEos {
-    Pending,
-    Done(Option<EOSToken>),
-}
-
-fn async_eos() -> &'static std::sync::Mutex<std::collections::HashMap<String, AsyncEos>> {
-    static MAP: OnceLock<std::sync::Mutex<std::collections::HashMap<String, AsyncEos>>> =
-        OnceLock::new();
-    MAP.get_or_init(Default::default)
-}
-
-/// process-wide cache of valid eos tokens, keyed by platform
-fn eos_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, EOSToken>> {
-    static MAP: OnceLock<std::sync::Mutex<std::collections::HashMap<String, EOSToken>>> =
-        OnceLock::new();
-    MAP.get_or_init(Default::default)
-}
-
-/// valid eos token for platform, fetching only if the cache is empty/expired.
-/// the lock is held across the fetch on purpose: it serializes token grabs so
-/// we never make two steam tickets at once (steam rejects the 2nd as
-/// invalid_external_auth_token). concurrent callers block then reuse the token.
-pub fn get_or_fetch_eos(platform: EosPlatform) -> Option<EOSToken> {
-    let mut cache = eos_cache().lock().unwrap();
-    if let Some(tok) = cache.get(platform.as_str()) {
-        if !tok.expired() {
-            return Some(tok.clone());
-        }
-    }
-    let token = eos::get_eos_token(platform);
-    if let Some(tok) = &token {
-        cache.insert(platform.as_str().to_string(), tok.clone());
-    }
-    token
-}
-
-fn eos_queue() -> &'static crossbeam_channel::Sender<EosPlatform> {
-    static QUEUE: OnceLock<crossbeam_channel::Sender<EosPlatform>> = OnceLock::new();
-    QUEUE.get_or_init(|| {
-        let (tx, rx) = crossbeam_channel::unbounded::<EosPlatform>();
-        std::thread::Builder::new()
-            .name("eos-worker".into())
-            .spawn(move || {
-                while let Ok(platform) = rx.recv() {
-                    let token = get_or_fetch_eos(platform);
-                    async_eos()
-                        .lock()
-                        .unwrap()
-                        .insert(platform.as_str().to_string(), AsyncEos::Done(token));
-                }
-            })
-            .ok();
-        tx
-    })
 }
 
 // --- RLAPI / PsyNet requests (one shared session, lazily connected) ---
@@ -2062,50 +2004,6 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
             lua.create_function(move |_, ()| Ok(host.shared.borrow().platform.clone()))?,
         )?;
     }
-
-    // Non-blocking EOS token acquisition. `platform` is optional and defaults
-    // to the detected platform (then Steam). Returns the platform key to poll
-    // with hebnix.eos_result(key), or nil if no platform could be determined.
-    {
-        let host = Rc::clone(&host);
-        hebnix.set(
-            "eos_token_async",
-            lua.create_function(move |_, platform: Option<String>| {
-                let Some(plat) = resolve_platform(&host, platform) else {
-                    return Ok(None);
-                };
-                let key = plat.as_str().to_string();
-                let mut map = async_eos().lock().unwrap();
-                let needs_fetch = match map.get(&key) {
-                    Some(AsyncEos::Pending) => false,
-                    Some(AsyncEos::Done(Some(tok))) => tok.expired(),
-                    _ => true,
-                };
-                if needs_fetch {
-                    map.insert(key.clone(), AsyncEos::Pending);
-                    drop(map);
-                    let _ = eos_queue().send(plat);
-                }
-                Ok(Some(key))
-            })?,
-        )?;
-    }
-
-    // Returns nil (never requested), "pending", nil-on-failure, or a token
-    // table {access_token, refresh_token, account_id, steam_id, expires_at,
-    // platform}.
-    hebnix.set(
-        "eos_result",
-        lua.create_function(|lua, key: String| {
-            let map = async_eos().lock().unwrap();
-            match map.get(&key) {
-                None => Ok(LuaValue::Nil),
-                Some(AsyncEos::Pending) => Ok(LuaValue::String(lua.create_string("pending")?)),
-                Some(AsyncEos::Done(None)) => Ok(LuaValue::Boolean(false)),
-                Some(AsyncEos::Done(Some(tok))) => Ok(to_lua(lua, tok)?),
-            }
-        })?,
-    )?;
 
     // Non-blocking PsyNet request. `service` e.g. "Skills/GetPlayerSkill v1";
     // `body` an optional table; `platform` optional (defaults to detected).
