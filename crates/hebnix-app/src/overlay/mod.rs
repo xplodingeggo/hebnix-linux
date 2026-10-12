@@ -15,6 +15,7 @@
 //! like waybar live) specifically so it stays visible regardless of what
 //! else the compositor is hiding.
 
+pub mod gif;
 mod wayland;
 mod x11;
 
@@ -23,7 +24,7 @@ use std::cell::RefCell;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 /// rgba color, straight (non-premultiplied) alpha 0-255
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Rgba(pub u8, pub u8, pub u8, pub u8);
 
 impl Rgba {
@@ -34,11 +35,15 @@ impl Rgba {
 
 thread_local! {
     static CANVAS: RefCell<Option<Pixmap>> = const { RefCell::new(None) };
+    /// set by any draw call during a frame, so an empty frame can hide the
+    /// surface instead of presenting a fully transparent one
+    static DREW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn with_canvas(f: impl FnOnce(&mut Pixmap)) {
     CANVAS.with(|c| {
         if let Some(pixmap) = c.borrow_mut().as_mut() {
+            DREW.with(|drew| drew.set(true));
             f(pixmap);
         }
     });
@@ -114,6 +119,38 @@ fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<tiny
 
 /// linear gradient from `c1` to `c2` across the box at `angle` degrees
 /// (0 = left to right), optionally with rounded corners
+
+/// filled and/or bordered rectangle with rounded corners (the toasts use it).
+/// `width` 0 means no border.
+#[allow(clippy::too_many_arguments)]
+pub fn rect_styled(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    fill: Rgba,
+    border: Rgba,
+    width: f32,
+    filled: bool,
+    radius: f32,
+) {
+    with_canvas(|canvas| {
+        let Some(path) = rounded_rect_path(x, y, w, h, radius) else {
+            return;
+        };
+        if filled {
+            canvas.fill_path(&path, &paint_for(fill), FillRule::Winding, Transform::identity(), None);
+        }
+        if width > 0.0 {
+            let stroke = Stroke {
+                width,
+                ..Default::default()
+            };
+            canvas.stroke_path(&path, &paint_for(border), &stroke, Transform::identity(), None);
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn gradient(x: f32, y: f32, w: f32, h: f32, c1: Rgba, c2: Rgba, radius: f32, angle: f32) {
     with_canvas(|canvas| {
@@ -309,12 +346,20 @@ pub fn polygon(points: &[(f32, f32)], color: Rgba) {
     });
 }
 
+/// a decoded image file: one frame, or every frame of an animated gif
+struct Decoded {
+    frames: Vec<Pixmap>,
+    delays_ms: Vec<u32>,
+    total_ms: u64,
+}
+
 /// draws an image file scaled into the (x, y, w, h) box. decoded once per
 /// path and cached for the process lifetime (plugin overlays tend to draw
-/// the same handful of icons every frame).
+/// the same handful of icons every frame). animated gifs pick their frame
+/// from a shared clock, so every copy on screen stays in step.
 pub fn image(path: &str, x: f32, y: f32, w: f32, h: f32, opacity: f32, radius: f32) {
     thread_local! {
-        static CACHE: RefCell<std::collections::HashMap<String, Option<Pixmap>>> =
+        static CACHE: RefCell<std::collections::HashMap<String, Option<std::rc::Rc<Decoded>>>> =
             RefCell::new(std::collections::HashMap::new());
     }
 
@@ -322,9 +367,15 @@ pub fn image(path: &str, x: f32, y: f32, w: f32, h: f32, opacity: f32, radius: f
         let mut cache = cache.borrow_mut();
         let decoded = cache
             .entry(path.to_string())
-            .or_insert_with(|| decode_image(path))
+            .or_insert_with(|| decode_image(path).map(std::rc::Rc::new))
             .clone();
-        let Some(src) = decoded else { return };
+        let Some(decoded) = decoded else { return };
+        let index = if decoded.frames.len() > 1 {
+            gif::index_at(&decoded.delays_ms, decoded.total_ms, gif::clock_ms())
+        } else {
+            0
+        };
+        let Some(src) = decoded.frames.get(index) else { return };
         with_canvas(|canvas| {
             if src.width() == 0 || src.height() == 0 {
                 return;
@@ -351,8 +402,24 @@ pub fn image(path: &str, x: f32, y: f32, w: f32, h: f32, opacity: f32, radius: f
     });
 }
 
-fn decode_image(path: &str) -> Option<Pixmap> {
-    let img = ::image::open(path).ok()?.to_rgba8();
+fn decode_image(path: &str) -> Option<Decoded> {
+    let loaded = gif::load(path)?;
+    let frames = loaded
+        .images
+        .iter()
+        .map(to_pixmap)
+        .collect::<Option<Vec<Pixmap>>>()?;
+    if frames.is_empty() {
+        return None;
+    }
+    Some(Decoded {
+        frames,
+        delays_ms: loaded.delays_ms,
+        total_ms: loaded.total_ms,
+    })
+}
+
+fn to_pixmap(img: &::image::RgbaImage) -> Option<Pixmap> {
     let (w, h) = img.dimensions();
     let mut pixmap = Pixmap::new(w, h)?;
     // tiny-skia wants premultiplied RGBA8; `image`'s buffer is straight alpha.
@@ -365,6 +432,19 @@ fn decode_image(path: &str) -> Option<Pixmap> {
         dst[3] = a;
     }
     Some(pixmap)
+}
+
+/// window capture isn't available on Linux (see plugins::window_capture),
+/// so there are never frames to draw
+pub fn capture_image(
+    _handle: u64,
+    _frame: std::sync::Arc<crate::plugins::window_capture::CapturedFrame>,
+    _x: f32,
+    _y: f32,
+    _w: f32,
+    _h: f32,
+    _opacity: f32,
+) {
 }
 
 /// the platform backend: wlr-layer-shell on Wayland, an ARGB window on X11
@@ -419,6 +499,8 @@ impl Backend {
 pub struct Overlay {
     backend: Option<Backend>,
     last_reconnect: Option<std::time::Instant>,
+    /// the last presented frame, None while hidden
+    last_frame: Option<Pixmap>,
 }
 
 impl Overlay {
@@ -432,7 +514,7 @@ impl Overlay {
                         Backend::X11(_) => "X11",
                     }
                 );
-                Overlay { backend: Some(backend), last_reconnect: None }
+                Overlay { backend: Some(backend), last_reconnect: None, last_frame: None }
             }
             Err(e) => {
                 tracing::warn!(
@@ -440,7 +522,11 @@ impl Overlay {
                      Wayland compositor with wlr-layer-shell (Hyprland, Sway, ...), or an X11 \
                      session with a compositing manager (Cinnamon, XFCE, i3 + picom, ...)."
                 );
-                Overlay { backend: None, last_reconnect: Some(std::time::Instant::now()) }
+                Overlay {
+                    backend: None,
+                    last_reconnect: Some(std::time::Instant::now()),
+                    last_frame: None,
+                }
             }
         }
     }
@@ -470,6 +556,7 @@ impl Overlay {
                 tracing::warn!("game overlay: connection died, reconnecting");
                 self.last_reconnect = Some(std::time::Instant::now());
                 self.backend = Backend::create().ok();
+                self.last_frame = None;
             } else {
                 return;
             }
@@ -484,6 +571,7 @@ impl Overlay {
         {
             self.last_reconnect = Some(std::time::Instant::now());
             self.backend = Backend::create().ok();
+            self.last_frame = None;
         }
         let Some(backend) = self.backend.as_mut() else {
             return;
@@ -496,16 +584,29 @@ impl Overlay {
         };
         pixmap.fill(Color::TRANSPARENT);
 
+        DREW.with(|drew| drew.set(false));
         CANVAS.with(|c| *c.borrow_mut() = Some(pixmap));
         draw_fn(w as f32, h as f32);
         let pixmap = CANVAS.with(|c| c.borrow_mut().take());
+        let drew = DREW.with(|drew| drew.get());
 
-        if let Some(pixmap) = pixmap {
-            backend.present(&pixmap);
+        let Some(pixmap) = pixmap else { return };
+        // a mapped surface over a fullscreen game keeps the compositor from
+        // scanning the game out directly, so: nothing drawn hides it, and an
+        // unchanged frame isn't committed again
+        if !drew {
+            self.hide();
+            return;
         }
+        if self.last_frame.as_ref().is_some_and(|last| last == &pixmap) {
+            return;
+        }
+        backend.present(&pixmap);
+        self.last_frame = Some(pixmap);
     }
 
     pub fn hide(&mut self) {
+        self.last_frame = None;
         if let Some(backend) = self.backend.as_mut() {
             backend.hide();
         }

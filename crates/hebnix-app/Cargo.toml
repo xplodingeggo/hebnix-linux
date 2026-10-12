@@ -21,9 +21,9 @@ aes = "0.8"
 crossbeam-channel.workspace = true
 dirs = "6.0.0"
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
-egui_extras = { version = "0.35.0", features = ["image", "svg"] }
+egui_extras = { version = "0.35.0", features = ["image", "svg", "gif"] }
 hebnix-sdk = { version = "0.1.0", path = "../hebnix-sdk" }
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "ico", "bmp", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "ico", "bmp", "webp", "gif"] }
 libloading = "0.8"
 bcdec_rs = "0.1"
 mlua = { version = "0.11.6", features = ["lua54", "vendored", "serialize"] }
@@ -39,6 +39,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 toml = "1.1.2"
+time = { version = "0.3.55", features = ["local-offset"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tray-icon = "0.24.1"
@@ -87,6 +88,9 @@ ab_glyph = "0.2"
 cairo = { version = "=0.18.5", package = "cairo-rs" }
 gdk = "0.18.2"
 gtk = "0.18"
+# media_session reads MPRIS over D-Bus with gio
+gio = "0.18"
+glib = "0.18"
 gtk-layer-shell = { version = "0.8.2", features = ["v0_6"] }
 url = "2.5.8"
 webkit2gtk = { version = "2.0.2", features = ["v2_40"] }

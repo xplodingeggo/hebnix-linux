@@ -36,6 +36,13 @@ pub fn set_redirects(hosts: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// true when /etc/hosts already redirects exactly `hosts`
+pub fn redirects_current(hosts: &[&str]) -> bool {
+    std::fs::read_to_string(hosts_path())
+        .map(|content| redirects_match(&content, hosts))
+        .unwrap_or(false)
+}
+
 fn redirects_match(content: &str, hosts: &[&str]) -> bool {
     let ours: Vec<&str> = content.lines().filter(|line| is_ours(line)).collect();
     ours.len() == hosts.len()

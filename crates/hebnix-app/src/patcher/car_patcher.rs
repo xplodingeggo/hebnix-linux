@@ -1,5 +1,5 @@
-use crate::i18n::{t, t_args};
 use crate::config::{Config, PatchSource};
+use crate::i18n::{t, t_args};
 use crate::messages::AppMsg;
 use crate::patcher::catalog::PatchCatalog;
 use crate::patcher::{backup_guard, patch_source_selector};
@@ -22,9 +22,6 @@ pub struct CarPatch {
     pub json_path: PathBuf,
     pub upk_path: PathBuf,
     strategy: CarPatchStrategy,
-    donor_mesh: String,
-    target_mesh: String,
-    material_map: Vec<u16>,
     thumbnail: Option<Arc<[u8]>>,
     support: Result<(), String>,
 }
@@ -76,47 +73,6 @@ fn manifest_field<'a>(data: &'a Value, wanted: &str) -> Option<&'a Value> {
     data.as_object()?
         .iter()
         .find_map(|(key, value)| (normalized_json_key(key) == wanted).then_some(value))
-}
-
-fn profile_material_map(data: &Value) -> Result<Vec<u16>, String> {
-    let materials =
-        manifest_field(data, "Materials").ok_or("The geometry profile has no Materials section")?;
-    let targets = manifest_field(materials, "TargetSlots")
-        .and_then(Value::as_object)
-        .ok_or("The geometry profile has no Materials.TargetSlots object")?;
-    let sections = manifest_field(materials, "DonorSections")
-        .and_then(Value::as_object)
-        .ok_or("The geometry profile has no Materials.DonorSections object")?;
-    let target_slot = |label: &str| -> Option<u16> {
-        let wanted = normalized_json_key(label);
-        targets.iter().find_map(|(name, value)| {
-            let candidate = normalized_json_key(name);
-            let matches = candidate == wanted
-                || (wanted.starts_with("paint") && candidate == "paint")
-                || (["engine", "glass", "plate", "trim"].contains(&wanted.as_str())
-                    && candidate == "chassis");
-            matches
-                .then(|| value.as_u64().and_then(|n| u16::try_from(n).ok()))
-                .flatten()
-        })
-    };
-    let highest = sections
-        .keys()
-        .filter_map(|key| key.parse::<usize>().ok())
-        .max()
-        .ok_or("The geometry profile has no donor material indices")?;
-    let chassis = target_slot("Chassis").unwrap_or(0);
-    let mut mapping = vec![chassis; highest + 1];
-    for (index, label) in sections {
-        let index = index
-            .parse::<usize>()
-            .map_err(|_| format!("Invalid donor material index '{index}'"))?;
-        let label = label
-            .as_str()
-            .ok_or("Donor material labels must be strings")?;
-        mapping[index] = target_slot(label).unwrap_or(chassis);
-    }
-    Ok(mapping)
 }
 
 fn upk_file_name(path: &str) -> Result<String, String> {
@@ -195,6 +151,40 @@ fn files_with_extension(root: &Path, extension: &str) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+fn archive_files(archive: &mut zip::ZipArchive<fs::File>) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Could not read ZIP entry: {error}"))?;
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("ZIP contains an unsafe path: {}", entry.name()))?;
+        if !entry.is_dir() {
+            files.push(enclosed.to_path_buf());
+        }
+    }
+    Ok(files)
+}
+
+fn archive_already_imported(cars_dir: &Path, files: &[PathBuf]) -> bool {
+    if files.is_empty() {
+        return false;
+    }
+
+    let matches = |root: &Path| files.iter().all(|path| root.join(path).is_file());
+    if matches(cars_dir) {
+        return true;
+    }
+
+    fs::read_dir(cars_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .any(|entry| matches(&entry.path()))
 }
 
 impl CarPatcherState {
@@ -313,34 +303,16 @@ impl CarPatcherState {
                 let declared_status = manifest_field(data, "Status")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let donor_mesh = mesh_path
-                    .split_once('.')
-                    .map(|(_, mesh)| mesh)
-                    .unwrap_or(mesh_path)
-                    .to_string();
-                let target_mesh = manifest_field(data, "Target")
-                    .and_then(|target| manifest_field(target, "Mesh"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let material_map = if strategy == CarPatchStrategy::EmbedGeometry {
-                    profile_material_map(data)
-                } else {
-                    Ok(Vec::new())
-                };
                 let support = if declared_status.eq_ignore_ascii_case("unsupported") {
                     let reason = manifest_field(data, "UnsupportedReason")
                         .and_then(Value::as_str)
                         .unwrap_or("This patch profile is marked unsupported.");
                     Err(format!("Not supported: {reason}"))
                 } else if strategy == CarPatchStrategy::EmbedGeometry {
-                    if !declared_status.eq_ignore_ascii_case("supported") {
-                        Err("Not supported: geometry profiles must explicitly set Status to supported.".to_string())
-                    } else if target_mesh.is_empty() {
-                        Err("Not supported: the geometry profile has no Target.Mesh.".to_string())
-                    } else {
-                        material_map.as_ref().map(|_| ()).map_err(Clone::clone)
-                    }
+                    Err(
+                        "This car requires a prepared body package. Import a prepared car instead."
+                            .to_string(),
+                    )
                 } else {
                     match upk_versions(&upk_path) {
                         Ok((_, licensee)) if licensee >= 33 => Ok(()),
@@ -361,9 +333,6 @@ impl CarPatcherState {
                     json_path: json_path.clone(),
                     upk_path,
                     strategy,
-                    donor_mesh,
-                    target_mesh,
-                    material_map: material_map.unwrap_or_default(),
                     thumbnail,
                     support,
                 });
@@ -384,19 +353,44 @@ impl CarPatcherState {
             .json_path
             .parent()
             .ok_or_else(|| "Patch manifest has no parent folder".to_string())?;
-        for path in [&car.json_path, &car.upk_path, &parent.join("thumbnail.png")] {
-            if path.is_file() {
-                fs::remove_file(path)
-                    .map_err(|error| format!("Could not delete {}: {error}", path.display()))?;
-            }
+        if parent == self.cars_dir || !parent.starts_with(&self.cars_dir) {
+            return Err("Refusing to delete Hebnix's cars folder".to_string());
         }
-        let _ = fs::remove_dir(parent);
+        fs::remove_dir_all(parent)
+            .map_err(|error| format!("Could not delete {}: {error}", parent.display()))?;
+
+        // Catalog archives may contain their own top-level folder inside the
+        // import folder. Remove now-empty wrapper folders without ever
+        // crossing the cars directory boundary.
+        let mut wrapper = parent.parent();
+        while let Some(path) = wrapper {
+            if path == self.cars_dir || !path.starts_with(&self.cars_dir) {
+                break;
+            }
+            if fs::remove_dir(path).is_err() {
+                break;
+            }
+            wrapper = path.parent();
+        }
         self.refresh_cars();
         Ok(())
     }
 
     pub fn import_zip(&mut self, zip_path: &Path, tx: &Sender<AppMsg>) -> Result<usize, String> {
         let before = self.cars.len();
+        let file = fs::File::open(zip_path)
+            .map_err(|error| format!("Could not open {}: {error}", zip_path.display()))?;
+        let mut archive =
+            zip::ZipArchive::new(file).map_err(|error| format!("Could not read ZIP: {error}"))?;
+        let files = archive_files(&mut archive)?;
+        if archive_already_imported(&self.cars_dir, &files) {
+            self.refresh_cars();
+            let _ = tx.send(AppMsg::Log(
+                "[Cars] This catalog patch is already imported; showing Local patches.".to_string(),
+            ));
+            return Ok(0);
+        }
+
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
@@ -408,10 +402,6 @@ impl CarPatcherState {
             .map_err(|error| format!("Could not create import folder: {error}"))?;
 
         let result = (|| {
-            let file = fs::File::open(zip_path)
-                .map_err(|error| format!("Could not open {}: {error}", zip_path.display()))?;
-            let mut archive = zip::ZipArchive::new(file)
-                .map_err(|error| format!("Could not read ZIP: {error}"))?;
             for index in 0..archive.len() {
                 let mut entry = archive
                     .by_index(index)
@@ -446,10 +436,7 @@ impl CarPatcherState {
         if imported == 0 {
             let _ = fs::remove_dir_all(&destination);
             self.refresh_cars();
-            return Err(
-                t("import-zip-no-usable-custom-cars-were-found")
-                    .to_string(),
-            );
+            return Err(t("import-zip-no-usable-custom-cars-were-found").to_string());
         }
         let _ = tx.send(AppMsg::Log(format!(
             "[Cars] Imported {imported} custom car patch(es)."
@@ -521,14 +508,7 @@ impl CarPatcherState {
                 })?;
             }
             CarPatchStrategy::EmbedGeometry => {
-                crate::patcher::car_geometry::transplant_profile(
-                    &live_path,
-                    &car.upk_path,
-                    &staged,
-                    &car.target_mesh,
-                    &car.donor_mesh,
-                    &car.material_map,
-                )?;
+                return Err("This car requires a prepared body package.".to_string());
             }
         }
         let replace_result = fs::copy(&staged, &live_path);
@@ -554,6 +534,34 @@ impl CarPatcherState {
         Ok(())
     }
 
+    pub fn apply_preset(
+        &mut self,
+        patch_name: &str,
+        expected_target: &str,
+        cooked_pc: &Path,
+        backups_dir: &Path,
+        tx: &Sender<AppMsg>,
+        config: &mut Config,
+    ) -> Result<(), String> {
+        let car = self
+            .cars
+            .iter()
+            .find(|car| car.name == patch_name)
+            .cloned()
+            .ok_or_else(|| format!("Car patch '{patch_name}' is not installed locally"))?;
+        let target = self.resolve_body(car.body_id)?;
+        if !target.upk_path.eq_ignore_ascii_case(expected_target) {
+            return Err(format!(
+                "Car patch '{patch_name}' now targets {}, not {expected_target}",
+                target.upk_path
+            ));
+        }
+        if self.active_cars.contains_key(&target.upk_path) {
+            self.restore(&target.upk_path, cooked_pc, backups_dir, tx, config)?;
+        }
+        self.apply(&car, cooked_pc, backups_dir, tx, config)
+    }
+
     pub fn restore(
         &mut self,
         target_upk: &str,
@@ -567,9 +575,19 @@ impl CarPatcherState {
         }
         let target_upk = upk_file_name(target_upk)?;
         let car_backups = Self::backup_dir(backups_dir);
-        backup_guard::check(cooked_pc, &car_backups, "car-build.sha256", |name| {
-            name.to_ascii_lowercase().ends_with(".upk.bak")
-        })?;
+        if let Err(error) = backup_guard::check(
+            cooked_pc,
+            &car_backups,
+            "car-build.sha256",
+            |name| name.to_ascii_lowercase().ends_with(".upk.bak"),
+        ) {
+            if error.starts_with("Rocket League was updated") {
+                self.active_cars.clear();
+                config.patcher.active_cars.clear();
+                let _ = config.save(&self.base_dir);
+            }
+            return Err(error);
+        }
         let backup = car_backups.join(format!("{target_upk}.bak"));
         if !backup.is_file() {
             return Err(format!("No original backup exists for {target_upk}"));
@@ -655,7 +673,10 @@ impl CarPatcherState {
             if ui.button(t("btn-refresh")).clicked() {
                 self.refresh_cars();
             }
-            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(t("tab-search-local-patches")));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search)
+                    .hint_text(t("tab-search-local-patches")),
+            );
         });
         ui.separator();
 
@@ -683,7 +704,10 @@ impl CarPatcherState {
                 let (supported, unsupported): (Vec<_>, Vec<_>) =
                     visible.into_iter().partition(|car| car.support.is_ok());
                 if !supported.is_empty() {
-                    ui.heading(t_args("tab-supported-patches-supported", &[("supported", (supported.len()).to_string().into())]));
+                    ui.heading(t_args(
+                        "tab-supported-patches-supported",
+                        &[("supported", (supported.len()).to_string().into())],
+                    ));
                     ui.weak(t("tab-these-packages-can-safely-replace-their"));
                     ui.add_space(6.0);
                 }
@@ -715,7 +739,13 @@ impl CarPatcherState {
                             );
                             ui.vertical(|ui| match (&car.support, &resolved) {
                                 (Ok(()), Ok(target)) => {
-                                    ui.strong(t_args("tab-patching-target-to-car", &[("target", target.name.to_string().into()), ("car", car.name.to_string().into())]));
+                                    ui.strong(t_args(
+                                        "tab-patching-target-to-car",
+                                        &[
+                                            ("target", target.name.to_string().into()),
+                                            ("car", car.name.to_string().into()),
+                                        ],
+                                    ));
                                 }
                                 (Err(error), _) | (_, Err(error)) => {
                                     ui.strong(&car.name);
@@ -792,88 +822,44 @@ impl CarPatcherState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use super::archive_already_imported;
+    use std::fs;
+    use std::path::PathBuf;
 
-    #[test]
-    fn rejects_traversal_in_catalog_upk_path() {
-        assert!(upk_file_name("../Body_Octane.upk").is_err());
-        assert!(upk_file_name("C:\\Body_Octane.upk").is_err());
-        assert_eq!(upk_file_name("Body_Octane.upk").unwrap(), "Body_Octane.upk");
+    fn test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("hebnix-car-patcher-{name}-{}", std::process::id()))
     }
 
     #[test]
-    fn discovers_custom_car_manifest_name_body_and_matching_upk() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("hebnix-car-patcher-{}-{nonce}", std::process::id()));
-        let cars = root.join("cars").join("sample");
-        fs::create_dir_all(&cars).unwrap();
-        fs::write(
-            cars.join("Evo.json"),
-            br#"{
-                "Evo5f repl endo": {
-                    "MeshPath": "EVO_5F.EVO_5F_SK",
-                    "BodyId": 1624,
-                    "WheelScale": 0.75,
-                    "ChassisMaterialIndex": 3,
-                    "SkinMaterialIndex": 0
-                }
-            }"#,
-        )
-        .unwrap();
-        fs::write(cars.join("EVO_5F.upk"), UPK_MAGIC).unwrap();
+    fn detects_complete_archive_inside_existing_import_wrapper() {
+        let cars_dir = test_dir("complete");
+        let patch_dir = cars_dir.join("old-import").join("catalog-car");
+        fs::create_dir_all(&patch_dir).unwrap();
+        fs::write(patch_dir.join("manifest.json"), b"{}").unwrap();
+        fs::write(patch_dir.join("body.upk"), b"upk").unwrap();
 
-        let config = Config::default();
-        let state = CarPatcherState::new(&root, &config);
-        assert_eq!(state.cars.len(), 1);
-        assert_eq!(state.cars[0].name, "Evo5f repl endo");
-        assert_eq!(state.cars[0].body_id, 1624);
-        assert_eq!(state.cars[0].mesh_path, "EVO_5F.EVO_5F_SK");
-        assert_eq!(state.cars[0].upk_path, cars.join("EVO_5F.upk"));
+        let files = vec![
+            PathBuf::from("catalog-car/manifest.json"),
+            PathBuf::from("catalog-car/body.upk"),
+        ];
+        assert!(archive_already_imported(&cars_dir, &files));
 
-        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(cars_dir).unwrap();
     }
 
     #[test]
-    fn manifest_fields_are_case_and_separator_insensitive() {
-        let value = serde_json::json!({
-            "mesh_path": "AE86.ae86_SK",
-            "BodyId": 22
-        });
-        assert_eq!(
-            manifest_field(&value, "MeshPath").and_then(Value::as_str),
-            Some("AE86.ae86_SK")
-        );
-        assert_eq!(catalog_id(manifest_field(&value, "BODY_ID")), Some(22));
-    }
+    fn does_not_match_archive_with_a_missing_file() {
+        let cars_dir = test_dir("partial");
+        let patch_dir = cars_dir.join("old-import").join("catalog-car");
+        fs::create_dir_all(&patch_dir).unwrap();
+        fs::write(patch_dir.join("manifest.json"), b"{}").unwrap();
 
-    #[test]
-    fn rejects_legacy_customcar_mesh_package_as_whole_body_replacement() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "hebnix-legacy-custom-car-{}-{nonce}.upk",
-            std::process::id()
-        ));
-        let mut summary = Vec::from(UPK_MAGIC);
-        summary.extend_from_slice(&868u16.to_le_bytes());
-        summary.extend_from_slice(&0u16.to_le_bytes());
-        fs::write(&path, summary).unwrap();
+        let files = vec![
+            PathBuf::from("catalog-car/manifest.json"),
+            PathBuf::from("catalog-car/body.upk"),
+        ];
+        assert!(!archive_already_imported(&cars_dir, &files));
 
-        let target = BodyTarget {
-            name: "Endo".to_string(),
-            upk_path: "body_endo_SF.upk".to_string(),
-        };
-        let error = validate_replacement_upk(&path, &target).unwrap_err();
-        assert!(error.contains("standalone CustomCar mesh package"));
-        assert!(error.contains("body_endo_SF.upk"));
-
-        fs::remove_file(path).unwrap();
+        fs::remove_dir_all(cars_dir).unwrap();
     }
 }

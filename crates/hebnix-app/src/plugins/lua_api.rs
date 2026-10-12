@@ -16,7 +16,9 @@ use mlua::{Lua, LuaSerdeExt, SerializeOptions, Table, Value as LuaValue, Variadi
 use hebnix_sdk::tracker::TrackerClient;
 
 use crate::messages::AppMsg;
+use crate::plugins::cvar::{CvarRegistry, CvarValue};
 use crate::plugins::store::PluginStore;
+use crate::plugins::window_capture::WindowCaptureRegistry;
 
 use rodio::{Decoder, OutputStream, Sink};
 
@@ -34,6 +36,9 @@ pub struct HostShared {
     /// Directory containing DefaultStatsAPI.ini and the game configuration
     /// files exposed through the deliberately small Lua config API.
     pub rl_config_dir: PathBuf,
+    /// Process-local values registered by enabled plugins. Any plugin may read
+    /// or write them; ownership is used to clean them up when a plugin unloads.
+    pub cvars: CvarRegistry,
 }
 
 const RL_CONFIG_FILES: [(&str, &str); 2] = [
@@ -139,6 +144,8 @@ pub struct WindowState {
     pub width: SizeSpec,
     pub height: SizeSpec,
     pub opacity: f32,
+    /// keep it shown over every app. off means it hides unless the game or hebnix has focus
+    pub always_on_top: bool,
     /// where we ask egui to put the window, set on open only. an observed
     /// position fed back into the builder is a SetWindowPos mid drag, and over
     /// a dpi boundary the read and the write use different scales.
@@ -156,6 +163,7 @@ impl Default for WindowState {
             width: SizeSpec::Fixed(260.0),
             height: SizeSpec::Fixed(160.0),
             opacity: 0.9,
+            always_on_top: false,
             pos: None,
             last_pos: None,
             pos_dirty: false,
@@ -164,12 +172,19 @@ impl Default for WindowState {
     }
 }
 
+impl WindowState {
+    /// focus_ok is the game or hebnix holding the foreground
+    pub fn shown(&self, focus_ok: bool) -> bool {
+        self.open && (self.always_on_top || focus_ok)
+    }
+}
+
 /// per-plugin host context captured by the lua closures
 pub struct HostCtx {
     pub slug: String,
     pub display_name: RefCell<String>,
     pub tx: Sender<AppMsg>,
-    pub store: RefCell<PluginStore>,
+    pub store: Rc<RefCell<PluginStore>>,
     pub window: RefCell<WindowState>,
     pub shared: Rc<RefCell<HostShared>>,
     /// draft buffers for text inputs (key to current text)
@@ -178,6 +193,9 @@ pub struct HostCtx {
     pub dir: std::path::PathBuf,
     /// asset bytes by relative path. None means it failed and was already logged, the ui callbacks run every frame so it can only be said once.
     pub assets: RefCell<std::collections::HashMap<String, Option<std::sync::Arc<[u8]>>>>,
+    /// Native window captures owned by this plugin. Dropping the host stops
+    /// and joins every capture worker.
+    pub captures: WindowCaptureRegistry,
     /// canonicalized directory roots this plugin may read via read_file,
     /// expanded from [permissions] read_roots in its plugin.toml
     pub read_roots: Vec<std::path::PathBuf>,
@@ -1222,6 +1240,82 @@ fn send_multipart_req(
     send_req(req)
 }
 
+// hebnix.screen: read colours off the Rocket League window.
+// coordinates are window pixels from the top-left, the same space draw.* uses.
+// the capture starts on the first call and stops ~10s after the last one.
+//
+//   screen.available()                          -> bool
+//   screen.size()                               -> w, h (nil if no frame)
+//   screen.pixel(x, y)                          -> r, g, b (nil if no frame)
+//   screen.average(x, y, w, h)                  -> r, g, b
+//   screen.match_color(x, y, w, h, r, g, b, tol) -> 0..1 share of matching pixels
+//   screen.cursor()                             -> x, y of the mouse in window pixels
+#[cfg(not(feature = "lite"))]
+fn install_screen_api(lua: &Lua, hebnix: &Table) -> mlua::Result<()> {
+    use crate::screen::service;
+
+    fn frame() -> Option<std::sync::Arc<crate::screen::Frame>> {
+        service()?.frame()
+    }
+    fn px(v: f64) -> i32 {
+        v.round() as i32
+    }
+
+    let screen = lua.create_table()?;
+    screen.set(
+        "available",
+        lua.create_function(|_, ()| Ok(frame().is_some()))?,
+    )?;
+    screen.set(
+        "size",
+        lua.create_function(|_, ()| {
+            Ok(match frame() {
+                Some(f) => (Some(f.width), Some(f.height)),
+                None => (None, None),
+            })
+        })?,
+    )?;
+    screen.set(
+        "pixel",
+        lua.create_function(|_, (x, y): (f64, f64)| {
+            Ok(match frame().and_then(|f| f.pixel(px(x), px(y))) {
+                Some((r, g, b)) => (Some(r), Some(g), Some(b)),
+                None => (None, None, None),
+            })
+        })?,
+    )?;
+    screen.set(
+        "average",
+        lua.create_function(|_, (x, y, w, h): (f64, f64, f64, f64)| {
+            Ok(
+                match frame().and_then(|f| f.average(px(x), px(y), px(w), px(h))) {
+                    Some((r, g, b)) => (Some(r), Some(g), Some(b)),
+                    None => (None, None, None),
+                },
+            )
+        })?,
+    )?;
+    screen.set(
+        "match_color",
+        lua.create_function(
+            |_, (x, y, w, h, r, g, b, tol): (f64, f64, f64, f64, u8, u8, u8, Option<u8>)| {
+                Ok(frame().and_then(|f| {
+                    f.match_color(px(x), px(y), px(w), px(h), (r, g, b), tol.unwrap_or(20))
+                }))
+            },
+        )?,
+    )?;
+    screen.set(
+        "cursor",
+        lua.create_function(|_, ()| {
+            // linux-port: Wayland doesn't expose the global pointer position
+            Ok((None::<i32>, None::<i32>))
+        })?,
+    )?;
+    hebnix.set("screen", screen)?;
+    Ok(())
+}
+
 const UI_TABLE_REGISTRY: &str = "hebnix_ui_table";
 const DRAW_TABLE_REGISTRY: &str = "hebnix_draw_table";
 
@@ -1246,6 +1340,88 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
                 Ok(())
             })?,
         )?;
+    }
+
+    // Process-local plugin communication variables. Registration is owned by
+    // the calling plugin, while reads and writes are intentionally shared.
+    {
+        let cvar = lua.create_table()?;
+
+        let register_host = Rc::clone(&host);
+        cvar.set(
+            "register",
+            lua.create_function(move |_, name: String| {
+                let result = register_host
+                    .shared
+                    .borrow_mut()
+                    .cvars
+                    .register(&name, &register_host.slug, Rc::clone(&register_host.store));
+                if let Err(error) = &result {
+                    register_host.log(&format!("Error: {error}."));
+                }
+                Ok(result.is_ok())
+            })?,
+        )?;
+
+        let set_host = Rc::clone(&host);
+        cvar.set(
+            "set",
+            lua.create_function(move |_, (name, value): (String, LuaValue)| {
+                let value = match value {
+                    LuaValue::String(value) => {
+                        CvarValue::String(value.to_string_lossy().to_string())
+                    }
+                    LuaValue::Integer(value) => CvarValue::Integer(value),
+                    LuaValue::Number(value) if value.is_finite() => CvarValue::Number(value),
+                    _ => {
+                        set_host.log(&format!(
+                            "Error: cvar '{name}' only accepts strings and finite numbers."
+                        ));
+                        return Ok(false);
+                    }
+                };
+                let result = set_host.shared.borrow_mut().cvars.set(&name, value);
+                if let Err(error) = &result {
+                    set_host.log(&format!("Error: {error}."));
+                }
+                Ok(result.is_ok())
+            })?,
+        )?;
+
+        let get_host = Rc::clone(&host);
+        cvar.set(
+            "get",
+            lua.create_function(move |lua, name: String| {
+                let value = get_host.shared.borrow().cvars.get(&name);
+                match value {
+                    None => Ok((LuaValue::Nil, Some("not_registered"))),
+                    Some(None) => Ok((LuaValue::Nil, Some("unset"))),
+                    Some(Some(CvarValue::String(value))) => {
+                        Ok((LuaValue::String(lua.create_string(value)?), None))
+                    }
+                    Some(Some(CvarValue::Integer(value))) => Ok((LuaValue::Integer(value), None)),
+                    Some(Some(CvarValue::Number(value))) => Ok((LuaValue::Number(value), None)),
+                }
+            })?,
+        )?;
+
+        let delete_host = Rc::clone(&host);
+        cvar.set(
+            "delete",
+            lua.create_function(move |_, name: String| {
+                let result = delete_host
+                    .shared
+                    .borrow_mut()
+                    .cvars
+                    .delete(&name, &delete_host.slug);
+                if let Err(error) = &result {
+                    delete_host.log(&format!("Error: {error}."));
+                }
+                Ok(result.is_ok())
+            })?,
+        )?;
+
+        hebnix.set("cvar", cvar)?;
     }
 
     // Persisted settings
@@ -1466,6 +1642,8 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         })?,
     )?;
     hebnix.set("chat", chat)?;
+    #[cfg(not(feature = "lite"))]
+    install_screen_api(lua, &hebnix)?;
     {
         let host = Rc::clone(&host);
         hebnix.set(
@@ -2372,6 +2550,9 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
                     if let Ok(close_button) = opts.get::<bool>("close_button") {
                         win.close_button = close_button;
                     }
+                    if let Ok(top) = opts.get::<bool>("always_on_top") {
+                        win.always_on_top = top;
+                    }
                 }
                 if win.title.is_empty() {
                     win.title = host.display_name.borrow().clone();
@@ -2431,6 +2612,18 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
             "set_title",
             lua.create_function(move |_, title: String| {
                 host.window.borrow_mut().title = title;
+                Ok(())
+            })?,
+        )?;
+    }
+    {
+        // window.set_always_on_top(true) keeps it shown over every app, default
+        // is hidden unless the game or hebnix has focus
+        let host = Rc::clone(&host);
+        window.set(
+            "set_always_on_top",
+            lua.create_function(move |_, on: bool| {
+                host.window.borrow_mut().always_on_top = on;
                 Ok(())
             })?,
         )?;
@@ -2791,6 +2984,41 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         "process_running",
         lua.create_function(|_, name: String| {
             Ok(hebnix_sdk::eos::memory::find_process(&name).is_some())
+        })?,
+    )?;
+
+    // whatever MPRIS says is playing (browser, spotify, vlc...), or nil.
+    // position_ms is as of updated_unix_ms, add the time since if playing.
+    // reads a cached snapshot, refreshed about once a second
+    hebnix.set(
+        "media_session",
+        lua.create_function(|lua, ()| {
+            let Some(m) = crate::plugins::media_session::snapshot() else {
+                return Ok(LuaValue::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("title", m.title)?;
+            t.set("artist", m.artist)?;
+            t.set("album", m.album)?;
+            t.set("album_artist", m.album_artist)?;
+            t.set("app", m.app)?;
+            t.set("status", m.status)?;
+            t.set("is_playing", m.status == "playing")?;
+            t.set("position_ms", m.position_ms)?;
+            t.set("duration_ms", m.duration_ms)?;
+            t.set("updated_unix_ms", m.updated_unix_ms)?;
+            t.set("thumb_rev", m.thumb_rev)?;
+            Ok(LuaValue::Table(t))
+        })?,
+    )?;
+
+    // cover art bytes for the current media_session, nil until it loads.
+    // only changes when thumb_rev does, so fetch it then, not every tick
+    hebnix.set(
+        "media_thumbnail",
+        lua.create_function(|lua, ()| match crate::plugins::media_session::thumbnail() {
+            Some(bytes) => Ok(Some(lua.create_string(&bytes)?)),
+            None => Ok(None),
         })?,
     )?;
 
@@ -3266,6 +3494,96 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         hebnix.set("overlay", overlay)?;
     }
 
+    // hebnix.capture: enumerate visible top-level windows and manage opaque,
+    // plugin-scoped capture handles. Capture workers never execute Lua.
+    let capture = lua.create_table()?;
+    let capture_host = Rc::clone(&host);
+    capture.set(
+        "windows",
+        lua.create_function(move |lua, ()| {
+            let result = lua.create_table()?;
+            for (index, window) in capture_host.captures.windows().into_iter().enumerate() {
+                let item = lua.create_table()?;
+                item.set("id", window.id)?;
+                item.set("title", window.title)?;
+                item.set("process", window.process)?;
+                result.set(index + 1, item)?;
+            }
+            Ok(result)
+        })?,
+    )?;
+    let capture_host = Rc::clone(&host);
+    capture.set(
+        "window_capture_start",
+        lua.create_function(move |_, (window_id, opts): (String, Option<Table>)| {
+            let fps = opts
+                .as_ref()
+                .and_then(|table| table.get::<u32>("fps").ok())
+                .unwrap_or(30);
+            let cursor = opts
+                .as_ref()
+                .and_then(|table| table.get::<bool>("cursor").ok())
+                .unwrap_or(false);
+            let plugin_name = capture_host.display_name.borrow().clone();
+            Ok(capture_host
+                .captures
+                .start(&window_id, fps, cursor, &plugin_name))
+        })?,
+    )?;
+    let capture_host = Rc::clone(&host);
+    capture.set(
+        "window_capture_frame",
+        lua.create_function(move |_, handle: u64| {
+            Ok(capture_host.captures.frame(handle).map(|_| handle))
+        })?,
+    )?;
+    let capture_host = Rc::clone(&host);
+    capture.set(
+        "window_capture_stop",
+        lua.create_function(move |_, handle: u64| Ok(capture_host.captures.stop(handle)))?,
+    )?;
+    hebnix.set("capture", capture)?;
+
+    // hebnix.toast(text, {accent=, background=, text=, duration=, image=}), shows
+    // over the game and lands in the notifications tab. colors are "#rrggbb[aa]",
+    // duration is seconds (1.5 to 5), image is a path inside the plugin assets folder.
+    {
+        let host = Rc::clone(&host);
+        hebnix.set(
+            "toast",
+            lua.create_function(move |_, (text, opts): (String, Option<Table>)| {
+                let color = |key: &str| {
+                    opts.as_ref()
+                        .and_then(|t| t.get::<String>(key).ok())
+                        .and_then(|s| crate::toast::parse_hex(&s))
+                };
+                let image = opts
+                    .as_ref()
+                    .and_then(|t| t.get::<String>("image").ok())
+                    .and_then(|rel| match asset_path(&host.dir, &rel) {
+                        Ok(path) => Some(path.to_string_lossy().into_owned()),
+                        Err(error) => {
+                            host.log(&format!("toast image: {error}"));
+                            None
+                        }
+                    });
+                let _ = host.tx.send(AppMsg::Toast {
+                    slug: host.slug.clone(),
+                    name: host.display_name.borrow().clone(),
+                    text: crate::toast::clip_text(&text).to_string(),
+                    style: crate::toast::ToastStyle {
+                        accent: color("accent"),
+                        background: color("background"),
+                        text: color("text"),
+                        duration: opts.as_ref().and_then(|t| t.get::<f32>("duration").ok()),
+                        image,
+                    },
+                });
+                Ok(())
+            })?,
+        )?;
+    }
+
     lua.globals().set("hebnix", hebnix)?;
 
     // Build the ui bridge table and stash it in the registry.
@@ -3454,6 +3772,28 @@ fn build_draw_table(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<Table> {
                     opt_f32(&opts, "opacity", 1.0),
                     opt_f32(&opts, "radius", 0.0),
                 );
+                Ok(())
+            },
+        )?,
+    )?;
+
+    // draw.capture_image(frame, x, y, width, height, {opacity=1.0})
+    let capture_host = Rc::clone(&host);
+    draw.set(
+        "capture_image",
+        lua.create_function(
+            move |_, (handle, x, y, w, h, opts): (u64, f32, f32, f32, f32, Option<Table>)| {
+                if let Some(frame) = capture_host.captures.frame(handle) {
+                    overlay::capture_image(
+                        handle,
+                        frame,
+                        x,
+                        y,
+                        w,
+                        h,
+                        opt_f32(&opts, "opacity", 1.0),
+                    );
+                }
                 Ok(())
             },
         )?,

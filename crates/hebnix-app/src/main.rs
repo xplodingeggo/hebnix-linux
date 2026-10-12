@@ -1,4 +1,5 @@
 mod app;
+mod auto_upload_replays;
 mod patcher;
 mod ball {
     pub use crate::patcher::ball::*;
@@ -24,12 +25,12 @@ mod decal_patcher {
     pub use crate::patcher::decal_patcher::*;
 }
 mod deep_link;
+mod discord_link;
 mod discord_presence;
 mod dpi_fix;
 mod hotkey;
 mod i18n;
-#[path = "item_spawning/mod.rs"]
-mod item_spawning;
+mod item_cleanup;
 mod messages;
 mod monitor;
 mod multiplayer_lan;
@@ -40,6 +41,7 @@ mod patch_core {
 }
 mod plugins;
 mod presets;
+mod screen;
 mod spoofer;
 mod statsapi_ini;
 mod speed_patch {
@@ -49,6 +51,7 @@ mod swapper {
     pub use crate::patcher::swapper::*;
 }
 mod theme;
+mod toast;
 mod tray;
 mod ui;
 mod upk_keys {

@@ -1,5 +1,5 @@
-use crate::i18n::{t, t_args};
 use crate::config::{Config, PatchSource};
+use crate::i18n::{t, t_args};
 use crate::messages::AppMsg;
 use crate::patcher::catalog::PatchCatalog;
 use crate::patcher::patch_source_selector;
@@ -322,8 +322,9 @@ impl PatcherState {
                             errors.join("; ")
                         )));
                     } else {
-                        let _ =
-                            local_tx.send(PatcherOp::Error(t("spawn-restore-thread-no-backups-found-to-restore").into()));
+                        let _ = local_tx.send(PatcherOp::Error(
+                            t("spawn-restore-thread-no-backups-found-to-restore").into(),
+                        ));
                     }
                 }
                 Err(_) => {
@@ -347,6 +348,25 @@ impl PatcherState {
         self.spawn_restore_thread(cooked_pc, &upk, backups_dir, tx, ctx);
     }
 
+    pub fn begin_apply_named(
+        &mut self,
+        name: &str,
+        cooked_pc: &Path,
+        backups_dir: &Path,
+        tx: &Sender<AppMsg>,
+        ctx: &egui::Context,
+    ) -> Result<(), String> {
+        let ball = self
+            .balls
+            .iter()
+            .find(|ball| ball.name == name)
+            .cloned()
+            .ok_or_else(|| format!("Ball '{name}' is not installed locally"))?;
+        let upk = cooked_pc.join("Mutators_Balls_SF.upk");
+        self.spawn_apply_thread(&ball, cooked_pc, &upk, backups_dir, tx, ctx);
+        Ok(())
+    }
+
     pub fn poll_ops(&mut self, tx: &Sender<AppMsg>, ctx: &egui::Context, config: &mut Config) {
         let mut received = false;
         while let Ok(op) = self.local_rx.try_recv() {
@@ -368,6 +388,10 @@ impl PatcherState {
                     ));
                 }
                 PatcherOp::Error(error) => {
+                    if error.starts_with("Rocket League was updated") {
+                        self.active_ball = None;
+                        config.patcher.active_ball = None;
+                    }
                     let _ = tx.send(AppMsg::Log(format!("[Patcher] Error: {error}")));
                 }
             }
@@ -429,9 +453,7 @@ impl PatcherState {
                     &img_bytes,
                 )?;
                 if patched_packages == 0 {
-                    return Err(
-                        t("spawn-apply-thread-no-matching-inline-ball-mips-were").into(),
-                    );
+                    return Err(t("spawn-apply-thread-no-matching-inline-ball-mips-were").into());
                 }
                 Ok(())
             }));
@@ -478,6 +500,11 @@ impl PatcherState {
                     ));
                 }
                 PatcherOp::Error(e) => {
+                    if e.starts_with("Rocket League was updated") {
+                        self.active_ball = None;
+                        config.patcher.active_ball = None;
+                        let _ = config.save(&self.base_dir);
+                    }
                     let _ = tx.send(AppMsg::Log(format!("[Patcher] Error: {}", e)));
                 }
             }
@@ -498,7 +525,11 @@ impl PatcherState {
                 egui::ScrollArea::vertical()
                     .id_salt("patcher_subtabs")
                     .show(ui, |ui| {
-                        ui.selectable_value(&mut self.subtab, PatcherSubTab::Ball, t("render-ball"));
+                        ui.selectable_value(
+                            &mut self.subtab,
+                            PatcherSubTab::Ball,
+                            t("render-ball"),
+                        );
                     });
             });
 
@@ -512,12 +543,16 @@ impl PatcherState {
 
         if let Some(ball_to_delete) = self.confirm_delete.clone() {
             let mut close = false;
-            egui::Window::new(t("render-confirm-deletion")).id(egui::Id::new("render-confirm-deletion"))
+            egui::Window::new(t("render-confirm-deletion"))
+                .id(egui::Id::new("render-confirm-deletion"))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.label(t_args("render-are-you-sure-you-want-to", &[("ball_to_delete", ball_to_delete.name.to_string().into())]));
+                    ui.label(t_args(
+                        "render-are-you-sure-you-want-to",
+                        &[("ball_to_delete", ball_to_delete.name.to_string().into())],
+                    ));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button(t("plugin-delete-prompt-yes")).clicked() {
@@ -582,6 +617,11 @@ impl PatcherState {
                     ));
                 }
                 PatcherOp::Error(e) => {
+                    if e.starts_with("Rocket League was updated") {
+                        self.active_ball = None;
+                        config.patcher.active_ball = None;
+                        let _ = config.save(&self.base_dir);
+                    }
                     let _ = tx.send(AppMsg::Log(format!("[Patcher] Error: {}", e)));
                 }
             }
@@ -637,7 +677,8 @@ impl PatcherState {
                     )
                     .clicked()
                 {
-                    let dialog = rfd::FileDialog::new().add_filter(t("ball-zip-archives"), &["zip"]);
+                    let dialog =
+                        rfd::FileDialog::new().add_filter(t("ball-zip-archives"), &["zip"]);
                     if let Some(file) = crate::winutil::parent_file_dialog(dialog).pick_file() {
                         if self.import_zip(&file, tx) {
                             self.source = PatchSource::Custom;
@@ -714,7 +755,13 @@ impl PatcherState {
                 let pages = filtered.len().div_ceil(PAGE_SIZE).max(1);
                 self.page = self.page.min(pages - 1);
                 ui.horizontal(|ui| {
-                    ui.label(t_args("ball-page-page-of-pages", &[("page", (self.page + 1).to_string().into()), ("pages", pages.to_string().into())]));
+                    ui.label(t_args(
+                        "ball-page-page-of-pages",
+                        &[
+                            ("page", (self.page + 1).to_string().into()),
+                            ("pages", pages.to_string().into()),
+                        ],
+                    ));
                     if ui
                         .add_enabled(self.page > 0, egui::Button::new(t("ball-previous")))
                         .clicked()
@@ -748,7 +795,10 @@ impl PatcherState {
                                                 .fit_to_exact_size(size),
                                             );
                                         } else {
-                                            ui.add_sized(size, egui::Label::new(t("ball-no-image")));
+                                            ui.add_sized(
+                                                size,
+                                                egui::Label::new(t("ball-no-image")),
+                                            );
                                         }
                                         ui.strong(&ball.name);
                                         ui.add_space(5.0);
@@ -780,10 +830,9 @@ impl PatcherState {
                                         } else if ui
                                             .add_enabled(
                                                 !busy,
-                                                egui::Button::new(t("ball-apply")).min_size(egui::vec2(
-                                                    ui.available_width(),
-                                                    24.0,
-                                                )),
+                                                egui::Button::new(t("ball-apply")).min_size(
+                                                    egui::vec2(ui.available_width(), 24.0),
+                                                ),
                                             )
                                             .clicked()
                                         {

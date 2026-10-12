@@ -109,6 +109,31 @@ pub fn is_rocket_league_running() -> bool {
     })
 }
 
+/// Fallible name-only enumeration for operations that require confirmed closure.
+/// An enumeration failure is unknown, never evidence that the game is closed.
+pub fn rocket_league_running_checked() -> Result<bool, String> {
+    // linux-port: walk /proc directly. RL runs under Wine/Proton, where comm
+    // is the (truncated) exe name, e.g. "RocketLeague.ex".
+    let entries =
+        std::fs::read_dir("/proc").map_err(|e| format!("could not list processes: {e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("could not list processes: {e}"))?;
+        let name = entry.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        // a process can exit between the listing and this read; that's not
+        // a failure, it's just not running anymore
+        let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
+            continue;
+        };
+        if comm.trim().to_lowercase().contains("rocketleague") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// find the running RL process + its info. None if not running or the exe
 /// path isn't readable (eac), use is_rocket_league_running for plain liveness.
 pub fn find_rocket_league() -> Option<RlProcessInfo> {

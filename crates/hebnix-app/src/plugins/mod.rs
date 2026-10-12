@@ -5,10 +5,13 @@
 //! on_game_event, on_settings(ui), on_window(ui), on_overlay(draw,w,h)).
 //! see examples/plugins/.
 
+pub mod cvar;
 pub mod gamepad_icons;
 pub mod lua_api;
 pub mod manager;
 pub mod manifest;
+pub mod media_session;
 pub mod store;
+pub mod window_capture;
 
 pub use manager::PluginManager;

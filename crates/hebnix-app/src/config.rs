@@ -73,6 +73,7 @@ pub struct SettingsCfg {
     pub suppress_left_alerts: bool,
     pub suppress_fullscreen_warning: bool,
     pub suppress_statsapi_rate_warning: bool,
+    pub toast_position: crate::toast::ToastPos,
     /// Publish Hebnix/Rocket League activity to the local Discord client.
     pub discord_rich_presence: bool,
     /// Show presence only while Rocket League is running.
@@ -89,6 +90,11 @@ pub struct SettingsCfg {
     /// read text chat out of LAN match traffic: logs it to chat_log.jsonl and
     /// sends plugins a ChatMessage game event. Off by default.
     pub chat_export: bool,
+    /// the overlay refresh rate tip on the Plugins tab was dismissed
+    pub overlay_perf_tip_seen: bool,
+    /// how often the overlay and plugins update while a plugin is reading the
+    /// screen (fps). lower saves CPU on slower PCs
+    pub overlay_refresh_fps: u32,
 }
 
 impl Default for SettingsCfg {
@@ -106,6 +112,7 @@ impl Default for SettingsCfg {
             suppress_left_alerts: false,
             suppress_fullscreen_warning: false,
             suppress_statsapi_rate_warning: false,
+            toast_position: Default::default(),
             discord_rich_presence: true,
             discord_rocket_league_only: false,
             discord_game_state: true,
@@ -115,6 +122,8 @@ impl Default for SettingsCfg {
             discord_custom_message: "Playing Rocket League".to_string(),
             p2p_file_sharing: true,
             chat_export: false,
+            overlay_perf_tip_seen: false,
+            overlay_refresh_fps: 60,
         }
     }
 }
@@ -187,6 +196,35 @@ pub enum PatchSource {
 pub struct SpeedPatchCfg {
     /// show a speed picker on the Items page decal and swap rows
     pub items_page: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReplayUploadCfg {
+    pub provider: String,
+    pub api_key: String,
+    #[serde(default = "default_replay_naming_template")]
+    pub naming_template: String,
+    pub visibility: String,
+    pub group_id: String,
+    pub debug_logging: bool,
+}
+
+fn default_replay_naming_template() -> String {
+    "Hebnix - {gamemode} - {date} {time24}".to_string()
+}
+
+impl Default for ReplayUploadCfg {
+    fn default() -> Self {
+        Self {
+            provider: "ballchasing.com".to_string(),
+            api_key: String::new(),
+            naming_template: default_replay_naming_template(),
+            visibility: "private".to_string(),
+            group_id: String::new(),
+            debug_logging: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -337,6 +375,7 @@ pub struct Config {
     pub rl_launch: RlLaunchCfg,
     pub patcher: PatcherCfg,
     pub speed_patch: SpeedPatchCfg,
+    pub replay_upload: ReplayUploadCfg,
     pub action_button: ActionButtonCfg,
     /// enabled state keyed by plugin slug
     pub plugins: BTreeMap<String, bool>,

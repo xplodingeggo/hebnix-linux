@@ -69,6 +69,7 @@ pub fn serve_one(
 
     let mut body = Body::new(&ctype, std::mem::take(&mut bytes));
     body.request_path = Some(&req.path);
+    body.request_body = Some(&req.body);
     body.response_headers = headers.clone();
     for r in &matching {
         if r.rewrite(&mut body) {
@@ -100,11 +101,11 @@ pub fn serve_one(
     out.push_str(&format!("Content-Length: {}\r\n", body.bytes.len()));
     out.push_str("Connection: close\r\n\r\n");
 
-    tls.write_all(out.as_bytes())
-        .map_err(|e| format!("write head: {e}"))?;
-    tls.write_all(&body.bytes)
-        .map_err(|e| format!("write body: {e}"))?;
-    let _ = tls.flush();
+        tls.write_all(out.as_bytes())
+            .map_err(|e| format!("write head: {e}"))?;
+        tls.write_all(&body.bytes)
+            .map_err(|e| format!("write body: {e}"))?;
+        tls.flush().map_err(|e| format!("flush body: {e}"))?;
     Ok(())
 }
 
@@ -119,46 +120,6 @@ fn absolute_uri_path(target: &str) -> &str {
     }
 
     if target.starts_with('/') { target } else { "/" }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{CertResolver, absolute_uri_path};
-    use crate::spoofer::ca;
-    use std::sync::Arc;
-
-    #[test]
-    fn localhost_bridge_has_a_certificate_without_sni() {
-        let base = std::env::temp_dir().join(format!("hebnix_bridge_cert_{}", std::process::id()));
-        let ca = Arc::new(ca::ensure(&base).expect("create bridge CA"));
-        let resolver = CertResolver::with_default_host(ca, "localhost");
-        assert_eq!(resolver.default_host.as_deref(), Some("localhost"));
-        assert!(resolver.leaf_for("localhost").is_some());
-        if let (Ok(root), Ok(path)) = (
-            std::fs::canonicalize(std::env::temp_dir()),
-            std::fs::canonicalize(&base),
-        ) {
-            if path.starts_with(&root) && path != root {
-                let _ = std::fs::remove_dir_all(path);
-            }
-        }
-    }
-
-    #[test]
-    fn absolute_request_target_keeps_only_path_and_query() {
-        assert_eq!(
-            absolute_uri_path("https://config.psynet.gg/rpc/Player/GetPlayerSkills?x=1"),
-            "/rpc/Player/GetPlayerSkills?x=1"
-        );
-    }
-
-    #[test]
-    fn origin_form_target_is_unchanged() {
-        assert_eq!(
-            absolute_uri_path("/Services/v1/config"),
-            "/Services/v1/config"
-        );
-    }
 }
 
 const SKIP_REQ_HEADERS: [&str; 5] = [

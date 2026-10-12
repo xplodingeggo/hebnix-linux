@@ -27,9 +27,11 @@ use crate::spoofer::socket::SocketProxy;
 pub const PROXY_HOST: &str = "127.0.0.1";
 pub const PROXY_PORT: u16 = 8080;
 pub const MAX_NAME_LENGTH: usize = 32;
-// Intercept config for title and rank routing, and Epic API for name/friends.
-// PsyNet RPC is reached through config when rank spoofing is enabled.
-const REDIRECT_HOSTS: [&str; 2] = ["api.epicgames.dev", TITLE_HOST];
+// Intercept Epic's account API only for name/friends, and PsyNet config only
+// for title/rank routing.  These must stay independent: redirecting the game
+// config host for an account-only spoof forces Rocket League's startup/auth
+// path through the local proxy when it has nothing to do there.
+const ACCOUNT_HOST: &str = "api.epicgames.dev";
 
 pub fn is_admin() -> bool {
     nix::unistd::geteuid().is_root()
@@ -80,9 +82,24 @@ impl PrivilegedAction {
         })
     }
 
-    fn run(self, base_dir: &Path) -> Result<(), String> {
+    /// `hosts` only matters for SetHosts. The elevated helper only accepts
+    /// the two hosts the spoofer ever redirects, nothing a caller makes up.
+    fn run(self, base_dir: &Path, hosts: &[String]) -> Result<(), String> {
         match self {
-            Self::SetHosts => hosts::set_redirects(&REDIRECT_HOSTS),
+            Self::SetHosts => {
+                let allowed = [ACCOUNT_HOST, TITLE_HOST];
+                let hosts = hosts
+                    .iter()
+                    .map(|host| {
+                        allowed
+                            .iter()
+                            .copied()
+                            .find(|allowed| allowed == host)
+                            .ok_or_else(|| format!("refusing to redirect {host}"))
+                    })
+                    .collect::<Result<Vec<&str>, String>>()?;
+                hosts::set_redirects(&hosts)
+            }
             Self::ClearHosts => hosts::clear(),
             Self::InstallCa => ca::install(base_dir),
             Self::UninstallCa => ca::uninstall(base_dir),
@@ -105,10 +122,11 @@ pub fn maybe_handle_privileged_cli() -> Option<i32> {
     let action = args.next().as_deref().and_then(PrivilegedAction::from_str);
     let base_dir = args.next().map(PathBuf::from);
     let (Some(action), Some(base_dir)) = (action, base_dir) else {
-        eprintln!("usage: hebnix-app {PRIV_ARG} <action> <base_dir>");
+        eprintln!("usage: hebnix-app {PRIV_ARG} <action> <base_dir> [hosts...]");
         return Some(1);
     };
-    match action.run(&base_dir) {
+    let hosts: Vec<String> = args.collect();
+    match action.run(&base_dir, &hosts) {
         Ok(()) => Some(0),
         Err(error) => {
             eprintln!("{error}");
@@ -124,8 +142,18 @@ pub fn maybe_handle_privileged_cli() -> Option<i32> {
 /// caller, it just waits and returns, since it's a single quick action
 /// rather than "become the new long-running process."
 pub fn run_privileged(action: PrivilegedAction, base_dir: &Path) -> Result<(), String> {
+    run_privileged_with(action, base_dir, &[])
+}
+
+/// run_privileged with the hosts SetHosts should redirect
+fn run_privileged_with(
+    action: PrivilegedAction,
+    base_dir: &Path,
+    hosts: &[&str],
+) -> Result<(), String> {
     if is_admin() {
-        return action.run(base_dir);
+        let hosts: Vec<String> = hosts.iter().map(|host| host.to_string()).collect();
+        return action.run(base_dir, &hosts);
     }
     let Ok(exe) = std::env::current_exe() else {
         return Err("could not find our own executable path".to_string());
@@ -136,6 +164,7 @@ pub fn run_privileged(action: PrivilegedAction, base_dir: &Path) -> Result<(), S
         .arg(PRIV_ARG)
         .arg(action.as_str())
         .arg(base_dir)
+        .args(hosts)
         .status()
         .map_err(|error| format!("could not run pkexec: {error}"))?;
     if status.success() {
@@ -146,6 +175,20 @@ pub fn run_privileged(action: PrivilegedAction, base_dir: &Path) -> Result<(), S
             action.as_str()
         ))
     }
+}
+
+/// points /etc/hosts at the proxy for exactly `wanted`. Asks for auth only
+/// when the file actually has to change.
+fn set_redirects_privileged(wanted: &[&str], base_dir: &Path) -> Result<(), String> {
+    if hosts::redirects_current(wanted) {
+        return Ok(());
+    }
+    if wanted.is_empty() {
+        return run_privileged(PrivilegedAction::ClearHosts, base_dir);
+    }
+    run_privileged_with(PrivilegedAction::SetHosts, base_dir, wanted)?;
+    hosts::flush_dns();
+    Ok(())
 }
 
 fn marker_path(base_dir: &Path) -> PathBuf {
@@ -191,8 +234,7 @@ pub struct SpooferManager {
     socket_active: Arc<AtomicBool>,
     title_settings: Arc<Mutex<TitleSettings>>,
     skill_bridge: Mutex<Option<SkillBridge>>,
-    item_spawner_enabled: Arc<AtomicBool>,
-    spawned_items: crate::item_spawning::SpawnedItemLedger,
+    item_cleanup: crate::item_cleanup::Cleaner,
     crl: Mutex<Option<crl::CrlServer>>,
     // start_http() and start_socket() each independently call
     // ensure_reverse_proxy() - if the first one's pkexec call fails (auth
@@ -257,7 +299,7 @@ impl SpooferManager {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let spawned_items = crate::item_spawning::SpawnedItemLedger::new(&base_dir);
+        let item_cleanup = crate::item_cleanup::Cleaner::new(&base_dir);
         Self {
             base_dir,
             tx,
@@ -271,8 +313,7 @@ impl SpooferManager {
             socket_active: Arc::new(AtomicBool::new(false)),
             title_settings: Arc::new(Mutex::new(TitleSettings::default())),
             skill_bridge: Mutex::new(None),
-            item_spawner_enabled: Arc::new(AtomicBool::new(false)),
-            spawned_items,
+            item_cleanup,
             crl: Mutex::new(None),
             recent_reverse_proxy_failure: Mutex::new(None),
             rlapi_retained: AtomicBool::new(false),
@@ -287,12 +328,15 @@ impl SpooferManager {
                 && hebnix_sdk::process::is_rocket_league_running())
     }
 
-    fn redirect_hosts(&self) -> &'static [&'static str] {
-        if self.http_active.load(Ordering::Relaxed) || self.socket_active.load(Ordering::Relaxed) {
-            &REDIRECT_HOSTS
-        } else {
-            &[TITLE_HOST]
+    fn redirect_hosts(&self) -> Vec<&'static str> {
+        let mut hosts = Vec::with_capacity(2);
+        if self.http_active.load(Ordering::Relaxed) {
+            hosts.push(ACCOUNT_HOST);
         }
+        if self.socket_active.load(Ordering::Relaxed) || self.rlapi_running() {
+            hosts.push(TITLE_HOST);
+        }
+        hosts
     }
 
     pub fn enable_rlapi(&self) -> Result<(), String> {
@@ -376,27 +420,8 @@ impl SpooferManager {
                 let _ = std::fs::write(self.base_dir.join("rank_spoofer_status.log"), &detail);
                 let _ = self.tx.send(AppMsg::Log(detail));
             }
-        } else if !self.item_spawner_enabled.load(Ordering::Relaxed) {
-            self.stop_skill_bridge();
-        }
-    }
-
-    pub fn set_item_spawner_enabled(&self, enabled: bool) -> Result<(), String> {
-        if enabled {
-            self.start_skill_bridge()?;
-            self.item_spawner_enabled.store(true, Ordering::SeqCst);
-            Ok(())
         } else {
-            self.item_spawner_enabled.store(false, Ordering::SeqCst);
-            let ranks_active = self
-                .spoofed_ranks
-                .lock()
-                .map(|ranks| !ranks.is_empty())
-                .unwrap_or(false);
-            if !ranks_active {
-                self.stop_skill_bridge();
-            }
-            Ok(())
+            self.stop_skill_bridge();
         }
     }
 
@@ -410,7 +435,6 @@ impl SpooferManager {
                 Arc::clone(&self.spoofed_ranks),
                 self.tx.clone(),
                 self.base_dir.join("rank_spoofer_frames.log"),
-                &self.base_dir,
             )?);
         }
         Ok(())
@@ -509,42 +533,10 @@ impl SpooferManager {
         Ok(())
     }
 
-    pub fn spawn_item(
-        &self,
-        request: &crate::item_spawning::ItemSpawnRequest,
-    ) -> Result<(), String> {
-        if !self.item_spawner_enabled.load(Ordering::Relaxed) {
-            return Err("Enable Item Spawning first".into());
-        }
-        if !self.item_spawner_websocket_connected() {
-            return Err("Wait for Rocket League's PsyNet WebSocket to connect".into());
-        }
-
-        self.start_skill_bridge()?;
-        let psy_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_secs() as i64;
-        let (message, instance_ids) = crate::item_spawning::reward_message(request, psy_time)?;
-        self.spawned_items
-            .record(&instance_ids)
-            .map_err(|error| format!("Could not track spawned item: {error}"))?;
-        let slot = self
-            .skill_bridge
-            .lock()
-            .map_err(|_| "item bridge lock poisoned")?;
-        slot.as_ref()
-            .ok_or_else(|| "PsyNet websocket bridge is not running".to_string())?
-            .send_text(message)
-    }
-
-    pub fn item_spawner_websocket_connected(&self) -> bool {
-        self.skill_bridge
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(SkillBridge::is_connected))
-            .unwrap_or(false)
-    }
+    pub fn item_status(&self) -> crate::item_cleanup::ItemStatus { self.item_cleanup.status() }
+    pub fn begin_item_clear(&self) -> Result<(), String> { self.item_cleanup.begin_clear() }
+    pub fn cancel_item_clear(&self) -> Result<(), String> { self.item_cleanup.cancel_clear() }
+    pub fn finish_item_clear(&self) -> Result<bool, String> { self.item_cleanup.finish_clear() }
 
     pub fn stop_socket(&self) {
         self.socket_active.store(false, Ordering::Relaxed);
@@ -575,7 +567,7 @@ impl SpooferManager {
             .lock()
             .map_err(|_| "reverse proxy lock poisoned")?;
         if slot.is_some() {
-            return hosts::set_redirects(self.redirect_hosts());
+            return set_redirects_privileged(&self.redirect_hosts(), &self.base_dir);
         }
         let ca = Arc::new(ca::ensure(&self.base_dir)?);
         if !ca::is_current_installed(&self.base_dir) {
@@ -596,7 +588,10 @@ impl SpooferManager {
             );
         }
         let mut real_ips = HashMap::new();
-        for host in REDIRECT_HOSTS {
+        // The account proxy may start before Titles turn on. Pin both possible
+        // redirect targets now so a later hosts-file change cannot make an
+        // unpinned upstream request resolve back to our own listener.
+        for host in [ACCOUNT_HOST, TITLE_HOST] {
             real_ips.insert(host.to_string(), dns::resolve_a(host)?);
         }
         real_ips.insert(
@@ -614,9 +609,8 @@ impl SpooferManager {
                 self.base_dir.join("owned_products.json"),
             )),
             Box::new(TitleRule::new(Arc::clone(&self.title_settings))),
-            Box::new(crate::spoofer::rules::RankRule::with_item_spawner(
+            Box::new(crate::spoofer::rules::RankRule::new(
                 Arc::clone(&self.spoofed_ranks),
-                Arc::clone(&self.item_spawner_enabled),
             )),
         ];
         let mut rules: Vec<Box<dyn Rule>> = spoof_rules
@@ -637,11 +631,10 @@ impl SpooferManager {
         // the existing "Install Certificate" button, which was already a
         // synchronous, potentially slow/prompting UI action even before
         // this refactor.
-        if let Err(error) = run_privileged(PrivilegedAction::SetHosts, &self.base_dir) {
+        if let Err(error) = set_redirects_privileged(&self.redirect_hosts(), &self.base_dir) {
             proxy.stop();
             return Err(error);
         }
-        hosts::flush_dns();
         *slot = Some(proxy);
         Ok(())
     }
@@ -649,7 +642,7 @@ impl SpooferManager {
     /// Reconcile hosts with the shared proxy's actual runtime state.
     pub fn reconcile_hosts(&self) -> Result<(), String> {
         if self.http_running() || self.socket_running() || self.rlapi_running() {
-            hosts::set_redirects(self.redirect_hosts())
+            set_redirects_privileged(&self.redirect_hosts(), &self.base_dir)
         } else {
             hosts::clear()
         }
@@ -682,7 +675,6 @@ impl SpooferManager {
     pub fn shutdown(&self) {
         self.rlapi_retained.store(false, Ordering::Release);
         hebnix_sdk::rlapi::session::shared_game_session().reset();
-        self.item_spawner_enabled.store(false, Ordering::SeqCst);
         self.stop_socket();
         self.stop_http();
         // Clear a redirect even if the socket failed to start or its state

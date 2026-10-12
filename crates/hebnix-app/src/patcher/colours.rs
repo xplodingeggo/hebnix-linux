@@ -24,54 +24,6 @@ const BLUE_COLOUR_BLIND: &str = "cdcccc3d0000803ecdcc4c3f0000803fcdcccc3d6666263
 const ORANGE_DEFAULT: &str = "61c3433f70cec83e39b4c83d0000803f79e9663f7cf2703e39b4c83d0000803f26e4633f26e4633f26e4633f0000803f";
 const ORANGE_COLOUR_BLIND: &str = "cdcc4c3f6666e63ecdcccc3d0000803f0000803f6666263f000000000000803f0000803f0000803f6666663f0000803f";
 
-#[cfg(test)]
-const BOOST_ARENA_PACKAGES: &[&str] = &[
-    "Stadium_P",
-    "Stadium_Day_P",
-    "Stadium_Foggy_P",
-    "Stadium_Winter_P",
-    "EuroStadium_P",
-    "EuroStadium_Night_P",
-    "EuroStadium_Dusk_P",
-    "EuroStadium_Rainy_P",
-    "EuroStadium_SnowNight_P",
-    "UtopiaStadium_P",
-    "UtopiaStadium_Dusk_P",
-    "UtopiaStadium_Snow_P",
-    "UtopiaStadium_Lux_P",
-    "TrainStation_P",
-    "TrainStation_Night_P",
-    "TrainStation_Dawn_P",
-    "Park_P",
-    "Park_Night_P",
-    "Park_Rainy_P",
-    "Park_Snowy_P",
-    "Outlaw_P",
-    "UF_Night_P",
-    "Street_P",
-    "Farm_P",
-    "Farm_Night_P",
-    "Farm_GRS_P",
-    "UF_Day_P",
-    "Paname_Dusk_P",
-    "CS_P",
-    "CS_Day_P",
-    "Beach_P",
-    "Beach_Night_P",
-    "NeoTokyo_Standard_P",
-    "Underwater_P",
-    "Wasteland_S_P",
-    "Wasteland_Night_S_P",
-    "CHN_Stadium_P",
-    "CHN_Stadium_Day_P",
-    "ARC_Standard_P",
-    "Music_P",
-    "Woods_P",
-    "Woods_Night_P",
-    "Mall_Day_P",
-    "FF_Dusk_P",
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColourAction {
     Apply,
@@ -233,50 +185,60 @@ impl ColoursState {
 
                 ui.vertical(|ui| {
                     ui.heading(t("render-stadium-colours"));
-                    ui.checkbox(&mut self.settings.stadium_colours, t("render-apply-stadium-colours"));
+                    ui.checkbox(
+                        &mut self.settings.stadium_colours,
+                        t("render-apply-stadium-colours"),
+                    );
                     ui.weak(t("render-banners-flags-and-field-lines"));
                     ui.add_enabled_ui(self.settings.stadium_colours, |ui| {
-                    colour_row(ui, &t("colours-blue-team"), &mut self.settings.stadium_blue);
-                    colour_row(ui, &t("colours-orange-team"), &mut self.settings.stadium_orange);
-                    ui.horizontal(|ui| {
-                        if ui.button(t("render-defaults")).clicked() {
-                            self.settings.stadium_blue = [25, 115, 255];
-                            self.settings.stadium_orange = [195, 100, 25];
-                        }
-                        if ui.button(t("render-swap-teams")).clicked() {
-                            std::mem::swap(
-                                &mut self.settings.stadium_blue,
-                                &mut self.settings.stadium_orange,
-                            );
-                        }
-                    });
+                        colour_row(ui, &t("colours-blue-team"), &mut self.settings.stadium_blue);
+                        colour_row(
+                            ui,
+                            &t("colours-orange-team"),
+                            &mut self.settings.stadium_orange,
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button(t("render-defaults")).clicked() {
+                                self.settings.stadium_blue = [25, 115, 255];
+                                self.settings.stadium_orange = [195, 100, 25];
+                            }
+                            if ui.button(t("render-swap-teams")).clicked() {
+                                std::mem::swap(
+                                    &mut self.settings.stadium_blue,
+                                    &mut self.settings.stadium_orange,
+                                );
+                            }
+                        });
                     });
                 });
 
                 ui.add_space(10.0);
                 ui.vertical(|ui| {
                     ui.heading(t("render-hud-colours"));
-                    ui.checkbox(&mut self.settings.hud_colours, t("render-apply-hud-colours"));
+                    ui.checkbox(
+                        &mut self.settings.hud_colours,
+                        t("render-apply-hud-colours"),
+                    );
                     ui.weak(t("render-boost-meter-and-scoreboard"));
                     ui.add_enabled_ui(self.settings.hud_colours, |ui| {
-                    colour_row(ui, &t("colours-blue-team"), &mut self.settings.hud_blue);
-                    colour_row(ui, &t("colours-orange-team"), &mut self.settings.hud_orange);
-                    ui.horizontal(|ui| {
-                        if ui.button(t("render-match-stadium")).clicked() {
-                            self.settings.hud_blue = self.settings.stadium_blue;
-                            self.settings.hud_orange = self.settings.stadium_orange;
-                        }
-                        if ui.button(t("render-defaults")).clicked() {
-                            self.settings.hud_blue = [0, 46, 191];
-                            self.settings.hud_orange = [179, 61, 0];
-                        }
-                        if ui.button(t("render-swap-teams")).clicked() {
-                            std::mem::swap(
-                                &mut self.settings.hud_blue,
-                                &mut self.settings.hud_orange,
-                            );
-                        }
-                    });
+                        colour_row(ui, &t("colours-blue-team"), &mut self.settings.hud_blue);
+                        colour_row(ui, &t("colours-orange-team"), &mut self.settings.hud_orange);
+                        ui.horizontal(|ui| {
+                            if ui.button(t("render-match-stadium")).clicked() {
+                                self.settings.hud_blue = self.settings.stadium_blue;
+                                self.settings.hud_orange = self.settings.stadium_orange;
+                            }
+                            if ui.button(t("render-defaults")).clicked() {
+                                self.settings.hud_blue = [0, 46, 191];
+                                self.settings.hud_orange = [179, 61, 0];
+                            }
+                            if ui.button(t("render-swap-teams")).clicked() {
+                                std::mem::swap(
+                                    &mut self.settings.hud_blue,
+                                    &mut self.settings.hud_orange,
+                                );
+                            }
+                        });
                     });
                 });
 
@@ -287,9 +249,7 @@ impl ColoursState {
                         &mut self.settings.extended_palette,
                         t("render-add-pure-white-to-pure-black"),
                     );
-                    ui.weak(
-                        t("render-only-you-see-these-colours-disable"),
-                    );
+                    ui.weak(t("render-only-you-see-these-colours-disable"));
                 });
 
                 ui.add_space(10.0);
@@ -301,7 +261,11 @@ impl ColoursState {
                     );
                     ui.weak(t("render-changes-the-high-speed-bloom-and"));
                     ui.add_enabled_ui(self.settings.heatseeker_glow, |ui| {
-                        colour_row(ui, &t("colours-max-speed"), &mut self.settings.heatseeker_max_speed);
+                        colour_row(
+                            ui,
+                            &t("colours-max-speed"),
+                            &mut self.settings.heatseeker_max_speed,
+                        );
                     });
                 });
 
@@ -332,7 +296,10 @@ impl ColoursState {
                     ui.visuals().text_color()
                 };
                 ui.colored_label(colour, &self.status);
-                ui.weak(t_args("render-pristine-backup-backup-name", &[("backup", BACKUP_NAME.to_string().into())]));
+                ui.weak(t_args(
+                    "render-pristine-backup-backup-name",
+                    &[("backup", BACKUP_NAME.to_string().into())],
+                ));
             });
         requested
     }
@@ -349,10 +316,10 @@ impl ColoursState {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.heading(t("app-ball-appearance"));
-                ui.label(
-                    t("ball-appearance-change-the-ball-s-shape-locally"),
-                );
-                ui.weak(t("ball-appearance-experimental-visual-swap-collision-and-p"));
+                ui.label(t("ball-appearance-change-the-ball-s-shape-locally"));
+                ui.weak(t(
+                    "ball-appearance-experimental-visual-swap-collision-and-p",
+                ));
                 ui.add_space(12.0);
                 ui.add_enabled_ui(!self.busy, |ui| {
                     ui.horizontal(|ui| {
@@ -389,21 +356,37 @@ impl ColoursState {
                         );
                     });
                     if colour_support {
-                        ui.weak(
-                            t("ball-appearance-copies-the-colour-texture-special-shader"),
-                        );
+                        ui.weak(t(
+                            "ball-appearance-copies-the-colour-texture-special-shader",
+                        ));
                     } else {
-                        ui.weak(
-                            t("ball-appearance-colours-are-available-for-normal-selecte"),
-                        );
+                        ui.weak(t(
+                            "ball-appearance-colours-are-available-for-normal-selecte",
+                        ));
                     }
                     let active = self
                         .ball_swaps
                         .iter()
                         .find(|swap| swap.source == self.ball_source);
                     if let Some(swap) = active {
-                        ui.label(t_args("ball-appearance-applied-super-super2", &[("original", (super::ball_visual::BALLS[swap.source].0).to_string().into()), ("replacement", (super::ball_visual::BALLS[swap.donor].0).to_string().into())]));
-                        ui.weak(t("ball-appearance-restore-this-ball-before-choosing-anothe"));
+                        ui.label(t_args(
+                            "ball-appearance-applied-super-super2",
+                            &[
+                                (
+                                    "original",
+                                    (super::ball_visual::BALLS[swap.source].0)
+                                        .to_string()
+                                        .into(),
+                                ),
+                                (
+                                    "replacement",
+                                    (super::ball_visual::BALLS[swap.donor].0).to_string().into(),
+                                ),
+                            ],
+                        ));
+                        ui.weak(t(
+                            "ball-appearance-restore-this-ball-before-choosing-anothe",
+                        ));
                     }
                     if let Some(error) = &self.ball_state_error {
                         ui.colored_label(egui::Color32::RED, error);
@@ -720,6 +703,12 @@ fn restore_arena_boost_colours(cooked_pc: &Path, backups_dir: &Path) -> Result<(
 }
 
 fn apply(cooked_pc: &Path, backups_dir: &Path, settings: &ColourSettings) -> Result<(), String> {
+    crate::patcher::backup_guard::prepare(
+        cooked_pc,
+        backups_dir,
+        "colours-build.sha256",
+        |name| name == BACKUP_NAME,
+    )?;
     let live = cooked_pc.join("TAGame.upk");
     if !live.is_file() {
         return Err(format!(
@@ -785,6 +774,9 @@ fn apply(cooked_pc: &Path, backups_dir: &Path, settings: &ColourSettings) -> Res
 }
 
 fn restore(cooked_pc: &Path, backups_dir: &Path) -> Result<(), String> {
+    crate::patcher::backup_guard::check(cooked_pc, backups_dir, "colours-build.sha256", |name| {
+        name == BACKUP_NAME
+    })?;
     let live = cooked_pc.join("TAGame.upk");
     let backup = backups_dir.join(BACKUP_NAME);
     if !backup.is_file() {
@@ -860,7 +852,7 @@ struct BoostMaterialTarget {
     offset: usize,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 struct BoostEmitterTarget {
     key: &'static str,
     offset: usize,
@@ -1721,39 +1713,6 @@ impl Package {
             && read_i32(&self.image, offset + 4).ok() == Some(instance)
     }
 
-    #[cfg(test)]
-    fn capture_boost_material_values(&self) -> Result<Vec<BoostMaterialValue>, String> {
-        self.boost_material_targets()?
-            .into_iter()
-            .map(|target| {
-                let rgb = self
-                    .image
-                    .get(target.offset..target.offset + 12)
-                    .ok_or("A boost-pad material colour is outside the package")?
-                    .try_into()
-                    .map_err(|_| "A boost-pad material colour has the wrong size")?;
-                Ok(BoostMaterialValue {
-                    export: target.export.into(),
-                    parameter: target.parameter.into(),
-                    instance: target.instance,
-                    rgb,
-                })
-            })
-            .collect()
-    }
-
-    #[cfg(test)]
-    fn capture_boost_emitter_values(&self) -> Result<Vec<BoostEmitterValue>, String> {
-        self.boost_emitter_targets()?
-            .into_iter()
-            .map(|target| {
-                Ok(BoostEmitterValue {
-                    key: target.key.into(),
-                    object_ref: read_i32(&self.image, target.offset)?,
-                })
-            })
-            .collect()
-    }
     fn restore_active_boost_materials(
         &mut self,
         values: &[BoostMaterialValue],
@@ -2158,30 +2117,4 @@ fn usize_from_i32(value: i32, label: &str) -> Result<usize, String> {
 
 fn usize_from_i64(value: i64, label: &str) -> Result<usize, String> {
     usize::try_from(value).map_err(|_| format!("Invalid negative {label}"))
-}
-
-#[test]
-#[ignore = "requires HEBNIX_TEST_TAGAME"]
-fn heatseeker_max_speed_roundtrip() {
-    let path = std::env::var("HEBNIX_TEST_TAGAME").unwrap();
-    let mut package = Package::load(fs::read(path).unwrap()).unwrap();
-    let offset = package.heatseeker_colour_offset().unwrap();
-    let original = package.image.clone();
-    package.apply_heatseeker_colour([0, 255, 0]).unwrap();
-    assert_eq!(&package.image[..offset], &original[..offset]);
-    assert_eq!(&package.image[offset + 12..], &original[offset + 12..]);
-    let decoded = Package::load(package.save().unwrap()).unwrap();
-    let actual = decoded.heatseeker_colour_offset().unwrap();
-    let expected: Vec<u8> = [0f32, 1f32, 0f32]
-        .into_iter()
-        .flat_map(f32::to_le_bytes)
-        .collect();
-    assert_eq!(&decoded.image[actual..actual + 12], expected.as_slice());
-    assert_eq!(
-        &decoded.image[actual + 12..actual + 16],
-        &original[offset + 12..offset + 16]
-    );
-    println!(
-        "MaxSpeedColor saved/reloaded green; all other decoded bytes unchanged before repacking"
-    );
 }

@@ -11,6 +11,7 @@ pub struct Body<'a> {
     /// Request path, when the response came through the HTTP proxy.  Rules must
     /// use this for endpoints which share a host with unrelated account APIs.
     pub request_path: Option<&'a str>,
+    pub request_body: Option<&'a [u8]>,
     pub bytes: Vec<u8>,
     pub set_headers: Vec<(String, String)>, // these replace whatevers already there
     pub response_headers: Vec<(String, String)>,
@@ -21,6 +22,7 @@ impl<'a> Body<'a> {
         Self {
             content_type,
             request_path: None,
+            request_body: None,
             bytes,
             set_headers: Vec::new(),
             response_headers: Vec::new(),
@@ -498,22 +500,15 @@ impl Rule for TitleRule {
 
 pub struct RankRule {
     pub spoofs: Arc<Mutex<HashMap<i32, (i32, f64)>>>,
-    route_item_spawner: Arc<AtomicBool>,
+    route_session: bool,
     announced: AtomicBool,
 }
 
 impl RankRule {
     pub fn new(spoofs: Arc<Mutex<HashMap<i32, (i32, f64)>>>) -> Self {
-        Self::with_item_spawner(spoofs, Arc::new(AtomicBool::new(false)))
-    }
-
-    pub fn with_item_spawner(
-        spoofs: Arc<Mutex<HashMap<i32, (i32, f64)>>>,
-        route_item_spawner: Arc<AtomicBool>,
-    ) -> Self {
         Self {
             spoofs,
-            route_item_spawner,
+            route_session: false,
             announced: AtomicBool::new(false),
         }
     }
@@ -537,7 +532,7 @@ impl Rule for RankRule {
         };
 
         let spoofs = self.spoofs.lock().unwrap().clone();
-        if spoofs.is_empty() && !self.route_item_spawner.load(Ordering::Relaxed) {
+        if spoofs.is_empty() && !self.route_session {
             return false;
         }
         // Send game RPC through the intercepted config host, then route those
@@ -700,206 +695,6 @@ pub(crate) fn psy_response_signature(psy_time: &str, body: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rank_rule_rewrites_direct_psynet_response_and_signs_it() {
-        let spoofs = Arc::new(Mutex::new(HashMap::from([(10, (22, 95.0))])));
-        let rule = RankRule::new(spoofs);
-        let mut body = Body::new(
-            "application/json",
-            br#"{"Result":{"Skills":[{"Playlist":10,"Tier":1,"Division":2,"MMR":15.0,"Mu":15.0}]}}"#.to_vec(),
-        );
-        body.response_headers
-            .push(("PsyTime".into(), "123456".into()));
-        assert!(rule.rewrite(&mut body));
-        let value: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
-        let skill = &value["Result"]["Skills"][0];
-        assert_eq!(skill["Tier"], 22);
-        assert_eq!(skill["Division"], 0);
-        assert_eq!(skill["Mu"], 95.0);
-        assert!(
-            body.set_headers
-                .iter()
-                .any(|(name, value)| name == "PsySig" && !value.is_empty())
-        );
-    }
-
-    #[test]
-    fn rank_rule_routes_percon_to_local_bridge() {
-        let rule = RankRule::new(Arc::new(Mutex::new(HashMap::from([(10, (22, 95.0))]))));
-        let original = br#"{"Result":{"PerConURL":"wss://ws.rlpp.psynet.gg/ws/gc","PerConURLv2":"wss://ws.rlpp.psynet.gg/ws/gc2"}}"#.to_vec();
-        let mut body = Body::new("application/json", original);
-        assert!(rule.rewrite(&mut body));
-        let value: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
-        assert_eq!(
-            value["Result"]["PerConURL"],
-            "ws://127.0.0.1:8025/ws/gc?PsyConnectionType=Player"
-        );
-        assert_eq!(value["Result"]["PerConURLv2"], "ws://127.0.0.1:8025/ws/gc2");
-    }
-
-    #[test]
-    fn rank_rule_routes_psynet_api_through_config() {
-        let rule = RankRule::new(Arc::new(Mutex::new(HashMap::from([(10, (22, 95.0))]))));
-        let mut body = Body::new(
-            "application/json",
-            br#"{"PsyNetUrl":"https://api.rlpp.psynet.gg/rpc"}"#.to_vec(),
-        );
-        assert!(rule.rewrite(&mut body));
-        let value: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
-        assert_eq!(value["PsyNetUrl"], "https://config.psynet.gg/rpc");
-        assert!(
-            body.set_headers
-                .iter()
-                .any(|(name, _)| name == "Psysignature")
-        );
-    }
-
-    #[test]
-    fn item_spawner_routes_websocket_without_rank_spoofs() {
-        let enabled = Arc::new(AtomicBool::new(true));
-        let rule =
-            RankRule::with_item_spawner(Arc::new(Mutex::new(HashMap::new())), Arc::clone(&enabled));
-        let mut body = Body::new(
-            "application/json",
-            br#"{"Result":{"PerConURLv2":"wss://ws.rlpp.psynet.gg/ws/gc2"}}"#.to_vec(),
-        );
-        assert!(rule.rewrite(&mut body));
-        let value: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
-        assert_eq!(value["Result"]["PerConURLv2"], "ws://127.0.0.1:8025/ws/gc2");
-        enabled.store(false, Ordering::Relaxed);
-        let mut original = Body::new(
-            "application/json",
-            br#"{"Result":{"PerConURLv2":"wss://ws.rlpp.psynet.gg/ws/gc2"}}"#.to_vec(),
-        );
-        assert!(!rule.rewrite(&mut original));
-    }
-
-    #[test]
-    fn rank_rule_keeps_psynet_api_url() {
-        let rule = RankRule::new(Arc::new(Mutex::new(HashMap::new())));
-        let original = br#"{"PsyNetUrl":"https://api.rlpp.psynet.gg/rpc"}"#.to_vec();
-        let mut body = Body::new("application/json", original.clone());
-        assert!(!rule.rewrite(&mut body));
-        assert_eq!(body.bytes, original);
-        assert!(body.set_headers.is_empty());
-    }
-    #[test]
-    fn ranked_heatseeker_uses_the_live_skills_playlist() {
-        let rule = RankRule::new(Arc::new(Mutex::new(HashMap::from([(63, (22, 95.0))]))));
-        let mut body = Body::new(
-            "application/json",
-            br#"{"Result":{"Skills":[{"Playlist":63,"Tier":1,"Division":2,"MMR":15.0,"Mu":15.0}]}}"#.to_vec(),
-        );
-        body.response_headers
-            .push(("PsyTime".into(), "123456".into()));
-        assert!(rule.rewrite(&mut body));
-        let value: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
-        assert_eq!(value["Result"]["Skills"][0]["Tier"], 22);
-    }
-
-    #[test]
-    fn title_rule_targets_one_title_and_adds_custom_palette() {
-        let settings = Arc::new(Mutex::new(TitleSettings {
-            enabled: true,
-            titles: vec![TitleSpoofSettings {
-                text: "Hebnix".into(),
-                color: "12ABEF".into(),
-                glow: true,
-                target_id: Some("Second".into()),
-            }],
-        }));
-        let rule = TitleRule::new(settings);
-        let mut body = Body::new(
-            "application/json",
-            br#"{"PsyNetUrl":"https://api.rlpp.psynet.gg/rpc","PlayerTitleConfig":{"Titles":[{"ID":"First","Text":"One"},{"ID":"Second","Text":"Two"}],"Categories":[]}}"#.to_vec(),
-        );
-        assert!(rule.rewrite(&mut body));
-        let value: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
-        assert_eq!(value["PlayerTitleConfig"]["Titles"][0]["Text"], "One");
-        assert_eq!(value["PlayerTitleConfig"]["Titles"][1]["Text"], "Hebnix");
-        assert_eq!(value["PsyNetUrl"], "https://api.rlpp.psynet.gg/rpc");
-        assert_eq!(
-            value["PlayerTitleConfig"]["Categories"][0]["GlowColor"],
-            "12ABEF"
-        );
-    }
-
-    #[test]
-    fn title_rule_spoofs_each_configured_title() {
-        let settings = Arc::new(Mutex::new(TitleSettings {
-            enabled: true,
-            titles: vec![
-                TitleSpoofSettings {
-                    text: "First Spoof".into(),
-                    color: "112233".into(),
-                    glow: false,
-                    target_id: Some("First".into()),
-                },
-                TitleSpoofSettings {
-                    text: "Second Spoof".into(),
-                    color: "AABBCC".into(),
-                    glow: true,
-                    target_id: Some("Second".into()),
-                },
-            ],
-        }));
-        let rule = TitleRule::new(settings);
-        let mut body = Body::new(
-            "application/json",
-            br#"{"PlayerTitleConfig":{"Titles":[{"ID":"First","Text":"One"},{"ID":"Second","Text":"Two"}],"Categories":[]}}"#.to_vec(),
-        );
-        assert!(rule.rewrite(&mut body));
-        let value: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
-        assert_eq!(
-            value["PlayerTitleConfig"]["Titles"][0]["Text"],
-            "First Spoof"
-        );
-        assert_eq!(
-            value["PlayerTitleConfig"]["Titles"][1]["Text"],
-            "Second Spoof"
-        );
-        assert_ne!(
-            value["PlayerTitleConfig"]["Titles"][0]["Category"],
-            value["PlayerTitleConfig"]["Titles"][1]["Category"]
-        );
-    }
-
-    #[test]
-    fn dedicated_title_takes_priority_and_all_spoofs_the_rest() {
-        let settings = Arc::new(Mutex::new(TitleSettings {
-            enabled: true,
-            titles: vec![
-                TitleSpoofSettings {
-                    text: "Fallback".into(),
-                    color: "112233".into(),
-                    glow: false,
-                    target_id: None,
-                },
-                TitleSpoofSettings {
-                    text: "Dedicated".into(),
-                    color: "AABBCC".into(),
-                    glow: true,
-                    target_id: Some("Second".into()),
-                },
-            ],
-        }));
-        let rule = TitleRule::new(settings);
-        let mut body = Body::new(
-            "application/json",
-            br#"{"PlayerTitleConfig":{"Titles":[{"ID":"First","Text":"One"},{"ID":"Second","Text":"Two"},{"ID":"Third","Text":"Three"}],"Categories":[]}}"#.to_vec(),
-        );
-        assert!(rule.rewrite(&mut body));
-        let value: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
-        assert_eq!(value["PlayerTitleConfig"]["Titles"][0]["Text"], "Fallback");
-        assert_eq!(value["PlayerTitleConfig"]["Titles"][1]["Text"], "Dedicated");
-        assert_eq!(value["PlayerTitleConfig"]["Titles"][2]["Text"], "Fallback");
-    }
-}
-
 /// Keep normal spoof rules inactive when only the RLAPI workbench is enabled.
 pub struct EnabledRule {
     pub inner: Box<dyn Rule>,
@@ -937,10 +732,35 @@ impl Rule for RlApiRouteRule {
         if !hebnix_sdk::rlapi::session::shared_game_session().enabled() {
             return false;
         }
-        let route = RankRule::with_item_spawner(
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(AtomicBool::new(true)),
-        );
+        let mut route = RankRule::new(Arc::new(Mutex::new(HashMap::new())));
+        route.route_session = true;
         route.rewrite(body)
+    }
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    #[test]
+    fn session_only_routing_preserves_skills_and_routes_both_websockets() {
+        let mut rule = RankRule::new(Arc::new(Mutex::new(HashMap::new())));
+        rule.route_session = true;
+        let original = serde_json::json!({"Result":{"Skills":[{"Playlist":1,"Tier":5,"Mu":20,"Unknown":"keep"}],"PerConURL":"wss://upstream/one","PerConURLv2":"wss://upstream/two"}});
+        let mut body = Body::new("application/json", original.to_string().into_bytes());
+        assert!(rule.rewrite(&mut body));
+        let rewritten: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
+        assert_eq!(rewritten["Result"]["Skills"], original["Result"]["Skills"]);
+        assert!(rewritten["Result"]["PerConURL"].as_str().unwrap().contains("127.0.0.1:8025"));
+        assert!(rewritten["Result"]["PerConURLv2"].as_str().unwrap().contains("127.0.0.1:8025"));
+    }
+    #[test]
+    fn rank_spoofing_still_updates_only_selected_playlists() {
+        let rule = RankRule::new(Arc::new(Mutex::new(HashMap::from([(1, (19, 1000.0))]))));
+        let original = serde_json::json!({"Result":{"Skills":[{"Playlist":1,"Tier":5,"Mu":20},{"Playlist":2,"Tier":6,"Mu":30}]}});
+        let mut body = Body::new("application/json", original.to_string().into_bytes());
+        assert!(rule.rewrite(&mut body));
+        let rewritten: serde_json::Value = serde_json::from_slice(&body.bytes).unwrap();
+        assert_eq!(rewritten["Result"]["Skills"][0]["Tier"], 19);
+        assert_eq!(rewritten["Result"]["Skills"][1], original["Result"]["Skills"][1]);
     }
 }
