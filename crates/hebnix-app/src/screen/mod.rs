@@ -1,15 +1,14 @@
 //! screen colour sampling of the Rocket League window, for plugins.
 //!
-//! on Windows this uses Windows Graphics Capture on RL's window, the same thing OBS's window
-//! capture does. nothing is injected into the game and no memory is read, so
+//! reads RL's own window (linux-port: through X11/XWayland, see capture.rs;
+//! Windows uses Windows Graphics Capture, the same thing OBS's window capture
+//! does). nothing is injected into the game and no memory is read, so
 //! it stays on the same side of EAC as the rest of the overlay. window capture
 //! only sees RL's own pixels, never the overlay drawn on top of it.
 //!
 //! the capture is lazy: it starts the first time something asks for a pixel,
 //! and stops after IDLE_STOP with no requests.
 
-// linux-port: capture.rs is a stub, so the frame plumbing below goes unused
-#![allow(dead_code)]
 
 mod capture;
 
@@ -209,5 +208,43 @@ impl Service {
 
     fn log(&self, msg: &str) {
         let _ = self.tx.send(AppMsg::Log(msg.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use std::time::{Duration, Instant};
+
+    /// needs Rocket League open on X11/XWayland: cargo test live_service -- --ignored
+    #[test]
+    #[ignore = "needs a running Rocket League window"]
+    fn live_service_samples_colours() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        super::init(tx);
+        let svc = super::service().expect("service");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let frame = loop {
+            if let Some(frame) = svc.frame() {
+                break frame;
+            }
+            assert!(Instant::now() < deadline, "no frame: {:?}", rx.try_iter().collect::<Vec<_>>());
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let (w, h) = (frame.width as i32, frame.height as i32);
+        let center = frame.pixel(w / 2, h / 2).expect("center pixel");
+        let average = frame.average(w / 2 - 5, h / 2 - 5, 10, 10).expect("average");
+        // the colour of a pixel matches itself, and a far-off colour doesn't
+        let same = frame.match_color(w / 2, h / 2, 1, 1, center, 0).expect("match");
+        let inverse = (255 - center.0, 255 - center.1, 255 - center.2);
+        let other = frame.match_color(w / 2, h / 2, 1, 1, inverse, 10).expect("match");
+        eprintln!("{w}x{h} center={center:?} average10={average:?} same={same} inverse={other}");
+        assert_eq!(same, 1.0);
+        assert_eq!(other, 0.0);
+        // outside the window there is nothing to read
+        assert_eq!(frame.pixel(w + 5, 0), None);
+        // frames keep coming while asked for
+        let first = frame.captured_at;
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(svc.frame().expect("still capturing").captured_at > first);
     }
 }
