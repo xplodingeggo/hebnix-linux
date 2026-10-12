@@ -201,6 +201,15 @@ impl WaylandOverlay {
     pub fn poll_size(&mut self) -> Option<(u32, u32)> {
         let _ = self.conn.flush();
         if !self.state.configured {
+            // re-mapping after hide(): wlr-layer-shell wants a commit with
+            // no buffer, then a fresh configure, before a buffer may be
+            // attached again. Attaching straight away is the "layerSurface
+            // was not configured, but a buffer was attached" protocol error
+            // that used to kill the connection every time the overlay came
+            // back.
+            if !self.visible {
+                self.state.layer.commit();
+            }
             // Block for the initial configure (one-time cost at overlay
             // startup). TODO(linux-port): switch to a non-blocking
             // fd-readiness check (e.g. via calloop) so a monitor
@@ -343,6 +352,9 @@ impl WaylandOverlay {
         surface.attach(None, 0, 0);
         surface.commit();
         self.visible = false;
+        // an unmapped layer surface is back to its just-created state; it
+        // has to be configured again before the next buffer (see poll_size)
+        self.state.configured = false;
         let _ = self.conn.flush();
     }
 }
