@@ -196,6 +196,7 @@ jobs:
           install -Dm644 packaging/modules-load.d/hebnix-uinput.conf \
             "$STAGE/lib/modules-load.d/hebnix-uinput.conf"
           tar -C "$(dirname "$STAGE")" -czf "$NAME.tar.gz" "$NAME"
+          echo "path=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Package .moon bundle (arch)
         id: moonbundle
