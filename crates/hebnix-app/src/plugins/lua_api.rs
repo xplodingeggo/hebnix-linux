@@ -1308,8 +1308,28 @@ fn install_screen_api(lua: &Lua, hebnix: &Table) -> mlua::Result<()> {
     screen.set(
         "cursor",
         lua.create_function(|_, ()| {
-            // linux-port: Wayland doesn't expose the global pointer position
-            Ok((None::<i32>, None::<i32>))
+            // linux-port: the compositor gives the cursor (Hyprland, KDE,
+            // X11 desktops), relative to RL's window rect. That rect can be in
+            // logical units on a scaled monitor while frames are in the
+            // window's real pixels, so scale it onto the frame when they differ
+            let Some((left, top, right, bottom)) =
+                hebnix_sdk::process::get_rocket_league_window_rect()
+            else {
+                return Ok((None, None));
+            };
+            let Some((mut x, mut y)) = hebnix_sdk::process::cursor_in_rl_window() else {
+                return Ok((None, None));
+            };
+            let (rect_w, rect_h) = (right - left, bottom - top);
+            if let Some(f) = frame()
+                && rect_w > 0
+                && rect_h > 0
+                && (f.width as i32 != rect_w || f.height as i32 != rect_h)
+            {
+                x = x * f.width as i32 / rect_w;
+                y = y * f.height as i32 / rect_h;
+            }
+            Ok((Some(x), Some(y)))
         })?,
     )?;
     hebnix.set("screen", screen)?;

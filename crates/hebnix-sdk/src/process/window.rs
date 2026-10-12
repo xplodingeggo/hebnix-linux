@@ -1089,41 +1089,48 @@ pub fn is_cursor_inside_rl_window() -> bool {
     let Some((left, top, right, bottom)) = get_rocket_league_window_rect() else {
         return false;
     };
+    let Some((x, y)) = cursor_position() else {
+        return false;
+    };
+    left <= x && x <= right && top <= y && y <= bottom
+}
+
+/// the cursor relative to the RL window's top-left, in the same units as
+/// get_rocket_league_window_rect. None when either is unknown.
+pub fn cursor_in_rl_window() -> Option<(i32, i32)> {
+    let (left, top, _, _) = get_rocket_league_window_rect()?;
+    let (x, y) = cursor_position()?;
+    Some((x - left, y - top))
+}
+
+/// the cursor in the compositor's global coordinates. None where the
+/// compositor doesn't say (niri, Sway).
+pub fn cursor_position() -> Option<(i32, i32)> {
     let (x, y) = match compositor() {
         Compositor::Hyprland => {
-            let Some(json) = hyprctl_json("cursorpos") else {
-                return false;
-            };
+            let json = hyprctl_json("cursorpos")?;
             (
-                json.get("x").and_then(Value::as_i64).unwrap_or(i64::MIN) as i32,
-                json.get("y").and_then(Value::as_i64).unwrap_or(i64::MIN) as i32,
+                json.get("x").and_then(Value::as_i64)? as i32,
+                json.get("y").and_then(Value::as_i64)? as i32,
             )
         }
         Compositor::Kwin => {
             // "X=123" / "Y=456" / "SCREEN=0" / "WINDOW=..." (--shell mode),
             // one per line, verified against kdotool's own template source.
-            let Some(lines) = kdotool_lines(&["getmouselocation", "--shell"]) else {
-                return false;
-            };
+            let lines = kdotool_lines(&["getmouselocation", "--shell"])?;
             let get = |prefix: &str| -> Option<i32> {
                 lines
                     .iter()
                     .find_map(|l| l.strip_prefix(prefix))
                     .and_then(|v| v.parse().ok())
             };
-            match (get("X="), get("Y=")) {
-                (Some(x), Some(y)) => (x, y),
-                _ => return false,
-            }
+            (get("X=")?, get("Y=")?)
         }
-        Compositor::I3 | Compositor::X11 => match x11::pointer() {
-            Some(position) => position,
-            None => return false,
-        },
+        Compositor::I3 | Compositor::X11 => x11::pointer()?,
         // no cursor position over niri's or Sway's IPC
-        Compositor::Niri | Compositor::Sway | Compositor::Other => return false,
+        Compositor::Niri | Compositor::Sway | Compositor::Other => return None,
     };
-    left <= x && x <= right && top <= y && y <= bottom
+    Some((x, y))
 }
 
 #[cfg(test)]
