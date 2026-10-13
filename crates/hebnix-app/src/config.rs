@@ -74,6 +74,9 @@ pub struct SettingsCfg {
     pub suppress_fullscreen_warning: bool,
     pub suppress_statsapi_rate_warning: bool,
     pub toast_position: crate::toast::ToastPos,
+    /// font for plugin overlay and toast text: the stem of a .ttf/.otf in
+    /// the fonts folder, empty for the bundled default
+    pub overlay_font: String,
     /// Publish Hebnix/Rocket League activity to the local Discord client.
     pub discord_rich_presence: bool,
     /// Show presence only while Rocket League is running.
@@ -113,6 +116,7 @@ impl Default for SettingsCfg {
             suppress_fullscreen_warning: false,
             suppress_statsapi_rate_warning: false,
             toast_position: Default::default(),
+            overlay_font: String::new(),
             discord_rich_presence: true,
             discord_rocket_league_only: false,
             discord_game_state: true,

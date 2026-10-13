@@ -77,7 +77,7 @@ pub struct ThemeWidgetState {
 }
 
 /// look for a .ttf or .otf in fonts_dir with this name
-fn find_font_file(fonts_dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+pub fn find_font_file(fonts_dir: &Path, name: &str) -> Option<std::path::PathBuf> {
     for ext in ["ttf", "otf"] {
         let candidate = fonts_dir.join(format!("{name}.{ext}"));
         if candidate.is_file() {
@@ -252,6 +252,25 @@ pub fn apply_window_opacity(ctx: &egui::Context, opacity: f32) {
             w.weak_bg_fill = scale(w.weak_bg_fill);
         }
     });
+}
+
+/// stems of the .ttf/.otf files in fonts_dir, sorted
+pub fn list_fonts(fonts_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(fonts_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
+        })
+        .filter_map(|path| path.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup();
+    names
 }
 
 /// theme names: built-ins + themes/*.toml stems

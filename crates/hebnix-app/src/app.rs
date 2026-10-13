@@ -740,6 +740,12 @@ impl HebnixApp {
             }
         }
         theme::apply_window_opacity(&cc.egui_ctx, config.settings.window_opacity);
+        crate::overlay::set_font(
+            Some(config.settings.overlay_font.as_str())
+                .filter(|name| !name.is_empty())
+                .and_then(|name| theme::find_font_file(&fonts_dir, name))
+                .as_deref(),
+        );
         let theme_options = theme::list_themes(&themes_dir);
 
         let (tx, rx) = crossbeam_channel::unbounded::<AppMsg>();
@@ -4984,6 +4990,53 @@ impl HebnixApp {
                                     }
                                     if slider.drag_stopped() || slider.lost_focus() {
                                         self.save_config();
+                                    }
+                                });
+
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [label_w, 20.0],
+                                        egui::Label::new(t("settings-overlay-font-label")),
+                                    );
+                                    let default_label = t("settings-overlay-font-default");
+                                    let current = self.config.settings.overlay_font.clone();
+                                    let mut chosen = current.clone();
+                                    egui::ComboBox::from_id_salt("overlay_font_select")
+                                        .selected_text(if current.is_empty() {
+                                            default_label.clone()
+                                        } else {
+                                            current.clone()
+                                        })
+                                        .width(160.0)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut chosen,
+                                                String::new(),
+                                                default_label,
+                                            );
+                                            // only scanned while the list is open
+                                            for name in theme::list_fonts(&self.fonts_dir) {
+                                                ui.selectable_value(
+                                                    &mut chosen,
+                                                    name.clone(),
+                                                    name,
+                                                );
+                                            }
+                                        });
+                                    if chosen != current {
+                                        crate::overlay::set_font(
+                                            Some(chosen.as_str())
+                                                .filter(|name| !name.is_empty())
+                                                .and_then(|name| {
+                                                    theme::find_font_file(&self.fonts_dir, name)
+                                                })
+                                                .as_deref(),
+                                        );
+                                        self.config.settings.overlay_font = chosen;
+                                        self.save_config();
+                                    }
+                                    if ui.button(t("settings-open-fonts-folder")).clicked() {
+                                        let _ = open::that_detached(&self.fonts_dir);
                                     }
                                 });
 

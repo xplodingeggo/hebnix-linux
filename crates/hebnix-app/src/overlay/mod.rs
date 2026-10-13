@@ -199,9 +199,12 @@ pub fn circle(x: f32, y: f32, radius: f32, color: Rgba, width: f32, filled: bool
 }
 
 /// tiny-skia has no text/glyph rendering built in; glyphs are rasterized
-/// with ab_glyph (bundled DejaVu Sans, see assets/DejaVuSans-LICENSE.txt)
-/// and blitted into the pixmap as coverage masks tinted by `color`.
-fn font() -> &'static ab_glyph::FontArc {
+/// with ab_glyph and blitted into the pixmap as coverage masks tinted by
+/// `color`. The font is the one picked under Settings > Interface (a file in
+/// the fonts folder, see `set_font`), else the bundled DejaVu Sans (see
+/// assets/DejaVuSans-LICENSE.txt), which also covers any glyph the picked
+/// font doesn't have.
+fn default_font() -> &'static ab_glyph::FontArc {
     use std::sync::OnceLock;
     static FONT: OnceLock<ab_glyph::FontArc> = OnceLock::new();
     FONT.get_or_init(|| {
@@ -210,26 +213,124 @@ fn font() -> &'static ab_glyph::FontArc {
     })
 }
 
-/// extra advance added per glyph for synthetic bold (the bundled font has a
-/// single weight, so bold is faked by drawing each glyph twice, offset)
+/// a font from the fonts folder. `bold` is set for variable fonts with a
+/// weight axis, so bold text uses the real weight instead of a faked one
+struct CustomFont {
+    regular: ab_glyph::FontArc,
+    bold: Option<ab_glyph::FontArc>,
+}
+
+static CUSTOM_FONT: std::sync::Mutex<Option<std::sync::Arc<CustomFont>>> =
+    std::sync::Mutex::new(None);
+
+fn custom_font() -> Option<std::sync::Arc<CustomFont>> {
+    CUSTOM_FONT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// switch the overlay text font to a .ttf/.otf file, or back to the bundled
+/// font with None (or when the file can't be loaded)
+pub fn set_font(path: Option<&std::path::Path>) {
+    let loaded = path.and_then(|path| match load_custom_font(path) {
+        Ok(font) => Some(std::sync::Arc::new(font)),
+        Err(e) => {
+            tracing::warn!("overlay font {}: {e}", path.display());
+            None
+        }
+    });
+    *CUSTOM_FONT.lock().unwrap_or_else(|e| e.into_inner()) = loaded;
+}
+
+fn load_custom_font(path: &std::path::Path) -> Result<CustomFont, String> {
+    use ab_glyph::VariableFont;
+
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut regular = ab_glyph::FontVec::try_from_vec(bytes.clone()).map_err(|e| e.to_string())?;
+    let mut bold = ab_glyph::FontVec::try_from_vec(bytes).map_err(|e| e.to_string())?;
+    let variable = bold.set_variation(b"wght", 700.0);
+    if variable {
+        regular.set_variation(b"wght", 400.0);
+    }
+    Ok(CustomFont {
+        regular: ab_glyph::FontArc::new(regular),
+        bold: variable.then(|| ab_glyph::FontArc::new(bold)),
+    })
+}
+
+/// extra advance added for synthetic bold (fonts with a single weight get
+/// bold faked by drawing each glyph twice, offset)
 fn bold_extra(size: f32, bold: bool) -> f32 {
     if bold { (size * 0.04).max(0.5) } else { 0.0 }
+}
+
+struct LaidGlyph {
+    font: ab_glyph::FontArc,
+    id: ab_glyph::GlyphId,
+    scale: ab_glyph::PxScale,
+    /// pen offset from the start of the line
+    x: f32,
+    synthetic_bold: bool,
+}
+
+struct Line {
+    glyphs: Vec<LaidGlyph>,
+    width: f32,
+    ascent: f32,
+    bold_extra: f32,
+}
+
+fn layout(s: &str, size: f32, bold: bool) -> Line {
+    use ab_glyph::{Font, ScaleFont};
+
+    let fallback = default_font();
+    let custom = custom_font();
+    let (primary, primary_synthetic) = match &custom {
+        Some(c) => match (&c.bold, bold) {
+            (Some(b), true) => (b, false),
+            _ => (&c.regular, bold),
+        },
+        None => (fallback, bold),
+    };
+    let px = |font: &ab_glyph::FontArc| {
+        font.pt_to_px_scale(size).unwrap_or(ab_glyph::PxScale::from(size))
+    };
+    let primary_scale = px(primary);
+    let ascent = primary.as_scaled(primary_scale).ascent();
+
+    let mut glyphs = Vec::with_capacity(s.len());
+    let mut pen = 0.0;
+    for c in s.chars() {
+        let mut font = primary;
+        let mut scale = primary_scale;
+        let mut synthetic_bold = primary_synthetic;
+        let mut id = primary.glyph_id(c);
+        if id.0 == 0 && custom.is_some() && !c.is_whitespace() {
+            let fallback_id = fallback.glyph_id(c);
+            if fallback_id.0 != 0 {
+                font = fallback;
+                scale = px(fallback);
+                synthetic_bold = bold;
+                id = fallback_id;
+            }
+        }
+        glyphs.push(LaidGlyph { font: font.clone(), id, scale, x: pen, synthetic_bold });
+        pen += font.as_scaled(scale).h_advance(id);
+    }
+    let extra = if glyphs.iter().any(|g| g.synthetic_bold) { bold_extra(size, true) } else { 0.0 };
+    Line { glyphs, width: pen + extra, ascent, bold_extra: extra }
 }
 
 /// pixel width of a string in the overlay font, for text layout without a
 /// live canvas
 pub fn measure_text(s: &str, size: f32, bold: bool) -> f32 {
-    use ab_glyph::{Font, ScaleFont};
-
-    let font = font();
-    let scale = font.pt_to_px_scale(size).unwrap_or(ab_glyph::PxScale::from(size));
-    let scaled = font.as_scaled(scale);
-    s.chars().map(|c| scaled.h_advance(font.glyph_id(c))).sum::<f32>() + bold_extra(size, bold)
+    layout(s, size, bold).width
 }
 
-/// `font` is accepted for API parity with the Windows overlay; only the
-/// bundled font is available here. `clip` is a (width, height) box anchored
-/// at the start of the text line; glyph pixels outside it are dropped.
+/// `font` is accepted for API parity with the Windows overlay, where it picks
+/// one of Rocket League's fonts; here the Settings choice is used instead.
+/// `clip` is a fixed (x, width) window like the Windows overlay's: glyph
+/// pixels left or right of it are dropped. Where the line runs past an edge
+/// of the window (a scrolling marquee), the text fades out toward that edge
+/// instead of being cut off hard.
 #[allow(clippy::too_many_arguments)]
 pub fn text(
     x: f32,
@@ -242,35 +343,30 @@ pub fn text(
     bold: bool,
     clip: Option<(f32, f32)>,
 ) {
-    use ab_glyph::{Font, ScaleFont};
+    use ab_glyph::Font;
 
-    let font = font();
-    let scale = font.pt_to_px_scale(size).unwrap_or(ab_glyph::PxScale::from(size));
-    let scaled = font.as_scaled(scale);
-    let extra = bold_extra(size, bold);
-
-    // pre-measure total advance so center/right alignment can offset the
-    // whole line before laying out glyphs.
-    let total_advance: f32 =
-        s.chars().map(|c| scaled.h_advance(font.glyph_id(c))).sum::<f32>() + extra;
+    let line = layout(s, size, bold);
     let start_x = match halign {
-        "center" => x - total_advance / 2.0,
-        "right" => x - total_advance,
+        "center" => x - line.width / 2.0,
+        "right" => x - line.width,
         _ => x,
     };
-    let baseline_y = y + scaled.ascent();
-    let clip_box = clip.map(|(w, h)| (start_x, y, start_x + w, y + h));
-    let passes: &[f32] = if bold { &[0.0, extra] } else { &[0.0] };
+    let baseline_y = y + line.ascent;
+    // (left, right, fade width, fade left edge, fade right edge)
+    let clip = clip.map(|(left, width)| {
+        let right = left + width.max(0.0);
+        let fade = (size * 0.9).min(width / 4.0).max(1.0);
+        (left, right, fade, start_x < left - 0.5, start_x + line.width > right + 0.5)
+    });
 
     with_canvas(|canvas| {
-        let mut pen_x = start_x;
-        for c in s.chars() {
-            let glyph_id = font.glyph_id(c);
-            let advance = scaled.h_advance(glyph_id);
+        for g in &line.glyphs {
+            let passes: &[f32] = if g.synthetic_bold { &[0.0, line.bold_extra] } else { &[0.0] };
             for dx in passes {
-                let glyph =
-                    glyph_id.with_scale_and_position(scale, ab_glyph::point(pen_x + dx, baseline_y));
-                let Some(outlined) = font.outline_glyph(glyph) else {
+                let glyph = g
+                    .id
+                    .with_scale_and_position(g.scale, ab_glyph::point(start_x + g.x + dx, baseline_y));
+                let Some(outlined) = g.font.outline_glyph(glyph) else {
                     continue;
                 };
                 let bounds = outlined.px_bounds();
@@ -285,13 +381,24 @@ pub fn text(
                     if px < 0 || py < 0 || px as u32 >= canvas.width() || py as u32 >= canvas.height() {
                         return;
                     }
-                    if let Some((left, top, right, bottom)) = clip_box {
-                        let (fx, fy) = (px as f32, py as f32);
-                        if fx < left || fx >= right || fy < top || fy >= bottom {
+                    let mut coverage = coverage.min(1.0);
+                    if let Some((left, right, fade, fade_left, fade_right)) = clip {
+                        let fx = px as f32 + 0.5;
+                        if fx < left || fx >= right {
                             return;
                         }
+                        let smooth = |t: f32| {
+                            let t = t.clamp(0.0, 1.0);
+                            t * t * (3.0 - 2.0 * t)
+                        };
+                        if fade_left {
+                            coverage *= smooth((fx - left) / fade);
+                        }
+                        if fade_right {
+                            coverage *= smooth((right - fx) / fade);
+                        }
                     }
-                    let a = (color.3 as f32 * coverage.min(1.0)) as u8;
+                    let a = (color.3 as f32 * coverage) as u8;
                     if a == 0 {
                         return;
                     }
@@ -324,7 +431,6 @@ pub fn text(
                     *dst = px_color;
                 });
             }
-            pen_x += advance;
         }
     });
 }
@@ -634,4 +740,52 @@ pub fn enforce_hidden() {
 #[doc(hidden)]
 pub fn take_force_hide() -> bool {
     FORCE_HIDE.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render(draw: impl FnOnce()) -> Pixmap {
+        CANVAS.with(|c| *c.borrow_mut() = Pixmap::new(300, 40));
+        draw();
+        CANVAS.with(|c| c.borrow_mut().take()).unwrap()
+    }
+
+    fn column_alpha(pixmap: &Pixmap, x: u32) -> u32 {
+        (0..pixmap.height())
+            .map(|y| pixmap.pixel(x, y).unwrap().alpha() as u32)
+            .sum()
+    }
+
+    #[test]
+    fn marquee_clip_is_a_fixed_window_that_fades_at_the_edges() {
+        let white = Rgba(255, 255, 255, 255);
+        let s = "A long scrolling title that overflows the box";
+        // scrolled 60px to the left of the window at x 100..200
+        let pixmap = render(|| text(40.0, 5.0, s, white, 20.0, "", "", true, Some((100.0, 100.0))));
+        for x in (0..100).chain(200..300) {
+            assert_eq!(column_alpha(&pixmap, x), 0, "pixel drawn outside the clip at x {x}");
+        }
+        let edge: u32 = (100..103).map(|x| column_alpha(&pixmap, x)).sum();
+        let middle: u32 = (140..160).map(|x| column_alpha(&pixmap, x)).sum::<u32>() * 3 / 20;
+        assert!(edge * 4 < middle, "text not faded at the left edge ({edge} vs {middle})");
+    }
+
+    #[test]
+    fn text_that_fits_its_clip_is_not_faded() {
+        let white = Rgba(255, 255, 255, 255);
+        let clipped = render(|| text(100.0, 5.0, "Hi", white, 20.0, "", "", false, Some((100.0, 100.0))));
+        let plain = render(|| text(100.0, 5.0, "Hi", white, 20.0, "", "", false, None));
+        assert!(clipped == plain);
+    }
+
+    #[test]
+    fn measure_matches_the_drawn_width() {
+        let s = "Duumu";
+        let pixmap = render(|| text(0.0, 5.0, s, Rgba(255, 255, 255, 255), 20.0, "", "", false, None));
+        let drawn = (0..300).rev().find(|&x| column_alpha(&pixmap, x) > 0).unwrap() as f32;
+        let measured = measure_text(s, 20.0, false);
+        assert!((drawn - measured).abs() < 4.0, "drawn {drawn} measured {measured}");
+    }
 }
