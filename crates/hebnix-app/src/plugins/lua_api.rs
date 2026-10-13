@@ -3113,11 +3113,12 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         })?,
     )?;
 
-    // WebSocket Send
+    // Raw StatsAPI socket command, hebnix.stats_send("Name", {..}).
+    // Not ws_send: that name belongs to the plugin websocket API above.
     {
         let host = Rc::clone(&host);
         hebnix.set(
-            "ws_send",
+            "stats_send",
             lua.create_function(move |lua, (command, data): (String, Option<LuaValue>)| {
                 let json_body = lua_body_to_json(lua, data);
 
