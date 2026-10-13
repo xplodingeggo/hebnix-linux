@@ -703,6 +703,15 @@ fn clear_rl_cache(tx: &Sender<AppMsg>) {
     }
 }
 
+/// load the overlay font picked in settings (bundled default when unset or
+/// missing)
+fn apply_overlay_font(fonts_dir: &std::path::Path, settings: &crate::config::SettingsCfg) {
+    let path = Some(settings.overlay_font.as_str())
+        .filter(|name| !name.is_empty())
+        .and_then(|name| theme::find_font_file(fonts_dir, name));
+    crate::overlay::set_font(path.as_deref(), settings.overlay_font_weight as f32);
+}
+
 impl HebnixApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         hebnix_sdk::input::init_controllers();
@@ -740,12 +749,7 @@ impl HebnixApp {
             }
         }
         theme::apply_window_opacity(&cc.egui_ctx, config.settings.window_opacity);
-        crate::overlay::set_font(
-            Some(config.settings.overlay_font.as_str())
-                .filter(|name| !name.is_empty())
-                .and_then(|name| theme::find_font_file(&fonts_dir, name))
-                .as_deref(),
-        );
+        apply_overlay_font(&fonts_dir, &config.settings);
         let theme_options = theme::list_themes(&themes_dir);
 
         let (tx, rx) = crossbeam_channel::unbounded::<AppMsg>();
@@ -5024,19 +5028,54 @@ impl HebnixApp {
                                             }
                                         });
                                     if chosen != current {
-                                        crate::overlay::set_font(
-                                            Some(chosen.as_str())
-                                                .filter(|name| !name.is_empty())
-                                                .and_then(|name| {
-                                                    theme::find_font_file(&self.fonts_dir, name)
-                                                })
-                                                .as_deref(),
-                                        );
                                         self.config.settings.overlay_font = chosen;
+                                        apply_overlay_font(&self.fonts_dir, &self.config.settings);
                                         self.save_config();
                                     }
                                     if ui.button(t("settings-open-fonts-folder")).clicked() {
                                         let _ = open::that_detached(&self.fonts_dir);
+                                    }
+                                });
+
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [label_w, 20.0],
+                                        egui::Label::new(t("settings-overlay-font-weight-label")),
+                                    );
+                                    const WEIGHTS: [(u32, &str); 9] = [
+                                        (100, "Thin"),
+                                        (200, "ExtraLight"),
+                                        (300, "Light"),
+                                        (400, "Regular"),
+                                        (500, "Medium"),
+                                        (600, "SemiBold"),
+                                        (700, "Bold"),
+                                        (800, "ExtraBold"),
+                                        (900, "Black"),
+                                    ];
+                                    let current = self.config.settings.overlay_font_weight;
+                                    let mut chosen = current;
+                                    let name = |w: u32| {
+                                        WEIGHTS
+                                            .iter()
+                                            .find(|(v, _)| *v == w)
+                                            .map(|(v, n)| format!("{n} ({v})"))
+                                            .unwrap_or_else(|| w.to_string())
+                                    };
+                                    egui::ComboBox::from_id_salt("overlay_font_weight_select")
+                                        .selected_text(name(current))
+                                        .width(160.0)
+                                        .show_ui(ui, |ui| {
+                                            for (value, _) in WEIGHTS {
+                                                ui.selectable_value(&mut chosen, value, name(value));
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text(t("settings-overlay-font-weight-hint"));
+                                    if chosen != current {
+                                        self.config.settings.overlay_font_weight = chosen;
+                                        apply_overlay_font(&self.fonts_dir, &self.config.settings);
+                                        self.save_config();
                                     }
                                 });
 

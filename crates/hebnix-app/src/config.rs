@@ -77,6 +77,8 @@ pub struct SettingsCfg {
     /// font for plugin overlay and toast text: the stem of a .ttf/.otf in
     /// the fonts folder, empty for the bundled default
     pub overlay_font: String,
+    /// weight (100-900) for a variable overlay font; bold text is 300 heavier
+    pub overlay_font_weight: u32,
     /// Publish Hebnix/Rocket League activity to the local Discord client.
     pub discord_rich_presence: bool,
     /// Show presence only while Rocket League is running.
@@ -117,6 +119,7 @@ impl Default for SettingsCfg {
             suppress_statsapi_rate_warning: false,
             toast_position: Default::default(),
             overlay_font: String::new(),
+            overlay_font_weight: 400,
             discord_rich_presence: true,
             discord_rocket_league_only: false,
             discord_game_state: true,

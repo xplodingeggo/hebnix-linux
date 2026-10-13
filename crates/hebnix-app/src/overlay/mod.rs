@@ -228,9 +228,11 @@ fn custom_font() -> Option<std::sync::Arc<CustomFont>> {
 }
 
 /// switch the overlay text font to a .ttf/.otf file, or back to the bundled
-/// font with None (or when the file can't be loaded)
-pub fn set_font(path: Option<&std::path::Path>) {
-    let loaded = path.and_then(|path| match load_custom_font(path) {
+/// font with None (or when the file can't be loaded). `weight` (100-900)
+/// applies to variable fonts with a weight axis; bold text is drawn 300
+/// heavier.
+pub fn set_font(path: Option<&std::path::Path>, weight: f32) {
+    let loaded = path.and_then(|path| match load_custom_font(path, weight) {
         Ok(font) => Some(std::sync::Arc::new(font)),
         Err(e) => {
             tracing::warn!("overlay font {}: {e}", path.display());
@@ -240,15 +242,16 @@ pub fn set_font(path: Option<&std::path::Path>) {
     *CUSTOM_FONT.lock().unwrap_or_else(|e| e.into_inner()) = loaded;
 }
 
-fn load_custom_font(path: &std::path::Path) -> Result<CustomFont, String> {
+fn load_custom_font(path: &std::path::Path, weight: f32) -> Result<CustomFont, String> {
     use ab_glyph::VariableFont;
 
+    let weight = weight.clamp(100.0, 900.0);
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let mut regular = ab_glyph::FontVec::try_from_vec(bytes.clone()).map_err(|e| e.to_string())?;
     let mut bold = ab_glyph::FontVec::try_from_vec(bytes).map_err(|e| e.to_string())?;
-    let variable = bold.set_variation(b"wght", 700.0);
+    let variable = bold.set_variation(b"wght", (weight + 300.0).min(900.0));
     if variable {
-        regular.set_variation(b"wght", 400.0);
+        regular.set_variation(b"wght", weight);
     }
     Ok(CustomFont {
         regular: ab_glyph::FontArc::new(regular),
