@@ -903,7 +903,9 @@ settings-toast-position-label = Toast position:
 settings-overlay-font-label = Overlay font:
 settings-overlay-font-default = Default
 settings-overlay-font-weight-label = Overlay font weight:
-settings-overlay-font-weight-hint = Only for variable fonts (like Lexend-VariableFont_wght). Bold text is drawn 300 heavier.
+settings-overlay-font-weight-hint = Only for variable fonts (like Lexend-VariableFont_wght). Bold is what plugins draw with bold = true.
+settings-overlay-font-weight-regular = Regular
+settings-overlay-font-weight-bold = Bold
 toast-pos-top-left = Top left
 toast-pos-top-right = Top right
 toast-pos-mid-left = Middle left

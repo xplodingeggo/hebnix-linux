@@ -58,7 +58,9 @@ settings-open-fonts-folder = Schriftarten-Ordner öffnen
 settings-overlay-font-label = Overlay-Schriftart:
 settings-overlay-font-default = Standard
 settings-overlay-font-weight-label = Overlay-Schriftstärke:
-settings-overlay-font-weight-hint = Nur für variable Schriftarten (z. B. Lexend-VariableFont_wght). Fetter Text wird 300 stärker gezeichnet.
+settings-overlay-font-weight-hint = Nur für variable Schriftarten (z. B. Lexend-VariableFont_wght). Fett gilt für Text, den Plugins mit bold = true zeichnen.
+settings-overlay-font-weight-regular = Normal
+settings-overlay-font-weight-bold = Fett
 settings-opacity-label = Fenstertransparenz:
 console-themes-rescanned = Design-Verzeichnis neu eingelesen und aktualisiert.
 console-theme-changed = Design zu '{ $theme }' gewechselt.

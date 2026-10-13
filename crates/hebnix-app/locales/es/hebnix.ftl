@@ -52,7 +52,9 @@ settings-open-fonts-folder = Abrir carpeta de fuentes
 settings-overlay-font-label = Fuente del overlay:
 settings-overlay-font-default = Predeterminada
 settings-overlay-font-weight-label = Grosor de la fuente:
-settings-overlay-font-weight-hint = Solo para fuentes variables (como Lexend-VariableFont_wght). El texto en negrita se dibuja 300 más grueso.
+settings-overlay-font-weight-hint = Solo para fuentes variables (como Lexend-VariableFont_wght). Negrita es el texto que los plugins dibujan con bold = true.
+settings-overlay-font-weight-regular = Normal
+settings-overlay-font-weight-bold = Negrita
 settings-opacity-label = Opacidad de la ventana:
 console-themes-rescanned = Carpeta de temas reexaminada y actualizada.
 console-theme-changed = Tema cambiado a '{ $theme }'.

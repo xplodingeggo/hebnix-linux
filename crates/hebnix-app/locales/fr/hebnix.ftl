@@ -52,7 +52,9 @@ settings-open-fonts-folder = Ouvrir le dossier des polices
 settings-overlay-font-label = Police de l’overlay :
 settings-overlay-font-default = Par défaut
 settings-overlay-font-weight-label = Graisse de la police :
-settings-overlay-font-weight-hint = Uniquement pour les polices variables (comme Lexend-VariableFont_wght). Le texte en gras est dessiné 300 plus épais.
+settings-overlay-font-weight-hint = Uniquement pour les polices variables (comme Lexend-VariableFont_wght). Gras s’applique au texte que les plugins dessinent avec bold = true.
+settings-overlay-font-weight-regular = Normal
+settings-overlay-font-weight-bold = Gras
 settings-opacity-label = Opacité de la fenêtre :
 console-themes-rescanned = Dossier des thèmes réanalysé et mis à jour.
 console-theme-changed = Thème changé en '{ $theme }'.

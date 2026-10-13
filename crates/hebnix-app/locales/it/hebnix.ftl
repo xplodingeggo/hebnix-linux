@@ -52,7 +52,9 @@ settings-open-fonts-folder = Apri cartella dei font
 settings-overlay-font-label = Font dell’overlay:
 settings-overlay-font-default = Predefinito
 settings-overlay-font-weight-label = Spessore del font:
-settings-overlay-font-weight-hint = Solo per font variabili (come Lexend-VariableFont_wght). Il testo in grassetto è disegnato 300 più spesso.
+settings-overlay-font-weight-hint = Solo per font variabili (come Lexend-VariableFont_wght). Grassetto è il testo che i plugin disegnano con bold = true.
+settings-overlay-font-weight-regular = Normale
+settings-overlay-font-weight-bold = Grassetto
 settings-opacity-label = Opacità della finestra:
 console-themes-rescanned = Cartella dei temi riesaminata e aggiornata.
 console-theme-changed = Tema cambiato in '{ $theme }'.
