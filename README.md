@@ -185,9 +185,9 @@ As long as it works with evdev it will work.
 - **Hebnix** (the Windows app this port follows) is built by
   [Hebbins](https://github.com/Hebbins) and [nixvio64](https://github.com/nixvio64):
   [HebnixRL/Hebnix-Public](https://github.com/HebnixRL/Hebnix-Public).
-- **Linux port** by [xplodingeggo](https://github.com/xplodingeggo) and
-  [rlyvision](https://github.com/rlyvision).
+- **Linux port** by [xplodingeggo](https://github.com/xplodingeggo).
 - **Contributors to Hebnix for Linux:**
+  - [rlyvision](https://github.com/rlyvision): Makefile and `install.sh`
   - [Noxy (noxygalaxy)](https://github.com/noxygalaxy): the `.moon` bundle
     ([moonpkg](https://github.com/moonpkg/cli))
 - **Contributors to Hebnix for Windows**, whose work is part of this port too:
