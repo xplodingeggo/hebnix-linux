@@ -56,6 +56,21 @@ pub fn acquire_single_instance() -> Option<SingleInstanceLock> {
     acquire_lock("single_instance")
 }
 
+/// acquire_single_instance, retrying for up to `wait` while another instance
+/// (one that is restarting into this one) still holds the lock
+pub fn acquire_single_instance_waiting(wait: std::time::Duration) -> Option<SingleInstanceLock> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if let Some(lock) = acquire_single_instance() {
+            return Some(lock);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// a second instance calls this before exiting. We have no reliable
 /// client-side way to raise another process's window on Wayland, so this
 /// just logs -- the user has to alt-tab/click the taskbar entry themselves.

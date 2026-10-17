@@ -198,12 +198,6 @@ pub fn run(parent_pid: u32) {
         let base_dir = crate::config::base_dir();
         let _ =
             crate::spoofer::run_privileged(crate::spoofer::PrivilegedAction::ClearHosts, &base_dir);
-        // only flush if we actually just cleared something - resolvectl
-        // flush-caches needs its own separate polkit authorization on some
-        // setups, so calling it unconditionally at the end of every run()
-        // was a second, unrelated auth prompt on every close even when the
-        // hosts file was never touched this session.
-        crate::spoofer::hosts::flush_dns();
     }
     while hebnix_sdk::process::is_rocket_league_running() {
         if replacement_is_running(parent_pid) {

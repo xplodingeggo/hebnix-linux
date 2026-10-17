@@ -212,8 +212,15 @@ fn main() -> eframe::Result {
     let cfg = config::Config::load(&base_dir);
     i18n::init(&cfg.settings.language, Some(base_dir.join("locales")));
 
-    // single instance guard
-    let Some(_lock) = winutil::acquire_single_instance() else {
+    // single instance guard. A restart (after Grant Permission) starts this
+    // process while the old one is still shutting down, so wait for it to
+    // let go of the lock instead of exiting as a duplicate.
+    let restarting = std::env::args().any(|arg| arg == app::RESTART_ARG);
+    let Some(_lock) = winutil::acquire_single_instance_waiting(if restarting {
+        std::time::Duration::from_secs(30)
+    } else {
+        std::time::Duration::ZERO
+    }) else {
         winutil::focus_existing_instance();
         return Ok(());
     };

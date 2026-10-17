@@ -83,6 +83,10 @@ impl PrivilegedAction {
         })
     }
 
+    fn is_hosts(self) -> bool {
+        matches!(self, Self::SetHosts | Self::ClearHosts)
+    }
+
     /// `hosts` only matters for SetHosts. The elevated helper only accepts
     /// the two hosts the spoofer ever redirects, nothing a caller makes up.
     fn run(self, base_dir: &Path, hosts: &[String]) -> Result<(), String> {
@@ -99,29 +103,50 @@ impl PrivilegedAction {
                             .ok_or_else(|| format!("refusing to redirect {host}"))
                     })
                     .collect::<Result<Vec<&str>, String>>()?;
-                hosts::set_redirects(&hosts)
+                hosts::set_redirects(&hosts)?;
+                hosts::flush_dns();
+                Ok(())
             }
-            Self::ClearHosts => hosts::clear(),
+            Self::ClearHosts => {
+                hosts::clear()?;
+                hosts::flush_dns();
+                Ok(())
+            }
             Self::InstallCa => ca::install(base_dir),
             Self::UninstallCa => ca::uninstall(base_dir),
         }
     }
 }
 
-/// hidden CLI entry point: `hebnix-app --priv-action <action> <base_dir>`.
+/// hidden CLI entry point: `hebnix-app --priv-action <action> <base_dir>`,
+/// or `hebnix-app --priv-hosts <set-hosts|clear-hosts> [hosts...]` for the
+/// hosts file. The hosts form has its own first argument so the polkit
+/// policy the packages ship (packaging/polkit) can let the local user run
+/// exactly that without a password, while the CA actions still ask.
 /// Called at the very top of main(), before logging/GUI setup - a plain,
 /// no-GUI, near-instant helper invocation, always run via `pkexec` from
 /// `run_privileged` below. Returns the process exit code to use if this
 /// process was invoked this way, or None if it's a normal launch.
 pub const PRIV_ARG: &str = "--priv-action";
+pub const PRIV_HOSTS_ARG: &str = "--priv-hosts";
 
 pub fn maybe_handle_privileged_cli() -> Option<i32> {
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() != Some(PRIV_ARG) {
-        return None;
-    }
-    let action = args.next().as_deref().and_then(PrivilegedAction::from_str);
-    let base_dir = args.next().map(PathBuf::from);
+    let hosts_only = match args.next().as_deref() {
+        Some(PRIV_ARG) => false,
+        Some(PRIV_HOSTS_ARG) => true,
+        _ => return None,
+    };
+    let action = args
+        .next()
+        .as_deref()
+        .and_then(PrivilegedAction::from_str)
+        .filter(|action| !hosts_only || action.is_hosts());
+    let base_dir = if hosts_only {
+        Some(PathBuf::new())
+    } else {
+        args.next().map(PathBuf::from)
+    };
     let (Some(action), Some(base_dir)) = (action, base_dir) else {
         eprintln!("usage: hebnix-app {PRIV_ARG} <action> <base_dir> [hosts...]");
         return Some(1);
@@ -160,11 +185,14 @@ fn run_privileged_with(
         return Err("could not find our own executable path".to_string());
     };
     tracing::info!("spoofer: running privileged action {:?} via pkexec", action.as_str());
-    let status = std::process::Command::new("pkexec")
-        .arg(exe)
-        .arg(PRIV_ARG)
-        .arg(action.as_str())
-        .arg(base_dir)
+    let mut command = std::process::Command::new("pkexec");
+    command.arg(exe);
+    if action.is_hosts() {
+        command.arg(PRIV_HOSTS_ARG).arg(action.as_str());
+    } else {
+        command.arg(PRIV_ARG).arg(action.as_str()).arg(base_dir);
+    }
+    let status = command
         .args(hosts)
         .status()
         .map_err(|error| format!("could not run pkexec: {error}"))?;
@@ -187,9 +215,8 @@ fn set_redirects_privileged(wanted: &[&str], base_dir: &Path) -> Result<(), Stri
     if wanted.is_empty() {
         return run_privileged(PrivilegedAction::ClearHosts, base_dir);
     }
-    run_privileged_with(PrivilegedAction::SetHosts, base_dir, wanted)?;
-    hosts::flush_dns();
-    Ok(())
+    // the helper flushes the DNS cache itself, as root
+    run_privileged_with(PrivilegedAction::SetHosts, base_dir, wanted)
 }
 
 fn marker_path(base_dir: &Path) -> PathBuf {
@@ -216,8 +243,6 @@ pub fn restore_if_crashed(base_dir: &Path) {
         // again next launch.
         if let Err(error) = run_privileged(PrivilegedAction::ClearHosts, base_dir) {
             tracing::warn!("spoofer: couldn't clear the stale hosts redirect: {error}");
-        } else {
-            hosts::flush_dns();
         }
     }
     if let Err(error) = clean_session_cache(base_dir) {
@@ -888,14 +913,11 @@ impl SpooferManager {
         // Clear a redirect even if the socket failed to start or its state
         // was lost - but stop_socket()/stop_http() above already did this
         // via stop_reverse_if_unused() in the normal case, so skip the
-        // redundant (and potentially auth-prompting) third call. Only flush
-        // DNS if we actually just cleared something here - `resolvectl
-        // flush-caches` needs its own separate polkit authorization on some
-        // setups, so calling it unconditionally on every close was itself a
-        // second auth prompt even when spoofer was never enabled this run.
+        // redundant (and potentially auth-prompting) third call. The helper
+        // flushes the DNS cache itself, as root: `resolvectl flush-caches`
+        // as the user needs its own polkit authorization on some setups.
         if hosts::has_redirects() {
             let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
-            hosts::flush_dns();
         }
     }
 

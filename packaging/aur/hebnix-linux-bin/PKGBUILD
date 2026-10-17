@@ -8,7 +8,7 @@ pkgname=hebnix-linux-bin
 # only the Ubuntu tarball and didn't run on Arch as a result; fixed in
 # v0.1.1.
 pkgver=2.2.3
-pkgrel=6
+pkgrel=7
 pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), prebuilt upstream binary"
 arch=('x86_64')
 url="https://github.com/xplodingeggo/hebnix-linux"
@@ -55,6 +55,8 @@ package() {
 		"$pkgdir/usr/lib/udev/rules.d/60-hebnix-uinput.rules"
 	install -Dm644 lib/modules-load.d/hebnix-uinput.conf \
 		"$pkgdir/usr/lib/modules-load.d/hebnix-uinput.conf"
+	install -Dm644 share/polkit-1/actions/space.xplodingeggo.hebnix.policy \
+		"$pkgdir/usr/share/polkit-1/actions/space.xplodingeggo.hebnix.policy"
 	install -Dm644 share/licenses/hebnix-linux-bin/LICENSE \
 		"$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
