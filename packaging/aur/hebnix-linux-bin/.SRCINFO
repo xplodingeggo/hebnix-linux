@@ -1,7 +1,7 @@
 pkgbase = hebnix-linux-bin
 	pkgdesc = Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), prebuilt upstream binary
 	pkgver = 2.2.3
-	pkgrel = 7
+	pkgrel = 8
 	url = https://github.com/xplodingeggo/hebnix-linux
 	install = hebnix.install
 	arch = x86_64

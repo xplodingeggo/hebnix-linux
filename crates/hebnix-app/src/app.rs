@@ -5788,6 +5788,15 @@ impl HebnixApp {
             ("and", None),
             ("rlyvision", Some("https://github.com/rlyvision")),
         ]);
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Contributors to Hebnix for Windows:").weak());
+        credits_row(ui, &[
+            ("xplodingeggo", Some("https://github.com/xplodingeggo")),
+            ("·", None),
+            ("rlyvision", Some("https://github.com/rlyvision")),
+            ("·", None),
+            ("FoxyNoxy", Some("https://github.com/F0xyN0xy")),
+        ]);
 
         ui.add_space(ui.text_style_height(&egui::TextStyle::Body) * 2.0);
         ui.label(format!(

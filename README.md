@@ -179,3 +179,16 @@ As long as it works with evdev it will work.
   - **i3, Linux Mint (Cinnamon), XFCE, MATE, GNOME/KDE on X11**: focus, always-on-top and the overlays use an X11 backend. The overlays need a compositing manager: Cinnamon/Muffin and XFCE have one built in (turn compositing on), on i3 install `picom`. Run Rocket League borderless windowed so the overlay isn't covered. On i3 the tray icon needs a bar with a tray (e.g. i3bar `tray_output`, or `snixembed` for StatusNotifier icons).
   - **GNOME on Wayland**: no layer-shell, so no overlay.
 - Other desktops: the main problem you will have (if any) is the window not coming to the front or not disappearing properly when you press f2; the rest should work as long as you have gtk3 and either Wayland or X11.
+
+## Credits
+
+- **Hebnix** (the Windows app this port follows) is built by
+  [Hebbins](https://github.com/Hebbins) and [nixvio64](https://github.com/nixvio64):
+  [HebnixRL/Hebnix-Public](https://github.com/HebnixRL/Hebnix-Public).
+- **Linux port** by [xplodingeggo](https://github.com/xplodingeggo) and
+  [rlyvision](https://github.com/rlyvision).
+- **Contributors to Hebnix for Windows**, whose work is part of this port too:
+  - [xplodingeggo](https://github.com/xplodingeggo)
+  - [rlyvision](https://github.com/rlyvision): Makefile and build script
+  - [FoxyNoxy (F0xyN0xy)](https://github.com/F0xyN0xy): Lua SHA-256/Base64 helper
+    (`hebnix.crypto_sha256_base64`)
