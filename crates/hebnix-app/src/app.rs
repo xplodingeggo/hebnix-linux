@@ -31,7 +31,7 @@ pub const APP_VERSION: &str = "2.2.3";
 /// the hebnix-linux version shown in the About tab. kept equal to the Windows
 /// version it is based on (APP_VERSION above, which also tracks the engine/
 /// plugin compat version).
-pub const LINUX_PORT_VERSION: &str = "2.2.3";
+pub const LINUX_PORT_VERSION: &str = "2.2.4";
 
 /// passed to the process a restart starts, see HebnixApp::restart
 pub const RESTART_ARG: &str = "--restarted";

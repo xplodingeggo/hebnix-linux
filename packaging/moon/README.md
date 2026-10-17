@@ -15,7 +15,7 @@ inspected, diffed or checksummed like any other archive.
 
 ```
 packaging/moon/build-moon-bundle.sh  # from make release output
-packaging/moon/build-moon-bundle.sh --from dist/hebnix-2.2.0-linux-x86_64.tar.gz
+packaging/moon/build-moon-bundle.sh --from dist/hebnix-2.2.4-linux-x86_64.tar.gz
 ```
 
 Or through the Makefile:
@@ -27,7 +27,7 @@ make moon-bundle
 ## What ends up inside
 
 ```
-hebnix-2.2.0.moon           # (tar.gz)
+hebnix-2.2.4.moon           # (tar.gz)
 ├── hebnix.manifest         # moon's own key=value manifest, paths relative
 ├── app/
 │   ├── bin/hebnix          # the binary
@@ -42,7 +42,7 @@ paths the bundle can have:
 ```
 dir=app
 main=app/bin/hebnix
-version=2.2.0
+version=2.2.4
 desktop=desktop/hebnix.desktop
 link=hebnix
 to=app/bin/hebnix
