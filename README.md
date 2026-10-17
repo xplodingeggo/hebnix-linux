@@ -188,7 +188,7 @@ As long as it works with evdev it will work.
 - **Linux port** by [xplodingeggo](https://github.com/xplodingeggo).
 - **Contributors to Hebnix for Linux:**
   - [rlyvision](https://github.com/rlyvision): Makefile and `install.sh`
-  - [Noxy (noxygalaxy)](https://github.com/noxygalaxy): the `.moon` bundle
+  - [noxygalaxy](https://github.com/noxygalaxy): the `.moon` bundle
     ([moonpkg](https://github.com/moonpkg/cli))
 - **Contributors to Hebnix for Windows**, whose work is part of this port too:
   - [xplodingeggo](https://github.com/xplodingeggo)
