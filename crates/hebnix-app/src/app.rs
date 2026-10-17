@@ -27,7 +27,7 @@ use crate::ui::console::ConsoleState;
 use crate::ui::workshop::{ImageState, WorkshopState};
 use crate::winutil;
 
-pub const APP_VERSION: &str = "2.2.3";
+pub const APP_VERSION: &str = "2.2.4";
 /// the hebnix-linux version shown in the About tab. kept equal to the Windows
 /// version it is based on (APP_VERSION above, which also tracks the engine/
 /// plugin compat version).
@@ -1117,8 +1117,7 @@ impl HebnixApp {
             spoofer_rank_enabled,
             spoofer_ranks,
             spoofer_cert_installed: cert_installed,
-            spoofer_certificate_prompt_open: spoofer_master
-                && !cert_installed,
+            spoofer_certificate_prompt_open: spoofer_master && !cert_installed,
             spoofer_friends_enabled,
             spoofer_friends,
             friends_search: String::new(),
@@ -1216,6 +1215,9 @@ impl HebnixApp {
     }
 
     fn save_config(&mut self) {
+        self.config
+            .replay_upload
+            .enforce_spoofer(self.spoofer_master);
         if let Err(e) = self.config.save(&self.base_dir) {
             self.console
                 .write(format!("[Console] Failed to save config: {e}"));
@@ -1365,18 +1367,23 @@ impl HebnixApp {
         let options_were_enabled = self.replay_options_enabled();
 
         let mut config_changed = false;
-        config_changed |= ui
-            .checkbox(
-                &mut self.config.replay_upload.save_locally,
-                "Save replays locally",
-            )
-            .changed();
-        config_changed |= ui
-            .checkbox(
-                &mut self.config.replay_upload.upload_enabled,
-                "Upload to ballchasing.com",
-            )
-            .changed();
+        if !self.spoofer_master {
+            ui.weak("Enable Spoofer in Spoofer → Settings to save or upload replays.");
+        }
+        ui.add_enabled_ui(self.spoofer_master, |ui| {
+            config_changed |= ui
+                .checkbox(
+                    &mut self.config.replay_upload.save_locally,
+                    "Save replays locally",
+                )
+                .changed();
+            config_changed |= ui
+                .checkbox(
+                    &mut self.config.replay_upload.upload_enabled,
+                    "Upload to ballchasing.com",
+                )
+                .changed();
+        });
         ui.add_enabled_ui(self.config.replay_upload.upload_enabled, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Provider:");
@@ -2049,16 +2056,28 @@ impl HebnixApp {
     }
 
     fn replay_options_enabled(&self) -> bool {
-        self.config.replay_upload.upload_enabled || self.config.replay_upload.save_locally
+        self.config
+            .replay_upload
+            .enabled_for_spoofer(self.spoofer_master)
     }
 
     fn sync_proxy_consumers(&mut self) {
+        if self
+            .config
+            .replay_upload
+            .enforce_spoofer(self.spoofer_master)
+        {
+            self.auto_upload_replays.stop();
+            self.save_config();
+        }
         self.spoofer_mgr.configure(self.proxy_options());
         let session = hebnix_sdk::rlapi::session::shared_game_session();
         self.auto_upload_replays.sync(
             self.replay_options_enabled(),
             self.spoofer_mgr.game_running(),
-            session.enabled(),
+            session.enabled()
+                && self.spoofer_mgr.http_running()
+                && self.spoofer_mgr.socket_running(),
         );
     }
 
@@ -2072,6 +2091,7 @@ impl HebnixApp {
                     || self.swapper.owned_only()),
             replays: self.replay_options_enabled(),
         }
+        .paired()
     }
 
     fn evaluate_proxies(&mut self) {
@@ -2126,51 +2146,15 @@ impl HebnixApp {
     }
 
     fn render_notification_popup(&mut self, ctx: &egui::Context) {
-        let Some(notification) = self.notification_popup.clone() else {
+        let Some(notification) = self.notification_popup.as_ref() else {
             return;
         };
-        let mut dismissed = false;
-        let id = egui::Id::new("web_notification");
-        egui::Modal::new(id).show(ctx, |ui| {
-            ui.set_width(440.0_f32.min((ctx.content_rect().width() - 48.0).max(120.0)));
-            ui.horizontal(|ui| {
-                ui.heading("Notification");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    dismissed |= ui.button("×").on_hover_text("Dismiss").clicked();
-                });
-            });
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() * 0.6).max(80.0))
-                .show(ui, |ui| {
-                    ui.add(egui::Label::new(&notification.message).wrap());
-                });
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if let Some(url) = notification.link_url() {
-                    let text = notification
-                        .link_text
-                        .as_deref()
-                        .filter(|text| !text.trim().is_empty())
-                        .unwrap_or("Open link");
-                    if ui.button(text).clicked() {
-                        let _ = open::that(url.as_str());
-                    }
-                }
-                dismissed |= ui.button("Dismiss").clicked();
-            });
-        });
-        let layer = egui::LayerId::new(egui::Order::Foreground, id);
-        ctx.move_to_top(layer);
-        ctx.memory_mut(|memory| memory.set_modal_layer(layer));
-        // Ignore backdrop clicks/Escape: the announcement stays until explicitly closed.
-        if dismissed {
+        if crate::notifications::render_popup(ctx, notification) {
             self.config.notification_id = self.config.notification_id.max(notification.id);
             self.save_config();
             self.notification_popup = None;
         }
     }
-
 
     fn set_hidden(&mut self, ctx: &egui::Context, hidden: bool) {
         tracing::info!(hidden, "toggling main window visibility");
@@ -2902,15 +2886,15 @@ impl HebnixApp {
                 if let Some(state) = event.update_state() {
                     self.workshop
                         .update_workshop_map_from_stats(&state.game.arena, &self.tx);
+                    let log = (entered_match || self.auto_upload_replays.needs_match_identity(event.match_guid.as_deref()))
+                        .then(|| hebnix_sdk::log::parse_launch_log(None, true, "INT"));
+                    if let (Some(match_guid), Some(log)) = (event.match_guid.as_deref(), log.as_ref()) {
+                        self.auto_upload_replays.track_match(match_guid, log.session.primary_id.clone());
+                    }
                     if entered_match {
-                        let log = hebnix_sdk::log::parse_launch_log(None, true, "INT");
-                        if let Some(match_guid) = event.match_guid.as_deref() {
-                            self.auto_upload_replays
-                                .track_match(match_guid, log.session.primary_id.clone());
-                        }
                         self.discord_match = Some(crate::discord_presence::MatchInfo::from_state(
                             state,
-                            log.game.as_ref(),
+                            log.as_ref().and_then(|log| log.game.as_ref()),
                         ));
                     } else if let Some(info) = self.discord_match.as_mut() {
                         info.update_state(state);
@@ -3651,9 +3635,10 @@ impl HebnixApp {
                             ui.scope(|ui| {
                                 let options = self.proxy_options();
                                 let game_running = self.spoofer_mgr.game_running();
+                                let proxies_running = self.spoofer_mgr.http_running() && self.spoofer_mgr.socket_running();
                                 ui.horizontal(|ui| {
                                     ui.label(t("spoofer-account-proxy"));
-                                    if self.spoofer_mgr.http_running() {
+                                    if proxies_running {
                                         ui.colored_label(
                                             egui::Color32::from_rgb(34, 245, 101),
                                             t("spoofer-running"),
@@ -3676,9 +3661,7 @@ impl HebnixApp {
 
                                 ui.horizontal(|ui| {
                                     ui.label(t("spoofer-psynet-proxy"));
-                                    if self.spoofer_mgr.socket_running()
-                                        || hebnix_sdk::rlapi::session::shared_game_session().enabled()
-                                    {
+                                    if proxies_running {
                                         ui.colored_label(
                                             egui::Color32::from_rgb(34, 245, 101),
                                             t("spoofer-running"),
@@ -6009,7 +5992,8 @@ impl HebnixApp {
         match self.spoofer_mgr.finish_item_clear() {
             Ok(true) => {
                 self.item_clear_error = None;
-                self.console.write(&format!("[Items] {}", self.spoofer_mgr.item_status().text));
+                self.console
+                    .write(&format!("[Items] {}", self.spoofer_mgr.item_status().text));
             }
             Ok(false) => {
                 self.item_clear_error = None;

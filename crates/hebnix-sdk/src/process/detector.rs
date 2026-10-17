@@ -71,11 +71,7 @@ pub fn detect_platform(root_dir: &Path) -> RlPlatform {
 }
 
 fn documents_dir() -> PathBuf {
-    dirs::document_dir().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Documents")
-    })
+    crate::utils::paths::documents_dir().unwrap_or_else(|| PathBuf::from("Documents"))
 }
 
 /// DBE_Production/ under a Documents folder: the platform's own when known,

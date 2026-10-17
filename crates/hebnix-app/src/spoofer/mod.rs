@@ -28,14 +28,21 @@ use crate::spoofer::socket::SocketProxy;
 pub const PROXY_HOST: &str = "127.0.0.1";
 pub const PROXY_PORT: u16 = 8080;
 pub const MAX_NAME_LENGTH: usize = 32;
-// Intercept Epic's account API only for name/friends, and PsyNet config only
-// for title/rank routing.  These must stay independent: redirecting the game
-// config host for an account-only spoof forces Rocket League's startup/auth
-// path through the local proxy when it has nothing to do there.
+// Account authentication and PsyNet routing share the proxy lifecycle.
+// Every consumer starts both so Owned Items and replay capture see login
+// traffic as well as the game connection. Individual spoofing features
+// remain controlled by their own settings.
 const ACCOUNT_HOST: &str = "api.epicgames.dev";
 
 pub fn is_admin() -> bool {
     nix::unistd::geteuid().is_root()
+}
+
+/// Windows requires administrator rights for the proxy; on Linux only
+/// binding port 443 needs a permission (the capability set at install or by
+/// Grant Permission), hosts edits go through pkexec
+fn can_bind_proxy() -> bool {
+    is_admin() || crate::multiplayer_lan::has_net_bind_service_capability()
 }
 
 /// Exactly two things this whole feature ever needs root for: writing
@@ -272,6 +279,8 @@ pub struct SpooferManager {
     // stream of them, after the user declines one
     hosts_failure: Mutex<Option<(std::time::Instant, Vec<String>, String)>>,
     account_retained: AtomicBool,
+    // Serialize complete paired start/stop transitions, including capture.
+    runtime_lock: Mutex<()>,
     // Serialize redirect publication with shutdown and the lifecycle worker.
     redirect_lock: Mutex<()>,
     certificate_blocked: AtomicBool,
@@ -289,6 +298,30 @@ pub struct ProxyOptions {
 }
 
 impl ProxyOptions {
+    /// Every consumer needs both account authentication and PsyNet routing.
+    pub fn paired(self) -> Self {
+        let enabled = self.account || self.psynet || self.replays;
+        Self {
+            account: enabled,
+            psynet: enabled,
+            replays: self.replays,
+        }
+    }
+
+    fn for_runtime(
+        self,
+        game_present: bool,
+        closing: bool,
+        certificate_blocked: bool,
+        admin: bool,
+    ) -> Self {
+        if game_present && !closing && !certificate_blocked && admin {
+            self.paired()
+        } else {
+            Self::default()
+        }
+    }
+
     fn bits(self) -> u8 {
         u8::from(self.account) | (u8::from(self.psynet) << 1) | (u8::from(self.replays) << 2)
     }
@@ -309,44 +342,46 @@ impl SpooferManager {
 
     pub fn configure(&self, options: ProxyOptions) {
         self.requested_options
-            .store(options.bits(), Ordering::Release);
+            .store(options.paired().bits(), Ordering::Release);
     }
 
     // Only the lifecycle worker starts listeners. It also runs while the UI is hidden.
     fn sync_proxy_options(&self) -> Result<(), String> {
-        let active = self.game_present.load(Ordering::Acquire)
-            && !self.closing.load(Ordering::Acquire)
-            && !self.certificate_blocked.load(Ordering::Acquire);
-        let options = if active {
-            ProxyOptions::from_bits(self.requested_options.load(Ordering::Acquire))
-        } else {
-            ProxyOptions::default()
-        };
-        // Disable consumers first; retained connections continue to relay without spoofs.
-        if !options.replays && hebnix_sdk::rlapi::session::shared_game_session().enabled() {
-            self.disable_rlapi();
+        let _runtime = self
+            .runtime_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let options = ProxyOptions::from_bits(self.requested_options.load(Ordering::Acquire))
+            .for_runtime(
+                self.game_present.load(Ordering::Acquire),
+                self.closing.load(Ordering::Acquire),
+                self.certificate_blocked.load(Ordering::Acquire),
+                can_bind_proxy(),
+            );
+        let session = hebnix_sdk::rlapi::session::shared_game_session();
+        if !options.replays && session.enabled() {
+            self.disable_rlapi_inner();
         }
-        if !options.account && self.http_active.load(Ordering::Acquire) {
-            self.stop_http();
-        }
-        if !options.psynet && self.socket_active.load(Ordering::Acquire) {
-            self.stop_socket();
-        }
-        if options.account && !self.http_running() {
-            self.start_http()?;
-        }
-        if options.psynet && !self.socket_running() {
-            self.start_socket()?;
-        }
-        if options.replays
-            && (!hebnix_sdk::rlapi::session::shared_game_session().enabled()
-                || !self
-                    .reverse_proxy
-                    .lock()
-                    .map(|p| p.as_ref().is_some_and(SocketProxy::is_running))
-                    .unwrap_or(false))
-        {
-            self.enable_rlapi()?;
+        let result = (|| {
+            if options.account {
+                self.start_proxies()?;
+            } else {
+                self.stop_proxies();
+            }
+            if options.replays && !session.enabled() {
+                self.enable_rlapi_inner()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            session.set_enabled(false);
+            self.stop_proxies();
+            // A retained session cannot justify a redirect to a dead listener.
+            if let Err(cleanup) = self.reconcile_hosts() {
+                return Err(format!("{error}; proxy cleanup: {cleanup}"));
+            }
+            self.cleanup_idle_rlapi();
+            return Err(error);
         }
         self.cleanup_idle_rlapi();
         Ok(())
@@ -405,6 +440,7 @@ impl SpooferManager {
             crl: Mutex::new(None),
             rlapi_retained: Arc::new(AtomicBool::new(false)),
             account_retained: AtomicBool::new(false),
+            runtime_lock: Mutex::new(()),
             redirect_lock: Mutex::new(()),
             certificate_blocked: AtomicBool::new(false),
             closing: AtomicBool::new(false),
@@ -448,15 +484,20 @@ impl SpooferManager {
     }
 
     pub fn enable_rlapi(&self) -> Result<(), String> {
-        let can_bind = is_admin() || crate::multiplayer_lan::has_net_bind_service_capability();
-        if !can_bind || !ca::is_current_installed(&self.base_dir) {
+        let _runtime = self
+            .runtime_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.enable_rlapi_inner()
+    }
+
+    fn enable_rlapi_inner(&self) -> Result<(), String> {
+        if !can_bind_proxy() || !ca::is_current_installed(&self.base_dir) {
             return Err("RLAPI capture requires the port 443 permission and the existing Hebnix certificate setup.".into());
         }
         let session = hebnix_sdk::rlapi::session::shared_game_session();
         session.set_enabled(true);
-        let result = self
-            .start_skill_bridge()
-            .and_then(|_| self.ensure_reverse_proxy());
+        let result = self.start_proxies();
         if let Err(error) = result {
             session.set_enabled(false);
             self.stop_skill_bridge();
@@ -468,6 +509,14 @@ impl SpooferManager {
     }
 
     pub fn disable_rlapi(&self) {
+        let _runtime = self
+            .runtime_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.disable_rlapi_inner();
+    }
+
+    fn disable_rlapi_inner(&self) {
         hebnix_sdk::rlapi::session::shared_game_session().set_enabled(false);
         // A connected game retains its relay until it disconnects. Disabling
         // API requests must not kick the game out of its current session.
@@ -558,7 +607,8 @@ impl SpooferManager {
     }
 
     pub fn http_running(&self) -> bool {
-        self.http_active.load(Ordering::Relaxed)
+        self.http_active.load(Ordering::Acquire)
+            && self.socket_active.load(Ordering::Acquire)
             && self
                 .reverse_proxy
                 .lock()
@@ -567,39 +617,40 @@ impl SpooferManager {
     }
 
     pub fn socket_running(&self) -> bool {
-        self.socket_active.load(Ordering::Relaxed)
-            && self
-                .reverse_proxy
-                .lock()
-                .map(|proxy| proxy.as_ref().is_some_and(SocketProxy::is_running))
-                .unwrap_or(false)
+        self.http_running()
     }
 
-    pub fn start_http(&self) -> Result<(), String> {
+    fn start_proxies(&self) -> Result<(), String> {
         if self.http_running() {
             return self.reconcile_hosts();
         }
-        self.http_active.store(true, Ordering::Relaxed);
+        if self.closing.load(Ordering::Acquire) || self.certificate_blocked.load(Ordering::Acquire)
+        {
+            return Err("Proxy startup was cancelled.".into());
+        }
+        // Set both consumers before publishing any host redirects. On failure
+        // neither transport may stay active or appear to be running.
+        self.http_active.store(true, Ordering::Release);
+        self.socket_active.store(true, Ordering::Release);
         if let Err(error) = self
             .start_skill_bridge()
             .and_then(|_| self.ensure_reverse_proxy())
         {
-            self.http_active.store(false, Ordering::Relaxed);
-            self.stop_reverse_if_unused();
-            self.stop_skill_bridge();
-            self.maybe_stop_crl();
+            self.stop_proxies();
             return Err(error);
         }
         self.account_retained.store(true, Ordering::Release);
+        self.rlapi_retained.store(true, Ordering::Release);
+        hebnix_sdk::rlapi::session::shared_game_session().set_websocket_enabled(true);
         Ok(())
     }
 
-    pub fn stop_http(&self) {
-        self.http_active.store(false, Ordering::Relaxed);
-        if !self.socket_active.load(Ordering::Relaxed) {
-            self.stop_skill_bridge();
-        }
+    fn stop_proxies(&self) {
+        self.http_active.store(false, Ordering::Release);
+        self.socket_active.store(false, Ordering::Release);
+        hebnix_sdk::rlapi::session::shared_game_session().set_websocket_enabled(false);
         self.stop_reverse_if_unused();
+        self.stop_skill_bridge();
         self.maybe_stop_crl();
     }
 
@@ -624,27 +675,6 @@ impl SpooferManager {
         }
     }
 
-    pub fn start_socket(&self) -> Result<(), String> {
-        if self.socket_running() {
-            return self.reconcile_hosts();
-        }
-        self.socket_active.store(true, Ordering::Relaxed);
-        if let Err(error) = self
-            .start_skill_bridge()
-            .and_then(|_| self.ensure_reverse_proxy())
-        {
-            self.socket_active.store(false, Ordering::Relaxed);
-            hebnix_sdk::rlapi::session::shared_game_session().set_websocket_enabled(false);
-            self.stop_reverse_if_unused();
-            self.stop_skill_bridge();
-            self.maybe_stop_crl();
-            return Err(error);
-        }
-        hebnix_sdk::rlapi::session::shared_game_session().set_websocket_enabled(true);
-        self.rlapi_retained.store(true, Ordering::Release);
-        Ok(())
-    }
-
     pub fn item_status(&self) -> crate::item_cleanup::ItemStatus {
         self.item_cleanup.status()
     }
@@ -656,14 +686,6 @@ impl SpooferManager {
     }
     pub fn finish_item_clear(&self) -> Result<bool, String> {
         self.item_cleanup.finish_clear()
-    }
-
-    pub fn stop_socket(&self) {
-        self.socket_active.store(false, Ordering::Relaxed);
-        hebnix_sdk::rlapi::session::shared_game_session().set_websocket_enabled(false);
-        self.stop_reverse_if_unused();
-        self.stop_skill_bridge();
-        self.maybe_stop_crl();
     }
 
     fn ensure_reverse_proxy(&self) -> Result<(), String> {
@@ -890,12 +912,15 @@ impl SpooferManager {
     /// Disable mutations and API requests while preserving the game's relay.
     /// Saved spoof settings are left intact for the next Hebnix launch.
     pub fn disable_spoofing(&self) {
+        let _runtime = self
+            .runtime_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Preserve already-established/cached local game connections. New
         // DNS lookups go directly to Epic as soon as Hebnix's UI closes.
         self.closing.store(true, Ordering::Release);
         hebnix_sdk::rlapi::session::shared_game_session().set_enabled(false);
-        self.stop_socket();
-        self.stop_http();
+        self.stop_proxies();
         if let Err(error) = self.reconcile_hosts() {
             tracing::error!("Could not reconcile retained game relay: {error}");
         }
@@ -904,20 +929,25 @@ impl SpooferManager {
     /// Stops only runtime interception. It deliberately does not modify saved
     /// spoof settings, so the user's enabled toggles survive the next launch.
     pub fn shutdown(&self) {
+        let _runtime = self
+            .runtime_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.configure(ProxyOptions::default());
         self.rlapi_retained.store(false, Ordering::Release);
         self.account_retained.store(false, Ordering::Release);
         hebnix_sdk::rlapi::session::shared_game_session().reset();
-        self.stop_socket();
-        self.stop_http();
-        // Clear a redirect even if the socket failed to start or its state
-        // was lost - but stop_socket()/stop_http() above already did this
-        // via stop_reverse_if_unused() in the normal case, so skip the
-        // redundant (and potentially auth-prompting) third call. The helper
-        // flushes the DNS cache itself, as root: `resolvectl flush-caches`
-        // as the user needs its own polkit authorization on some setups.
-        if hosts::has_redirects() {
-            let _ = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir);
+        self.stop_proxies();
+        // Clear a redirect even if the socket failed to start or its state was
+        // lost. Only when there is one: clearing needs pkexec.
+        if !hosts::has_redirects() {
+            return;
+        }
+        if let Err(error) = run_privileged(PrivilegedAction::ClearHosts, &self.base_dir) {
+            tracing::error!("Could not remove Hebnix hosts redirects on shutdown: {error}");
+            let _ = self.tx.send(AppMsg::Log(format!(
+                "[Spoofer] Could not remove hosts redirects on shutdown: {error}"
+            )));
         }
     }
 
@@ -1010,4 +1040,46 @@ pub fn clean_session_cache(base_dir: &Path) -> std::io::Result<()> {
         std::fs::remove_file(marker)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod paired_proxy_tests {
+    use super::ProxyOptions;
+    #[test]
+    fn every_consumer_requests_both_transports() {
+        for bits in 0..8 {
+            let request = ProxyOptions::from_bits(bits).paired();
+            assert_eq!(request.account, bits != 0, "consumer bits {bits}");
+            assert_eq!(request.psynet, request.account);
+            assert_eq!(request.replays, bits & 4 != 0);
+            assert_eq!(ProxyOptions::from_bits(request.bits()).paired(), request);
+        }
+    }
+    #[test]
+    fn lifecycle_starts_and_stops_the_pair_under_the_same_conditions() {
+        let requested = ProxyOptions {
+            account: false,
+            psynet: false,
+            replays: true,
+        };
+        for bits in 0..16 {
+            let game = bits & 1 != 0;
+            let closing = bits & 2 != 0;
+            let blocked = bits & 4 != 0;
+            let admin = bits & 8 != 0;
+            let effective = requested.for_runtime(game, closing, blocked, admin);
+            if game && !closing && !blocked && admin {
+                assert_eq!(
+                    effective,
+                    ProxyOptions {
+                        account: true,
+                        psynet: true,
+                        replays: true
+                    }
+                );
+            } else {
+                assert_eq!(effective, ProxyOptions::default());
+            }
+        }
+    }
 }
