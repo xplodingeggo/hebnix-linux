@@ -68,6 +68,11 @@ console-theme-failed = Design '{ $theme }' konnte nicht geladen werden. Es wurde
 
 settings-dirs-autodetected = (automatisch aus dem laufenden Spiel erkannt)
 settings-rl-folder-label = Rocket-League-Ordner:
+settings-rl-documents-label = Rocket-League-Dokumente:
+settings-rl-documents-auto = { $path } (automatisch gefunden)
+settings-rl-documents-not-found = Nicht gefunden, starte Rocket League einmal oder wähle den Ordner
+settings-rl-documents-empty = In diesem Ordner sind keine Rocket-League-Spielstände oder -Logs. Wähle den Ordner My Games/Rocket League im Wine-Präfix.
+settings-rl-documents-desc = Hier speichert Rocket League Spielstände und Logs: My Games/Rocket League in den Dokumenten seines Wine-Präfixes.
 settings-statsapi-ini-label = DefaultStatsAPI.ini:
 filter-ini-files = INI-Dateien
 settings-not-found = Nicht gefunden

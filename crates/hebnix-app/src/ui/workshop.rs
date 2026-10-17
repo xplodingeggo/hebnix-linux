@@ -175,17 +175,7 @@ fn rocket_league_multihome_address() -> Option<String> {
     // fall back to Launch.log, which lives under whatever Wine/Proton prefix
     // RL is actually running in, never the host's real ~/Documents
     let rel = Path::new("My Games/Rocket League/TAGame/Logs/Launch.log");
-    let mut candidates: Vec<PathBuf> = hebnix_sdk::process::candidate_documents_dirs()
-        .into_iter()
-        .map(|docs| docs.join(rel))
-        .collect();
-    if let Some(host_docs) = dirs::document_dir() {
-        candidates.push(host_docs.join(rel));
-    }
-    let path = candidates
-        .into_iter()
-        .filter(|p| p.is_file())
-        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())?;
+    let path = hebnix_sdk::process::rocket_league_documents_dir()?.join(rel);
     let log = std::fs::read_to_string(path).ok()?;
     log.lines().take(300).find_map(multihome_in)
 }

@@ -48,7 +48,11 @@ fn account_filename(path: &Path) -> bool {
 fn discover() -> Result<Vec<PathBuf>, String> {
     // linux-port: RL's Documents folder lives inside a Wine/Proton prefix,
     // and there can be several prefixes (Steam, Heroic), so look in each
-    let docs_dirs = hebnix_sdk::process::wine_prefix::candidate_documents_dirs();
+    // the game's own Documents folder when it can be told apart from other
+    // prefixes' (see rocket_league_documents_dir), else every prefix's
+    let docs_dirs = hebnix_sdk::process::rocket_league_documents_dir()
+        .map(|docs| vec![docs])
+        .unwrap_or_else(hebnix_sdk::process::wine_prefix::candidate_documents_dirs);
     if docs_dirs.is_empty() {
         return Err("Cannot locate Rocket League's Documents directory".into());
     }

@@ -685,6 +685,15 @@ pub struct HebnixApp {
     presets: crate::presets::PresetStore,
 }
 
+/// hand the Rocket League documents folder picked in settings (if any) to
+/// the SDK, which otherwise finds it on its own
+fn apply_rl_documents_path(settings: &crate::config::SettingsCfg) {
+    let path = settings.rl_documents_path.trim();
+    hebnix_sdk::process::set_documents_override(
+        (!path.is_empty()).then(|| std::path::PathBuf::from(path)),
+    );
+}
+
 /// load the overlay font picked in settings (bundled default when unset or
 /// missing)
 fn apply_overlay_font(fonts_dir: &std::path::Path, settings: &crate::config::SettingsCfg) {
@@ -736,6 +745,7 @@ impl HebnixApp {
         }
         theme::apply_window_opacity(&cc.egui_ctx, config.settings.window_opacity);
         apply_overlay_font(&fonts_dir, &config.settings);
+        apply_rl_documents_path(&config.settings);
         let theme_options = theme::list_themes(&themes_dir);
 
         let (tx, rx) = crossbeam_channel::unbounded::<AppMsg>();
@@ -5101,6 +5111,7 @@ impl HebnixApp {
                                     ui,
                                     &[
                                         t("settings-rl-folder-label"),
+                                        t("settings-rl-documents-label"),
                                         t("settings-statsapi-ini-label"),
                                         "PacketSendRate:".to_string(),
                                         "Port:".to_string(),
@@ -5132,6 +5143,63 @@ impl HebnixApp {
                                         }
                                     }
                                 });
+
+                                // saves and logs live in the game's Wine prefix,
+                                // not the game folder; found automatically
+                                // unless picked here
+                                let rl_docs = hebnix_sdk::process::rocket_league_documents_dir()
+                                    .map(|docs| docs.join("My Games").join("Rocket League"));
+                                let picked = !self.config.settings.rl_documents_path.trim().is_empty();
+                                ui.horizontal(|ui| {
+                                    crate::i18n::layout::settings_label(ui, label_w, t("settings-rl-documents-label"));
+                                    let mut display = match (&rl_docs, picked) {
+                                        (Some(path), true) => path.display().to_string(),
+                                        (Some(path), false) => t_args(
+                                            "settings-rl-documents-auto",
+                                            &[("path", path.display().to_string().into())],
+                                        ),
+                                        (None, _) => t("settings-rl-documents-not-found"),
+                                    };
+                                    ui.add_enabled(
+                                        false,
+                                        egui::TextEdit::singleline(&mut display).desired_width(480.0),
+                                    );
+                                    if ui.button(t("btn-browse")).clicked() {
+                                        let mut dialog = rfd::FileDialog::new();
+                                        if let Some(path) = &rl_docs {
+                                            dialog = dialog.set_directory(path);
+                                        }
+                                        if let Some(dir) = dialog.pick_folder() {
+                                            self.config.settings.rl_documents_path =
+                                                dir.to_string_lossy().to_string();
+                                            apply_rl_documents_path(&self.config.settings);
+                                            self.save_config();
+                                        }
+                                    }
+                                    if picked && ui.button(t("btn-reset")).clicked() {
+                                        self.config.settings.rl_documents_path.clear();
+                                        apply_rl_documents_path(&self.config.settings);
+                                        self.save_config();
+                                    }
+                                });
+                                let docs_root = rl_docs
+                                    .as_ref()
+                                    .and_then(|path| path.parent())
+                                    .and_then(|path| path.parent());
+                                if picked
+                                    && docs_root
+                                        .is_none_or(|docs| hebnix_sdk::process::wine_prefix::rocket_league_activity(docs).is_none())
+                                {
+                                    ui.colored_label(
+                                        egui::Color32::YELLOW,
+                                        t("settings-rl-documents-empty"),
+                                    );
+                                }
+                                ui.label(
+                                    egui::RichText::new(t("settings-rl-documents-desc"))
+                                        .size(11.0)
+                                        .color(egui::Color32::GRAY),
+                                );
 
                                 ui.horizontal(|ui| {
                                     crate::i18n::layout::settings_label(ui, label_w, t("settings-statsapi-ini-label"));

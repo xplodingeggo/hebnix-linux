@@ -511,15 +511,10 @@ pub fn replay_directory(game_path: &Path, launch: &RlLaunchCfg) -> Result<PathBu
         RlPlatform::Unknown => matches!(launch.mode, RlLaunchMode::SteamProton),
     };
     // linux-port: the game's Documents folder lives inside its Wine/Proton
-    // prefix. Prefer the running game's own prefix, else the first prefix
-    // that already has Rocket League data in it.
+    // prefix (see rocket_league_documents_dir for how it is picked)
     let documents = hebnix_sdk::process::find_rocket_league()
         .and_then(|game| hebnix_sdk::process::documents_dir_for_exe(&game.exe_path))
-        .or_else(|| {
-            hebnix_sdk::process::candidate_documents_dirs()
-                .into_iter()
-                .find(|docs| docs.join("My Games").join("Rocket League").is_dir())
-        })
+        .or_else(hebnix_sdk::process::rocket_league_documents_dir)
         .ok_or("Rocket League's Documents folder (inside its Wine prefix) was not found")?;
     Ok(replay_directory_in(&documents, steam))
 }

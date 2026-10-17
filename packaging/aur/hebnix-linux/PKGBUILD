@@ -1,7 +1,7 @@
 # Maintainer: xplodingeggo <bugs@notmyproblem.cum>
 pkgname=hebnix-linux
 pkgver=2.2.3
-pkgrel=11
+pkgrel=12
 pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), built from source"
 arch=('x86_64')
 url="https://github.com/xplodingeggo/hebnix-linux"

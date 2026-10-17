@@ -115,3 +115,235 @@ pub fn documents_dir_for_exe(exe_path: &Path) -> Option<PathBuf> {
     }
     candidates.into_iter().next()
 }
+
+// The one Documents folder Rocket League is actually using.
+//
+// A machine easily has several prefixes with a "My Games/Rocket League"
+// folder in them: Heroic's per-game prefix, a Steam non-Steam-game prefix
+// made by accident, Steam runtime prefixes. And the game itself is often
+// installed outside any prefix (e.g. /mnt/games/rocketleague), so its exe
+// path says nothing about which prefix it runs in. In order:
+// 1. the folder picked in Settings (`set_documents_override`)
+// 2. the prefix of the running game, from WINEPREFIX /
+//    STEAM_COMPAT_DATA_PATH in the environment of the game process or its
+//    wineserver
+// 3. the candidate (every prefix plus the host's own Documents) whose
+//    Rocket League folder has the most recently written real files: saves
+//    and logs. Folders without any are ignored.
+
+const RL_DIR: &str = "My Games/Rocket League";
+
+static DOCUMENTS_OVERRIDE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// set (or clear, with None) the Documents folder picked by the user. Takes
+/// the Documents folder itself, its "My Games/Rocket League" folder, or the
+/// "My Games" folder in between.
+pub fn set_documents_override(path: Option<PathBuf>) {
+    let documents = path.map(|path| normalize_documents(&path));
+    if let Ok(mut slot) = DOCUMENTS_OVERRIDE.write() {
+        *slot = documents;
+    }
+    clear_documents_cache();
+}
+
+fn normalize_documents(path: &Path) -> PathBuf {
+    if path.join("TAGame").is_dir() || path.ends_with(RL_DIR) {
+        if let Some(documents) = path.parent().and_then(Path::parent) {
+            return documents.to_path_buf();
+        }
+    }
+    if path.join("Rocket League").is_dir() && path.ends_with("My Games") {
+        if let Some(documents) = path.parent() {
+            return documents.to_path_buf();
+        }
+    }
+    path.to_path_buf()
+}
+
+fn documents_override() -> Option<PathBuf> {
+    DOCUMENTS_OVERRIDE.read().ok()?.clone()
+}
+
+type Cached = std::sync::Mutex<Option<(std::time::Instant, Option<PathBuf>)>>;
+static DOCUMENTS_CACHE: Cached = std::sync::Mutex::new(None);
+
+fn clear_documents_cache() {
+    if let Ok(mut cache) = DOCUMENTS_CACHE.lock() {
+        *cache = None;
+    }
+}
+
+/// Rocket League's Documents folder (the one containing "My Games"), see
+/// the comment above for how it is picked. Cached for a few seconds, since
+/// save and log readers ask often.
+pub fn rocket_league_documents_dir() -> Option<PathBuf> {
+    if let Some(documents) = documents_override() {
+        return Some(documents);
+    }
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+    if let Ok(cache) = DOCUMENTS_CACHE.lock() {
+        if let Some((at, value)) = cache.as_ref() {
+            if at.elapsed() < TTL {
+                return value.clone();
+            }
+        }
+    }
+    let found = running_game_documents().or_else(|| {
+        let mut candidates = candidate_documents_dirs();
+        if let Some(host) = dirs::document_dir() {
+            candidates.push(host);
+        }
+        newest_rocket_league_documents(candidates)
+    });
+    if let Ok(mut cache) = DOCUMENTS_CACHE.lock() {
+        *cache = Some((std::time::Instant::now(), found.clone()));
+    }
+    found
+}
+
+/// newest modification time of a real Rocket League file under
+/// `documents`: any .save in the save folders, or a log. None when there
+/// are none, so empty leftover folders never win.
+pub fn rocket_league_activity(documents: &Path) -> Option<std::time::SystemTime> {
+    let tagame = documents.join(RL_DIR).join("TAGame");
+    let mut newest: Option<std::time::SystemTime> = None;
+    let mut consider = |path: &Path| {
+        if let Ok(modified) = std::fs::metadata(path).and_then(|meta| meta.modified()) {
+            newest = Some(newest.map_or(modified, |current| current.max(modified)));
+        }
+    };
+    for saves in ["SaveData/DBE_Production", "SaveDataEpic/DBE_Production"] {
+        if let Ok(entries) = std::fs::read_dir(tagame.join(saves)) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("save"))
+                    && path.is_file()
+                {
+                    consider(&path);
+                }
+            }
+        }
+    }
+    let launch_log = tagame.join("Logs/Launch.log");
+    if launch_log.is_file() {
+        consider(&launch_log);
+    }
+    newest
+}
+
+fn newest_rocket_league_documents(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .filter_map(|documents| Some((rocket_league_activity(&documents)?, documents)))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, documents)| documents)
+}
+
+/// Documents folder of the prefix a running game uses, from the
+/// environment of the game process (or, when that is unreadable, its
+/// prefix's wineserver)
+fn running_game_documents() -> Option<PathBuf> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return None;
+    };
+    let mut game_prefixes = Vec::new();
+    let mut wineserver_prefixes = Vec::new();
+    for entry in entries.flatten() {
+        let pid = entry.file_name();
+        if !pid.to_string_lossy().bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
+            continue;
+        };
+        let comm = comm.trim().to_ascii_lowercase();
+        let game = comm.contains("rocketleague");
+        if !game && comm != "wineserver" {
+            continue;
+        }
+        let Some(prefix) = prefix_from_environ(&entry.path().join("environ")) else {
+            continue;
+        };
+        if game {
+            game_prefixes.push(prefix);
+        } else {
+            wineserver_prefixes.push(prefix);
+        }
+    }
+    game_prefixes
+        .into_iter()
+        .chain(wineserver_prefixes)
+        .filter_map(|prefix| prefix_documents(&prefix))
+        .find(|documents| documents.join(RL_DIR).is_dir())
+}
+
+fn prefix_from_environ(path: &Path) -> Option<PathBuf> {
+    let environ = std::fs::read(path).ok()?;
+    let mut wine_prefix = None;
+    let mut compat_data = None;
+    for variable in environ.split(|byte| *byte == 0) {
+        let variable = String::from_utf8_lossy(variable);
+        if let Some(value) = variable.strip_prefix("WINEPREFIX=") {
+            wine_prefix = Some(PathBuf::from(value));
+        } else if let Some(value) = variable.strip_prefix("STEAM_COMPAT_DATA_PATH=") {
+            compat_data = Some(PathBuf::from(value).join("pfx"));
+        }
+    }
+    wine_prefix.or(compat_data).filter(|prefix| prefix.join("drive_c").is_dir())
+}
+
+/// `drive_c/users/<user>/Documents` of a prefix, preferring Proton's
+/// "steamuser"
+fn prefix_documents(prefix: &Path) -> Option<PathBuf> {
+    let users = prefix.join("drive_c/users");
+    let steamuser = users.join("steamuser/Documents");
+    if steamuser.is_dir() {
+        return Some(steamuser);
+    }
+    std::fs::read_dir(&users)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path().join("Documents"))
+        .find(|documents| documents.join(RL_DIR).is_dir())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"x").unwrap();
+    }
+
+    #[test]
+    fn picks_the_documents_folder_with_real_files() {
+        let root = std::env::temp_dir().join(format!("hebnix-docs-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let empty = root.join("empty/Documents");
+        let stale = root.join("stale/Documents");
+        let live = root.join("live/Documents");
+        // folders exist but hold nothing real
+        std::fs::create_dir_all(empty.join(RL_DIR).join("TAGame/SaveData/DBE_Production")).unwrap();
+        touch(&stale.join(RL_DIR).join("TAGame/SaveDataEpic/DBE_Production/a.save"));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        touch(&live.join(RL_DIR).join("TAGame/Logs/Launch.log"));
+
+        assert_eq!(rocket_league_activity(&empty), None);
+        assert_eq!(
+            newest_rocket_league_documents(vec![empty.clone(), stale.clone(), live.clone()]),
+            Some(live.clone())
+        );
+        assert_eq!(newest_rocket_league_documents(vec![empty.clone()]), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn override_accepts_documents_or_its_rocket_league_folder() {
+        let documents = PathBuf::from("/x/drive_c/users/steamuser/Documents");
+        assert_eq!(normalize_documents(&documents.join(RL_DIR)), documents);
+        assert_eq!(normalize_documents(&documents), documents);
+    }
+}

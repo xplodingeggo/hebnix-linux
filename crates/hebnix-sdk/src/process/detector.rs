@@ -78,8 +78,41 @@ fn documents_dir() -> PathBuf {
     })
 }
 
+/// DBE_Production/ under a Documents folder: the platform's own when known,
+/// else whichever of Steam's and Epic's has the newest .save
+pub fn save_data_dir_in(docs: &Path, platform: RlPlatform) -> PathBuf {
+    match platform {
+        RlPlatform::Steam => docs.join(SAVE_PATH_STEAM),
+        RlPlatform::Epic => docs.join(SAVE_PATH_EPIC),
+        RlPlatform::Unknown => [SAVE_PATH_STEAM, SAVE_PATH_EPIC]
+            .into_iter()
+            .map(|rel| docs.join(rel))
+            .filter_map(|dir| Some((newest_save_time(&dir)?, dir)))
+            .max_by_key(|(modified, _)| *modified)
+            .map(|(_, dir)| dir)
+            .unwrap_or_else(|| docs.join(SAVE_PATH_STEAM)),
+    }
+}
+
+fn newest_save_time(dir: &Path) -> Option<std::time::SystemTime> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("save"))
+        })
+        .filter_map(|entry| entry.metadata().ok()?.modified().ok())
+        .max()
+}
+
 /// full path to DBE_Production/ for the platform
 pub fn get_save_data_path(platform: RlPlatform) -> PathBuf {
+    if let Some(docs) = super::wine_prefix::rocket_league_documents_dir() {
+        return save_data_dir_in(&docs, platform);
+    }
     let docs = documents_dir();
     match platform {
         RlPlatform::Steam => docs.join(SAVE_PATH_STEAM),
@@ -163,16 +196,11 @@ pub fn find_rocket_league() -> Option<RlProcessInfo> {
         // does - RL has no native Linux client anymore), use that exact
         // prefix's Documents dir rather than guessing between however many
         // prefixes happen to be installed.
+        // the game is often installed outside its prefix (Heroic, a games
+        // drive), so the exe path alone can't say which prefix it runs in
         let save_path = super::wine_prefix::documents_dir_for_exe(exe)
-            .map(|docs| match platform {
-                RlPlatform::Epic => docs.join(SAVE_PATH_EPIC),
-                RlPlatform::Steam => docs.join(SAVE_PATH_STEAM),
-                RlPlatform::Unknown => [SAVE_PATH_STEAM, SAVE_PATH_EPIC]
-                    .into_iter()
-                    .map(|rel| docs.join(rel))
-                    .find(|candidate| candidate.is_dir())
-                    .unwrap_or_else(|| docs.join(SAVE_PATH_STEAM)),
-            })
+            .or_else(super::wine_prefix::rocket_league_documents_dir)
+            .map(|docs| save_data_dir_in(&docs, platform))
             .unwrap_or_else(|| get_save_data_path(platform));
 
         return Some(RlProcessInfo {

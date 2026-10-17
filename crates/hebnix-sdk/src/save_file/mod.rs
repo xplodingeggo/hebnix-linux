@@ -20,7 +20,6 @@ pub use models::*;
 
 use std::path::{Path, PathBuf};
 
-use crate::utils::constants::{SAVE_PATH_EPIC, SAVE_PATH_STEAM};
 
 /// decrypt + parse a .save into a typed SaveData
 pub fn load(filepath: &Path, check_crc: bool) -> Result<SaveData, crypto::SaveError> {
@@ -183,41 +182,14 @@ pub fn find_save_accounts(save_data_path: Option<&Path>) -> Vec<SaveAccount> {
     accounts
 }
 
-/// find the right save data path (steam or epic). tries the running game
-/// first, else picks whichever path has the newest .save.
+/// find the right save data path (steam or epic): the running game's, else
+/// the one in Rocket League's Documents folder (see
+/// process::rocket_league_documents_dir) with the newest .save.
 pub fn detect_save_data_path() -> Option<PathBuf> {
     if let Some(rl) = crate::process::find_rocket_league() {
         return Some(rl.save_data_path);
     }
-
-    // RL isn't running (or its exe path wasn't readable) - fall back to
-    // scanning every Wine/Proton prefix we can find (Steam Proton, Heroic,
-    // ...) plus the host's own Documents folder, and pick whichever
-    // candidate actually has the newest .save file. There's no single
-    // fixed prefix location since RL has no native Linux client anymore.
-    let mut docs_dirs = crate::process::candidate_documents_dirs();
-    if let Some(host_docs) = dirs::document_dir() {
-        docs_dirs.push(host_docs);
-    }
-
-    let mut best_path: Option<PathBuf> = None;
-    let mut best_mtime: Option<std::time::SystemTime> = None;
-
-    for docs in &docs_dirs {
-        for rel in [SAVE_PATH_STEAM, SAVE_PATH_EPIC] {
-            let candidate = docs.join(rel);
-            if !candidate.is_dir() {
-                continue;
-            }
-            if let Some(latest) = find_save_file(Some(&candidate)) {
-                if let Ok(mtime) = latest.metadata().and_then(|m| m.modified()) {
-                    if best_mtime.map(|b| mtime > b).unwrap_or(true) {
-                        best_mtime = Some(mtime);
-                        best_path = Some(candidate);
-                    }
-                }
-            }
-        }
-    }
-    best_path
+    let docs = crate::process::rocket_league_documents_dir()?;
+    let dir = crate::process::save_data_dir_in(&docs, crate::process::RlPlatform::Unknown);
+    dir.is_dir().then_some(dir)
 }

@@ -70,6 +70,9 @@ pub struct SettingsCfg {
     pub minimize_to_tray: bool,
     pub rl_path: String,
     pub statsapi_path: String,
+    /// Rocket League's "My Games/Rocket League" folder inside its Wine
+    /// prefix, where saves and logs live. Empty = find it automatically.
+    pub rl_documents_path: String,
     pub suppress_left_alerts: bool,
     pub suppress_fullscreen_warning: bool,
     pub suppress_statsapi_rate_warning: bool,
@@ -113,6 +116,7 @@ impl Default for SettingsCfg {
             minimize_to_tray: false,
             rl_path: default_rl_path(),
             statsapi_path: default_statsapi_path(),
+            rl_documents_path: String::new(),
             suppress_left_alerts: false,
             suppress_fullscreen_warning: false,
             suppress_statsapi_rate_warning: false,

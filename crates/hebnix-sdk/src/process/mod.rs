@@ -8,10 +8,11 @@ pub mod x11;
 
 pub use detector::{
     RlPlatform, RlProcessInfo, detect_platform, find_process, find_rocket_league,
-    get_save_data_path, is_rocket_league_running,
+    get_save_data_path, is_rocket_league_running, save_data_dir_in,
 };
 pub use wine_prefix::{
-    candidate_documents_dirs, documents_dir_for_exe, steam_library_steamapps_dirs, wine_prefixes,
+    candidate_documents_dirs, documents_dir_for_exe, rocket_league_documents_dir,
+    set_documents_override, steam_library_steamapps_dirs, wine_prefixes,
 };
 pub use window::{
     can_track_own_window, exempt_own_window_decorations, focus_own_window_over_game, get_rocket_league_window_rect,

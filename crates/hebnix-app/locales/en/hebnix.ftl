@@ -75,6 +75,11 @@ console-theme-failed = Theme '{ $theme }' failed to load. Defaulted to Dark mode
 ## settings: directories
 settings-dirs-autodetected = (auto-detected from the running game)
 settings-rl-folder-label = Rocket League Folder:
+settings-rl-documents-label = Rocket League Documents:
+settings-rl-documents-auto = { $path } (found automatically)
+settings-rl-documents-not-found = Not found, start Rocket League once or pick it
+settings-rl-documents-empty = No Rocket League saves or logs in this folder. Pick its My Games/Rocket League folder inside the Wine prefix.
+settings-rl-documents-desc = Where Rocket League keeps saves and logs: My Games/Rocket League in its Wine prefix's Documents, e.g. ~/Games/Heroic/Prefixes/rocketleague/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League.
 settings-statsapi-ini-label = DefaultStatsAPI.ini:
 filter-ini-files = INI files
 settings-not-found = Not Found
