@@ -125,19 +125,24 @@ fn catalog_item(endpoint: &str, id: &str) -> Result<serde_json::Value, String> {
         .map_err(|error| error.to_string())?
         .into_json()
         .map_err(|error| error.to_string())?;
-    catalog
-        .as_array()
-        .and_then(|entries| {
-            entries.iter().find(|entry| {
-                entry
-                    .get("plugin_id")
-                    .or_else(|| entry.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some(id)
-            })
-        })
+    find_catalog_item(&catalog, id)
         .cloned()
         .ok_or_else(|| format!("Item ID {id} was not found in the Hebnix catalog."))
+}
+
+/// Catalog entries carry a numeric `id` (what the in-app store passes) and
+/// a hash `plugin_id` (what website links pass); either one identifies the
+/// item. Only checking `id` when `plugin_id` was missing broke every install
+/// from the in-app store.
+fn find_catalog_item<'a>(catalog: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
+    let matches = |value: Option<&serde_json::Value>| match value {
+        Some(serde_json::Value::String(text)) => text == id,
+        Some(serde_json::Value::Number(number)) => number.to_string() == id,
+        _ => false,
+    };
+    catalog.as_array()?.iter().find(|entry| {
+        matches(entry.get("plugin_id")) || matches(entry.get("id"))
+    })
 }
 
 pub fn plugin_identity(id: &str) -> Result<(String, String), String> {
@@ -288,7 +293,22 @@ fn safe_filename<'a>(value: &'a str, expected_extension: &str) -> Result<&'a str
 
 #[cfg(test)]
 mod tests {
-    use super::{PLUGIN_PREFIX, THEME_PREFIX, id_from_url};
+    use super::{PLUGIN_PREFIX, THEME_PREFIX, find_catalog_item, id_from_url};
+
+    #[test]
+    fn catalog_items_are_found_by_either_id() {
+        let catalog = serde_json::json!([
+            {"id": "659", "plugin_id": "357632a048c136a5895303737e49fa2d", "name": "Media Overlay"},
+            {"id": 336, "plugin_id": "6cd37ef9180055b456597dd18d5feb45", "name": "Numeric"},
+            {"id": "12", "name": "Theme without plugin_id"},
+        ]);
+        let name = |id: &str| find_catalog_item(&catalog, id).and_then(|item| item["name"].as_str());
+        assert_eq!(name("659"), Some("Media Overlay"));
+        assert_eq!(name("357632a048c136a5895303737e49fa2d"), Some("Media Overlay"));
+        assert_eq!(name("336"), Some("Numeric"));
+        assert_eq!(name("12"), Some("Theme without plugin_id"));
+        assert_eq!(name("999"), None);
+    }
 
     #[test]
     fn accepts_safe_install_links() {
