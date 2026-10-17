@@ -24,6 +24,8 @@ eframe = { version = "0.35.0", default-features = false, features = ["default_fo
 egui_extras = { version = "0.35.0", features = ["image", "svg", "gif"] }
 hebnix-sdk = { version = "0.1.0", path = "../hebnix-sdk" }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "ico", "bmp", "webp", "gif"] }
+# zune-jpeg 0.5.15 corrupts non-interleaved baseline JPEG banners (#419).
+jpeg-decoder = { version = "0.3.2", default-features = false }
 libloading = "0.8"
 bcdec_rs = "0.1"
 mlua = { version = "0.11.6", features = ["lua54", "vendored", "serialize"] }

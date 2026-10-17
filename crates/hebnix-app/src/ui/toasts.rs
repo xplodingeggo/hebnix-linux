@@ -16,54 +16,61 @@ pub struct ToastView {
 }
 
 impl ToastView {
+    fn plugin_filters(center: &ToastCenter) -> Vec<(Arc<PluginTag>, usize)> {
+        let mut plugins: Vec<_> = center
+            .plugins()
+            .iter()
+            .map(|tag| {
+                let count = center
+                    .history()
+                    .filter(|toast| toast.plugin.slug == tag.slug)
+                    .count();
+                (Arc::clone(tag), count)
+            })
+            .collect();
+        plugins.sort_by_cached_key(|(tag, _)| (tag.name.to_lowercase(), tag.slug.clone()));
+        plugins
+    }
+
     pub fn render(&mut self, ui: &mut egui::Ui, center: &mut ToastCenter) {
         // ids only ever go up, so anything under the oldest is gone from history
         let oldest = center.history().next().map_or(0, |toast| toast.id);
         self.open.retain(|id| *id >= oldest);
 
-        // plugins newest first, with how many each sent
-        let mut plugins: Vec<(Arc<PluginTag>, u32)> = Vec::new();
-        for toast in center.history().rev() {
-            match plugins
-                .iter_mut()
-                .find(|(tag, _)| tag.slug == toast.plugin.slug)
+        // Keep known plugins even after their messages leave the capped history.
+        let plugins = Self::plugin_filters(center);
+        let all_label = t("toast-filter-all");
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(self.selected.is_empty(), &all_label)
+                .clicked()
             {
-                Some((_, count)) => *count += 1,
-                None => plugins.push((Arc::clone(&toast.plugin), 1)),
+                self.selected.clear();
             }
-        }
-        if !self.selected.is_empty() && !plugins.iter().any(|(tag, _)| tag.slug == self.selected) {
-            self.selected.clear();
-        }
-
-        egui::ScrollArea::vertical()
-            .id_salt("toast_plugin_names")
-            .max_height(110.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .selectable_label(self.selected.is_empty(), t("toast-filter-all"))
-                        .clicked()
-                    {
-                        self.selected.clear();
-                    }
-                    for (tag, count) in &plugins {
-                        let label = format!("{} ({count})", tag.name);
-                        if ui
-                            .selectable_label(tag.slug == self.selected, label)
-                            .clicked()
-                        {
-                            self.selected = tag.slug.clone();
+            if !plugins.is_empty() {
+                egui::ComboBox::from_id_salt("toast_plugin_filter")
+                    .selected_text(
+                        plugins
+                            .iter()
+                            .find(|(tag, _)| tag.slug == self.selected)
+                            .map_or(all_label.as_str(), |(tag, _)| tag.name.as_str()),
+                    )
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for (tag, count) in &plugins {
+                            ui.selectable_value(
+                                &mut self.selected,
+                                tag.slug.clone(),
+                                format!("{} ({count})", tag.name),
+                            );
                         }
-                    }
-                });
-            });
-
+                    });
+            }
+        });
         let title = plugins
             .iter()
             .find(|(tag, _)| tag.slug == self.selected)
-            .map_or_else(|| t("toast-filter-all"), |(tag, _)| tag.name.clone());
+            .map_or_else(|| all_label.clone(), |(tag, _)| tag.name.clone());
         let today = Stamp::now();
 
         ui.separator();
@@ -71,12 +78,14 @@ impl ToastView {
             ui.label(egui::RichText::new(title).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(!plugins.is_empty(), egui::Button::new(t("toast-clear")))
+                    .add_enabled(
+                        center.history().next().is_some(),
+                        egui::Button::new(t("toast-clear")),
+                    )
                     .clicked()
                 {
                     center.clear();
                     self.open.clear();
-                    self.selected.clear();
                 }
             });
         });

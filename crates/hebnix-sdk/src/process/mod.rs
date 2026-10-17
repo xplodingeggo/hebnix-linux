@@ -7,8 +7,8 @@ pub mod wine_prefix;
 pub mod x11;
 
 pub use detector::{
-    RlPlatform, RlProcessInfo, detect_platform, find_rocket_league, get_save_data_path,
-    is_rocket_league_running,
+    RlPlatform, RlProcessInfo, detect_platform, find_process, find_rocket_league,
+    get_save_data_path, is_rocket_league_running,
 };
 pub use wine_prefix::{
     candidate_documents_dirs, documents_dir_for_exe, steam_library_steamapps_dirs, wine_prefixes,

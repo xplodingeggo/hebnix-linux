@@ -700,17 +700,21 @@ pub struct EnabledRule {
     pub inner: Box<dyn Rule>,
     pub http: Arc<AtomicBool>,
     pub socket: Arc<AtomicBool>,
+    pub game: Arc<AtomicBool>,
 }
 impl Rule for EnabledRule {
     fn matches_host(&self, host: &str) -> bool {
         (self.http.load(Ordering::Relaxed) || self.socket.load(Ordering::Relaxed))
+            && self.game.load(Ordering::Acquire)
             && self.inner.matches_host(host)
     }
     fn strip_request_headers(&self) -> &[&str] {
         self.inner.strip_request_headers()
     }
     fn rewrite(&self, body: &mut Body) -> bool {
-        self.inner.rewrite(body)
+        (self.http.load(Ordering::Relaxed) || self.socket.load(Ordering::Relaxed))
+            && self.game.load(Ordering::Acquire)
+            && self.inner.rewrite(body)
     }
     fn announce(&self) -> Option<String> {
         self.inner.announce()
@@ -718,10 +722,20 @@ impl Rule for EnabledRule {
 }
 
 /// Route the original game authentication and WebSocket, with no data spoofs.
-pub struct RlApiRouteRule;
+pub struct RlApiRouteRule {
+    pub retained: Arc<AtomicBool>,
+    pub game: Arc<AtomicBool>,
+}
+impl RlApiRouteRule {
+    fn routing(&self) -> bool {
+        self.game.load(Ordering::Acquire)
+            && (hebnix_sdk::rlapi::session::shared_game_session().enabled()
+                || self.retained.load(Ordering::Acquire))
+    }
+}
 impl Rule for RlApiRouteRule {
     fn matches_host(&self, host: &str) -> bool {
-        hebnix_sdk::rlapi::session::shared_game_session().enabled()
+        self.routing()
             && (host.eq_ignore_ascii_case(TITLE_HOST)
                 || host.eq_ignore_ascii_case("api.rlpp.psynet.gg"))
     }
@@ -729,7 +743,7 @@ impl Rule for RlApiRouteRule {
         &["if-none-match", "if-modified-since"]
     }
     fn rewrite(&self, body: &mut Body) -> bool {
-        if !hebnix_sdk::rlapi::session::shared_game_session().enabled() {
+        if !self.routing() {
             return false;
         }
         let mut route = RankRule::new(Arc::new(Mutex::new(HashMap::new())));

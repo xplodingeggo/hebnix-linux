@@ -29,8 +29,7 @@ pub struct HostShared {
     pub rl_connected: bool,
     pub in_match: bool,
     pub app_version: String,
-    /// detected game platform ("steam", "epic", or "" if unknown). default for
-    /// eos/rlapi calls that don't pass one.
+    /// Detected game platform ("steam", "epic", or "" if unknown).
     pub platform: String,
     pub suppress_plugin_logs: bool,
     /// Directory containing DefaultStatsAPI.ini and the game configuration
@@ -649,89 +648,7 @@ fn play_audio(
     });
 }
 
-// EOS token + RLAPI (PsyNet) access for plugins
-//
-// Both run off the UI thread (token acquisition and PsyNet calls block on
-// network / the Steam DLL / the bridge subprocess). Plugins enqueue work and
-// poll for the result, mirroring the tracker pattern above.
-
-use hebnix_sdk::eos::Platform as EosPlatform;
-use hebnix_sdk::rlapi::session::shared_game_session;
-
-/// parse a user platform string into an eos platform
-fn parse_eos_platform(s: &str) -> Option<EosPlatform> {
-    match s.trim().to_lowercase().as_str() {
-        "steam" => Some(EosPlatform::Steam),
-        "epic" | "epicgames" => Some(EosPlatform::Epic),
-        _ => None,
-    }
-}
-
-/// pick the platform for an eos/rlapi call: explicit arg wins, then the
-/// detected game platform, then steam as a last resort.
-fn resolve_platform(host: &Rc<HostCtx>, explicit: Option<String>) -> Option<EosPlatform> {
-    if let Some(p) = explicit.as_deref().and_then(parse_eos_platform) {
-        return Some(p);
-    }
-    let detected = host.shared.borrow().platform.clone();
-    parse_eos_platform(&detected).or(Some(EosPlatform::Steam))
-}
-
-// --- RLAPI / PsyNet requests (one shared session, lazily connected) ---
-
-struct RlApiJob {
-    key: String,
-    platform: EosPlatform,
-    service: String,
-    body: serde_json::Value,
-}
-
-enum AsyncRpc {
-    Pending,
-    Done {
-        ok: bool,
-        result: serde_json::Value,
-        error: String,
-    },
-}
-
-fn async_rpc() -> &'static std::sync::Mutex<std::collections::HashMap<String, AsyncRpc>> {
-    static MAP: OnceLock<std::sync::Mutex<std::collections::HashMap<String, AsyncRpc>>> =
-        OnceLock::new();
-    MAP.get_or_init(Default::default)
-}
-
-fn store_rpc(key: &str, ok: bool, result: serde_json::Value, error: String) {
-    async_rpc()
-        .lock()
-        .unwrap()
-        .insert(key.to_string(), AsyncRpc::Done { ok, result, error });
-}
-
-fn rlapi_queue() -> &'static crossbeam_channel::Sender<RlApiJob> {
-    static QUEUE: OnceLock<crossbeam_channel::Sender<RlApiJob>> = OnceLock::new();
-    QUEUE.get_or_init(|| {
-        let (tx, rx) = crossbeam_channel::unbounded::<RlApiJob>();
-        std::thread::Builder::new()
-            .name("rlapi-worker".into())
-            .spawn(move || {
-                while let Ok(job) = rx.recv() {
-                    // The existing platform argument remains accepted for Lua
-                    // compatibility. Requests always use the active game's
-                    // account; never mint credentials or log in a second time.
-                    let _platform = job.platform;
-                    match shared_game_session().request(&job.service, job.body) {
-                        Ok(value) => store_rpc(&job.key, true, value, String::new()),
-                        Err(error) => store_rpc(&job.key, false, serde_json::Value::Null, error),
-                    }
-                }
-            })
-            .expect("could not start RLAPI request worker");
-        tx
-    })
-}
-/// optional lua body table to a json object (empty obj when absent, so
-/// no-arg psynet services get {} not [])
+/// Optional Lua body to a JSON object for plugin Stats API commands.
 fn lua_body_to_json(lua: &Lua, body: Option<LuaValue>) -> serde_json::Value {
     match body {
         None | Some(LuaValue::Nil) => serde_json::json!({}),
@@ -743,14 +660,7 @@ fn lua_body_to_json(lua: &Lua, body: Option<LuaValue>) -> serde_json::Value {
     }
 }
 
-/// monotonic request-key gen for one-shot rlapi calls
-fn next_rpc_key() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    format!("rpc:{}", N.fetch_add(1, Ordering::Relaxed))
-}
-
-/// normalize platform names to tracker.gg slugs
+/// normalize platform names to profile service slugs
 fn normalize_slug(platform: &str) -> String {
     match platform.trim().to_lowercase().as_str() {
         "steam" => "steam",
@@ -1313,11 +1223,11 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         cvar.set(
             "register",
             lua.create_function(move |_, name: String| {
-                let result = register_host
-                    .shared
-                    .borrow_mut()
-                    .cvars
-                    .register(&name, &register_host.slug, Rc::clone(&register_host.store));
+                let result = register_host.shared.borrow_mut().cvars.register(
+                    &name,
+                    &register_host.slug,
+                    Rc::clone(&register_host.store),
+                );
                 if let Err(error) = &result {
                     register_host.log(&format!("Error: {error}."));
                 }
@@ -1994,8 +1904,6 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
         })?,
     )?;
 
-    // eos tokens + rlapi (psynet)
-
     // The detected platform of the running game ("steam" / "epic" / "").
     {
         let host = Rc::clone(&host);
@@ -2004,68 +1912,7 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
             lua.create_function(move |_, ()| Ok(host.shared.borrow().platform.clone()))?,
         )?;
     }
-
-    // Non-blocking PsyNet request. `service` e.g. "Skills/GetPlayerSkill v1";
-    // `body` an optional table; `platform` optional (defaults to detected).
-    // Returns a request key to poll with hebnix.rlapi_result(key).
-    // Enable RLAPI capture in Hebnix first. Uses the game connection without logging in.
-    {
-        let host = Rc::clone(&host);
-        hebnix.set(
-            "rlapi_request_async",
-            lua.create_function(
-                move |lua, (service, body, platform): (String, Option<LuaValue>, Option<String>)| {
-                    let service = service.trim().to_string();
-                    if service.is_empty() {
-                        return Ok(None);
-                    }
-                    let Some(plat) = resolve_platform(&host, platform) else {
-                        return Ok(None);
-                    };
-                    let json_body = lua_body_to_json(lua, body);
-                    let key = next_rpc_key();
-                    async_rpc().lock().unwrap().insert(key.clone(), AsyncRpc::Pending);
-                    let _ = rlapi_queue().send(RlApiJob {
-                        key: key.clone(),
-                        platform: plat,
-                        service,
-                        body: json_body,
-                    });
-                    Ok(Some(key))
-                },
-            )?,
-        )?;
-    }
-
-    // Returns nil (unknown key), "pending", or a result table
-    // {ok=bool, result=table, error=string}. A completed result is consumed
-    // (removed) on read, so poll once you get a table.
-    hebnix.set(
-        "rlapi_result",
-        lua.create_function(|lua, key: String| {
-            let mut map = async_rpc().lock().unwrap();
-            match map.get(&key) {
-                None => Ok(LuaValue::Nil),
-                Some(AsyncRpc::Pending) => Ok(LuaValue::String(lua.create_string("pending")?)),
-                Some(AsyncRpc::Done { .. }) => {
-                    let Some(AsyncRpc::Done { ok, result, error }) = map.remove(&key) else {
-                        unreachable!()
-                    };
-                    let table = lua.create_table()?;
-                    table.set("ok", ok)?;
-                    table.set("result", to_lua(lua, &result)?)?;
-                    table.set("error", error)?;
-                    Ok(LuaValue::Table(table))
-                }
-            }
-        })?,
-    )?;
-
-    // Whether the shared PsyNet session is currently connected.
-    hebnix.set(
-        "rlapi_connected",
-        lua.create_function(|_, ()| Ok(shared_game_session().connected()))?,
-    )?;
+    hebnix.set("rlapi", crate::plugins::rlapi::api_table(lua)?)?;
 
     // Audio Control
     let audio = lua.create_table()?;
@@ -2901,7 +2748,7 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
     hebnix.set(
         "process_running",
         lua.create_function(|_, name: String| {
-            Ok(hebnix_sdk::eos::memory::find_process(&name).is_some())
+            Ok(hebnix_sdk::process::find_process(&name).is_some())
         })?,
     )?;
 
@@ -3053,14 +2900,17 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
             })?,
         )?;
     }
+    // WebSocket Send (backward-compatible aliases)
     {
         let host = Rc::clone(&host);
-        hebnix.set(
-            "ws_send",
-            lua.create_function(move |_, (id, text): (String, String)| {
+        let send_socket = lua.create_function(
+            move |_, (id, text): (String, String)| {
                 Ok(ws_send_cmd(&host.slug, &id, WsCmd::Send(text)))
-            })?,
+            },
         )?;
+
+        hebnix.set("ws_send", send_socket.clone())?;
+        hebnix.set("ws_send_socket", send_socket)?;
     }
     {
         let host = Rc::clone(&host);
@@ -3136,6 +2986,16 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
             })?,
         )?;
     }
+    hebnix.set(
+        "crypto_sha256_base64",
+        lua.create_function(|_, data: mlua::String| {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            use sha2::{Digest, Sha256};
+
+            let digest = Sha256::digest(data.as_bytes().as_ref());
+            Ok(STANDARD.encode(digest))
+        })?,
+    )?;
 
     // StatsAPI socket commands.
     {
@@ -4044,6 +3904,19 @@ fn build_ui_table(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<Table> {
         )?;
     }
 
+    // Update both the live edit buffer and the persisted value.
+    {
+        let host = Rc::clone(&host);
+        ui.set(
+            "set_text_input",
+            lua.create_function(move |_, (key, value): (String, String)| {
+                host.text_bufs.borrow_mut().insert(key.clone(), value.clone());
+                host.store.borrow_mut().set_string(&key, &value);
+                Ok(())
+            })?,
+        )?;
+    }
+
     // Persisted text input: ui.text_input("key", "placeholder") -> string
     {
         let host = Rc::clone(&host);
@@ -4070,6 +3943,42 @@ fn build_ui_table(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<Table> {
                 if committed {
                     host.store.borrow_mut().set_string(&key, &buf);
                 }
+                Ok(buf)
+            })?,
+        )?;
+    }
+    // Persisted password input: ui.password_input("key", "placeholder") -> string
+    {
+        let host = Rc::clone(&host);
+        ui.set(
+            "password_input",
+            lua.create_function(move |_, (key, placeholder): (String, Option<String>)| {
+                let mut buf = {
+                    let bufs = host.text_bufs.borrow();
+                    match bufs.get(&key) {
+                        Some(b) => b.clone(),
+                        None => host.store.borrow().get_string(&key, ""),
+                    }
+                };
+
+                let committed = with_current_ui(|ui| {
+                    let mut edit = egui::TextEdit::singleline(&mut buf).password(true);
+
+                    if let Some(ph) = &placeholder {
+                        edit = edit.hint_text(ph.clone());
+                    }
+
+                    let response = ui.add(edit);
+                    response.lost_focus()
+                })
+                .unwrap_or(false);
+
+                host.text_bufs.borrow_mut().insert(key.clone(), buf.clone());
+
+                if committed {
+                    host.store.borrow_mut().set_string(&key, &buf);
+                }
+
                 Ok(buf)
             })?,
         )?;
@@ -4466,15 +4375,6 @@ mod tests {
         assert!(!write_rl_config(&dir, "DefaultEngine.ini", b"nope"));
         assert!(rl_config_path(&dir, "../TAInput.ini").is_none());
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn platform_parsing() {
-        assert_eq!(parse_eos_platform("Steam"), Some(EosPlatform::Steam));
-        assert_eq!(parse_eos_platform(" epic "), Some(EosPlatform::Epic));
-        assert_eq!(parse_eos_platform("epicgames"), Some(EosPlatform::Epic));
-        assert_eq!(parse_eos_platform("xbox"), None);
-        assert_eq!(parse_eos_platform(""), None);
     }
 
     #[test]

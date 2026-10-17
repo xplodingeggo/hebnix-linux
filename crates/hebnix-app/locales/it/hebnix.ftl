@@ -11,7 +11,7 @@ tab-patcher = Oggetti
 tab-colours = Colori
 tab-settings = Impostazioni
 tab-plugins = Plugin
-tab-rlapi = Sperimentale
+tab-replays = Replay
 tab-about = Info
 btn-browse = Sfoglia
 btn-refresh = Aggiorna
@@ -195,6 +195,8 @@ about-built-with-help-from-the-community =
     Creato con l'aiuto della community
     Collaboratori:
     xplodingeggo
+    rlyvision
+    FoxyNoxy
 statsapi-notice-set-20 = Imposta 20
 web-port-notice-set-49124 = Imposta 49124
 web-port-notice-dismiss = Chiudi
@@ -744,8 +746,3 @@ speed-patch-description = Scala le velocità di scorrimento e rotazione di skin 
 speed-patch-multiplier = Velocità
 speed-patch-roundtrip-mismatch = Discrepanza nel ciclo completo della patch di velocità
 app-speed-patch = Velocità animazione
-
-overlay-perf-tip-title = Prestazioni dell'overlay
-overlay-perf-tip-slow = Se gli overlay dei plugin sembrano lenti, aumenta la frequenza di aggiornamento dell'overlay in Impostazioni > Sistema.
-overlay-perf-tip-choppy = Se Rocket League scatta mentre Hebnix è aperto, abbassala invece.
-overlay-perf-tip-open-settings = Apri impostazioni

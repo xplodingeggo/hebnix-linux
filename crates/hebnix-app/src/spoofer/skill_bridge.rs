@@ -1,10 +1,12 @@
 //! Local PsyNet websocket bridge used by rank spoofing and RLAPI.
 //!
 //! The config response is rewritten to point PerConURL/PerConURLv2 here. The
-//! bridge forwards every websocket frame to the real service and rewrites only
-//! server-to-client text frames containing the Skills envelope.
+//! bridge relays game data frames without decoding outgoing text, answers
+//! heartbeats on each connection, and rewrites incoming Skills responses.
 
-use hebnix_sdk::rlapi::session::{REQUEST_PREFIX, SessionRequest, shared_game_session};
+use hebnix_sdk::rlapi::session::{
+    GameConnection, REQUEST_PREFIX, SessionRequest, shared_game_session,
+};
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -16,10 +18,15 @@ use crossbeam_channel::Sender;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::handshake::server::{Request, Response};
 use tungstenite::http::{HeaderName, HeaderValue};
+use tungstenite::protocol::frame::coding::{Control, Data, OpCode};
 use tungstenite::{Error, Message, accept_hdr, connect};
 
 use crate::messages::AppMsg;
-use crate::spoofer::rules::{Body, RankRule, Rule};
+use crate::spoofer::rules::{Body, EnabledRule, RankRule, Rule};
+
+#[path = "game_frames.rs"]
+mod game_frames;
+use game_frames::GameFrames;
 
 const LISTEN_ADDR: &str = "127.0.0.1:8025";
 const UPSTREAM_HOST: &str = "ws.rlpp.psynet.gg";
@@ -34,12 +41,15 @@ const FORWARD_HEADERS: &[&str] = &[
 
 pub struct SkillBridge {
     running: Arc<AtomicBool>,
-
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl SkillBridge {
     pub fn start(
         ranks: Arc<Mutex<HashMap<i32, (i32, f64)>>>,
+        http_active: Arc<AtomicBool>,
+        socket_active: Arc<AtomicBool>,
+        game_present: Arc<AtomicBool>,
         tx: Sender<AppMsg>,
         dump_path: PathBuf,
     ) -> Result<Self, String> {
@@ -56,7 +66,7 @@ impl SkillBridge {
         let thread_connections = Arc::clone(&connections);
         let thread_running = Arc::clone(&running);
         let thread_tx = tx.clone();
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("rank-skill-bridge".into())
             .spawn(move || {
                 for stream in listener.incoming() {
@@ -65,6 +75,9 @@ impl SkillBridge {
                     }
                     let Ok(stream) = stream else { continue };
                     let ranks = Arc::clone(&ranks);
+                    let http_active = Arc::clone(&http_active);
+                    let socket_active = Arc::clone(&socket_active);
+                    let game_present = Arc::clone(&game_present);
                     let tx = thread_tx.clone();
                     let dump_path = dump_path.clone();
                     let connections = Arc::clone(&thread_connections);
@@ -73,6 +86,9 @@ impl SkillBridge {
                         if let Err(error) = handle_connection(
                             stream,
                             ranks,
+                            http_active,
+                            socket_active,
+                            game_present,
                             connections,
                             running,
                             &dump_path,
@@ -87,23 +103,37 @@ impl SkillBridge {
             .map_err(|error| format!("cannot start rank websocket bridge: {error}"))?;
         Ok(Self {
             running,
+            worker: Mutex::new(Some(worker)),
         })
     }
 
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
         let _ = TcpStream::connect(LISTEN_ADDR);
+        if let Ok(mut worker) = self.worker.lock() {
+            if let Some(worker) = worker.take() {
+                let _ = worker.join();
+            }
+        }
     }
-
 }
 
 fn handle_connection(
     stream: TcpStream,
     ranks: Arc<Mutex<HashMap<i32, (i32, f64)>>>,
+    http_active: Arc<AtomicBool>,
+    socket_active: Arc<AtomicBool>,
+    game_present: Arc<AtomicBool>,
     connections: Arc<AtomicUsize>,
     running: Arc<AtomicBool>,
     dump_path: &std::path::Path,
 ) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+        .map_err(|error| format!("websocket handshake timeout: {error}"))?;
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(15)))
+        .map_err(|error| format!("websocket write timeout: {error}"))?;
     let request_state = Arc::new(Mutex::new(None::<(String, Vec<(String, String)>)>));
     let callback_state = Arc::clone(&request_state);
     let mut local = accept_hdr(stream, move |request: &Request, response: Response| {
@@ -181,14 +211,44 @@ fn handle_connection(
 
     let session = shared_game_session();
     let game_connection = has_session.then(|| session.attach());
+    let rule = EnabledRule {
+        inner: Box::new(RankRule::new(ranks)),
+        http: http_active,
+        socket: socket_active,
+        game: game_present,
+    };
+    relay_frames(
+        &mut local,
+        &mut upstream,
+        &running,
+        game_connection,
+        &rule,
+        dump_path,
+    )
+}
+
+fn relay_frames<S: std::io::Read + std::io::Write>(
+    local: &mut tungstenite::WebSocket<TcpStream>,
+    upstream: &mut tungstenite::WebSocket<S>,
+    running: &AtomicBool,
+    game_connection: Option<GameConnection>,
+    rule: &dyn Rule,
+    dump_path: &std::path::Path,
+) -> Result<(), String> {
+    // Use a separate reader on the same socket after the HTTP upgrade. No
+    // WebSocket reads have occurred, so there are no buffered frames to lose.
+    // Outgoing game text must retain its bytes, even when it is not UTF-8.
+    let mut game_frames = GameFrames::new(local.get_ref().try_clone().map_err(|e| e.to_string())?);
     let mut pending = PendingRequests::default();
-    let rule = RankRule::new(ranks);
     while running.load(Ordering::Relaxed) {
         let mut progressed = false;
-        flush_socket(&mut local)?;
-        flush_socket(&mut upstream)?;
+        flush_socket(local)?;
+        flush_socket(upstream)?;
         pending.expire();
-        if let Some(connection) = &game_connection {
+        // A plugin request must never interrupt the game's fragmented message.
+        if let Some(connection) = &game_connection
+            && game_frames.can_send_requests()
+        {
             for job in connection.requests.try_iter() {
                 if !connection.current() || job.deadline <= Instant::now() {
                     let _ = job.reply.send(Err(
@@ -199,16 +259,27 @@ fn handle_connection(
                 let message = request_frame(&job);
                 let id = job.id.clone();
                 pending.0.insert(id, job);
-                send_frame(&mut upstream, Message::Text(message))?;
+                send_frame(upstream, Message::Text(message))?;
                 progressed = true;
             }
         }
-        match local.read() {
-            Ok(message) => {
+        match game_frames.read() {
+            Ok(Some(frame)) => {
                 progressed = true;
-                dump_frame(dump_path, "REQUEST", &message);
-                send_frame(&mut upstream, message)?;
+                match frame.header().opcode {
+                    OpCode::Control(Control::Ping) => {
+                        send_frame(local, Message::Pong(frame.into_data()))?;
+                    }
+                    OpCode::Control(Control::Pong) => {}
+                    _ => {
+                        if frame.header().opcode == OpCode::Data(Data::Text) {
+                            dump_text_length(dump_path, "REQUEST", frame.payload().len());
+                        }
+                        send_frame(upstream, Message::Frame(frame))?;
+                    }
+                }
             }
+            Ok(None) => break,
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(Error::ConnectionClosed | Error::AlreadyClosed) => break,
             Err(error) => return Err(format!("local websocket read failed: {error}")),
@@ -216,6 +287,11 @@ fn handle_connection(
         match upstream.read() {
             Ok(mut message) => {
                 progressed = true;
+                // Tungstenite answers upstream pings itself. Keep heartbeats
+                // on their own connection instead of generating duplicate pongs.
+                if matches!(message, Message::Ping(_) | Message::Pong(_)) {
+                    continue;
+                }
                 if let Message::Text(text) = &message {
                     if pending.consume(text) {
                         continue;
@@ -230,7 +306,7 @@ fn handle_connection(
                         }
                     }
                 }
-                send_frame(&mut local, message)?;
+                send_frame(local, message)?;
             }
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(Error::ConnectionClosed | Error::AlreadyClosed) => break,
@@ -244,16 +320,19 @@ fn handle_connection(
 }
 
 fn dump_frame(path: &std::path::Path, direction: &str, message: &Message) {
-    let Message::Text(text) = message else { return };
-    let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) else { return };
+    if let Message::Text(text) = message {
+        dump_text_length(path, direction, text.len());
+    }
+}
+
+fn dump_text_length(path: &std::path::Path, direction: &str, length: usize) {
+    let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) else {
+        return;
+    };
     use std::io::Write;
     // Payloads and header values may contain authentication/session secrets.
     // Log only shape; never dump credentials or decrypted service contents.
-    let _ = writeln!(
-        file,
-        "\n--- {direction}: text frame, {} bytes ---",
-        text.len()
-    );
+    let _ = writeln!(file, "\n--- {direction}: text frame, {} bytes ---", length);
 }
 
 fn request_frame(job: &SessionRequest) -> String {
@@ -338,7 +417,7 @@ fn send_frame<S: std::io::Read + std::io::Write>(
         Ok(()) => Ok(()),
         // Tungstenite retains the encoded frame; flush it on the next loop.
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
-        Err(_) => Err("PsyNet websocket send failed".into()),
+        Err(error) => Err(format!("PsyNet websocket send failed: {error}")),
     }
 }
 fn flush_socket<S: std::io::Read + std::io::Write>(
@@ -347,7 +426,7 @@ fn flush_socket<S: std::io::Read + std::io::Write>(
     match socket.flush() {
         Ok(()) => Ok(()),
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
-        Err(_) => Err("PsyNet websocket flush failed".into()),
+        Err(error) => Err(format!("PsyNet websocket flush failed: {error}")),
     }
 }
 

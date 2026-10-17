@@ -12,6 +12,15 @@ pub fn hosts_path() -> PathBuf {
     PathBuf::from("/etc/hosts")
 }
 
+/// a missing hosts file (some minimal installs and containers have none)
+/// reads as empty, so redirects can recreate it instead of failing
+fn read_hosts(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        result => result,
+    }
+}
+
 fn line_for(host: &str) -> String {
     format!("127.0.0.1 {host} {MARK}")
 }
@@ -20,8 +29,7 @@ fn line_for(host: &str) -> String {
 /// untouched when it already has the desired entries.
 pub fn set_redirects(hosts: &[&str]) -> Result<(), String> {
     let path = hosts_path();
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("cant read the hosts file: {e}"))?;
+    let content = read_hosts(&path).map_err(|e| format!("cant read the hosts file: {e}"))?;
     if redirects_match(&content, hosts) {
         return Ok(());
     }
@@ -38,7 +46,7 @@ pub fn set_redirects(hosts: &[&str]) -> Result<(), String> {
 
 /// true when /etc/hosts already redirects exactly `hosts`
 pub fn redirects_current(hosts: &[&str]) -> bool {
-    std::fs::read_to_string(hosts_path())
+    read_hosts(&hosts_path())
         .map(|content| redirects_match(&content, hosts))
         .unwrap_or(false)
 }
@@ -54,7 +62,7 @@ fn redirects_match(content: &str, hosts: &[&str]) -> bool {
 }
 
 pub fn has_redirects() -> bool {
-    std::fs::read_to_string(hosts_path())
+    read_hosts(&hosts_path())
         .map(|content| content.lines().any(is_ours))
         .unwrap_or(false)
 }
@@ -62,8 +70,7 @@ pub fn has_redirects() -> bool {
 /// drops our lines, whatever host they were for
 pub fn clear() -> Result<(), String> {
     let path = hosts_path();
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("cant read the hosts file: {e}"))?;
+    let content = read_hosts(&path).map_err(|e| format!("cant read the hosts file: {e}"))?;
 
     if !content.lines().any(is_ours) {
         return Ok(());

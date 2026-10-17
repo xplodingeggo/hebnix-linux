@@ -34,6 +34,7 @@ mod item_cleanup;
 mod messages;
 mod monitor;
 mod multiplayer_lan;
+mod notifications;
 mod overlay;
 mod veryimportantfile;
 mod patch_core {
@@ -41,6 +42,7 @@ mod patch_core {
 }
 mod plugins;
 mod presets;
+mod recovery_tasks;
 mod screen;
 mod spoofer;
 mod statsapi_ini;

@@ -191,6 +191,9 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// make it if missing, then trust it system-wide via p11-kit. needs root -
 /// callers go through `spoofer::run_privileged` (a one-shot pkexec call).
 pub fn install(base_dir: &Path) -> Result<(), String> {
+    if is_current_installed(base_dir) {
+        return Ok(());
+    }
     ensure(base_dir)?;
     let der = der_path(base_dir);
     if !der.is_file() {

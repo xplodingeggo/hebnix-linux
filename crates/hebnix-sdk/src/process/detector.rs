@@ -185,3 +185,26 @@ pub fn find_rocket_league() -> Option<RlProcessInfo> {
     }
     None
 }
+
+/// pid of the first process whose exe name contains `name` (case-insensitive).
+/// Wine/Proton games show up under their Windows exe name, which the kernel
+/// truncates to 15 bytes, so the full exe path's file name is checked too.
+pub fn find_process(name: &str) -> Option<u32> {
+    let needle = name.to_ascii_lowercase();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
+    );
+    sys.processes()
+        .iter()
+        .find(|(_, process)| {
+            process.name().to_string_lossy().to_lowercase().contains(&needle)
+                || process
+                    .exe()
+                    .and_then(|exe| exe.file_name())
+                    .is_some_and(|exe| exe.to_string_lossy().to_lowercase().contains(&needle))
+        })
+        .map(|(pid, _)| pid.as_u32())
+}

@@ -13,15 +13,16 @@ pub fn block_item_action_if_game_running(tx: &crossbeam_channel::Sender<AppMsg>)
 
 #[derive(Debug)]
 pub enum AppMsg {
+    NotificationFetched(crate::notifications::Notification),
     Log(String),
     ItemActionBlocked,
     ReloadCatalogs,
     CatalogsFetched {
         result: Result<std::collections::HashMap<String, Value>, String>,
     },
+    SpooferCertificateLost,
     RlApiCaptureReady(Result<(), String>),
     RlApiResponse(Result<Value, String>),
-    ReplayUploadCaptureReady(Result<(), String>),
     ReplayUploadFinished(crate::auto_upload_replays::UploadResult),
     GameEvent(StatsEvent),
     /// text chat read off the LAN match traffic (see multiplayer_lan::chat_capture)
@@ -52,6 +53,7 @@ pub enum AppMsg {
         message: String,
     },
     BackgroundChangerDone(Result<String, String>),
+    MenuMapDone(Result<String, String>),
     BackgroundChangerProgress(String),
     WorkshopMultiplayerProgress(String),
     // result of spawning the tsnet sidecar and requesting the tailnet come up

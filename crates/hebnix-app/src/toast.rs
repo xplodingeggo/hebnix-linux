@@ -428,6 +428,11 @@ impl ToastCenter {
         self.history.iter()
     }
 
+    /// Plugins that have sent a nonempty toast during this session.
+    pub fn plugins(&self) -> &[Arc<PluginTag>] {
+        &self.tags
+    }
+
     pub fn unread(&self) -> u32 {
         self.unread
     }
