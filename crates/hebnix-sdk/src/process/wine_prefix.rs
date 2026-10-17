@@ -50,26 +50,103 @@ pub fn wine_prefixes() -> Vec<PathBuf> {
         let compatdata = steamapps.join("compatdata");
         if let Ok(entries) = std::fs::read_dir(&compatdata) {
             for entry in entries.flatten() {
-                prefixes.push(entry.path().join("pfx"));
+                push_prefix(&mut prefixes, &entry.path());
             }
         }
     }
 
-    if let Some(home) = dirs::home_dir() {
-        let heroic = home.join("Games/Heroic/Prefixes");
-        if let Ok(entries) = std::fs::read_dir(&heroic) {
-            for entry in entries.flatten() {
-                prefixes.push(entry.path().join("pfx"));
-            }
-        }
+    for prefix in heroic_prefix_dirs() {
+        push_prefix(&mut prefixes, &prefix);
     }
 
     if let Ok(custom) = std::env::var("HEBNIX_WINE_PREFIX") {
-        prefixes.push(PathBuf::from(custom));
+        push_prefix(&mut prefixes, Path::new(&custom));
     }
 
-    prefixes.retain(|p| p.is_dir());
     prefixes
+}
+
+/// adds a prefix given either its root (the dir holding `drive_c`, what
+/// Wine and Wine-GE use) or a Proton compat dir holding `pfx/drive_c`
+fn push_prefix(prefixes: &mut Vec<PathBuf>, dir: &Path) {
+    for candidate in [dir.to_path_buf(), dir.join("pfx")] {
+        if candidate.join("drive_c").is_dir() && !prefixes.contains(&candidate) {
+            prefixes.push(candidate);
+        }
+    }
+}
+
+/// Heroic's prefixes: the per-game `winePrefix` and the default prefix from
+/// its config (native and Flatpak installs), plus everything under the
+/// default ~/Games/Heroic/Prefixes, one level into each folder since the
+/// default prefix holds a subfolder per game. Wine-GE prefixes hold
+/// `drive_c` directly, Proton ones in `pfx/`; push_prefix takes either.
+fn heroic_prefix_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let mut roots = vec![home.join("Games/Heroic/Prefixes")];
+    let mut dirs = Vec::new();
+    for config in [
+        dirs::config_dir().map(|dir| dir.join("heroic")),
+        Some(home.join(".var/app/com.heroicgameslauncher.hgl/config/heroic")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(default) = std::fs::read_to_string(config.join("config.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|json| find_string(&json, "defaultWinePrefix"))
+        {
+            roots.push(PathBuf::from(default));
+        }
+        if let Ok(entries) = std::fs::read_dir(config.join("GamesConfig")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_none_or(|ext| ext != "json") {
+                    continue;
+                }
+                if let Some(prefix) = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                    .and_then(|json| find_string(&json, "winePrefix"))
+                {
+                    dirs.push(PathBuf::from(prefix));
+                }
+            }
+        }
+    }
+    for root in roots {
+        dirs.push(root.clone());
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                dirs.push(path.clone());
+                if let Ok(games) = std::fs::read_dir(&path) {
+                    dirs.extend(games.flatten().map(|game| game.path()).filter(|p| p.is_dir()));
+                }
+            }
+        }
+    }
+    dirs
+}
+
+/// first string value under `key` anywhere in a Heroic config (game
+/// configs nest it under the game's app name)
+fn find_string(json: &serde_json::Value, key: &str) -> Option<String> {
+    match json {
+        serde_json::Value::Object(map) => map
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .or_else(|| map.values().find_map(|value| find_string(value, key))),
+        _ => None,
+    }
 }
 
 /// every `drive_c/users/*/Documents` dir across every known prefix, in no
@@ -338,6 +415,30 @@ mod tests {
         );
         assert_eq!(newest_rocket_league_documents(vec![empty.clone()]), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prefixes_are_found_with_and_without_pfx() {
+        let root = std::env::temp_dir().join(format!("hebnix-prefix-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let wine = root.join("Rocket League");
+        let proton = root.join("rocketleague");
+        std::fs::create_dir_all(wine.join("drive_c")).unwrap();
+        std::fs::create_dir_all(proton.join("pfx/drive_c")).unwrap();
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        let mut prefixes = Vec::new();
+        for dir in [&wine, &proton, &root.join("empty"), &wine] {
+            push_prefix(&mut prefixes, dir);
+        }
+        assert_eq!(prefixes, vec![wine.clone(), proton.join("pfx")]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn heroic_config_values_are_found_when_nested() {
+        let json = serde_json::json!({"Sugar": {"winePrefix": "/games/rl", "other": 1}});
+        assert_eq!(find_string(&json, "winePrefix").as_deref(), Some("/games/rl"));
+        assert_eq!(find_string(&json, "missing"), None);
     }
 
     #[test]
