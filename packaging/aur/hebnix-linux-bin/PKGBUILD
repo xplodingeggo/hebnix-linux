@@ -8,7 +8,7 @@ pkgname=hebnix-linux-bin
 # only the Ubuntu tarball and didn't run on Arch as a result; fixed in
 # v0.1.1.
 pkgver=2.2.3
-pkgrel=8
+pkgrel=9
 pkgdesc="Rocket League overlay, stats tracker and item-changer for Linux (Hyprland/wlroots), prebuilt upstream binary"
 arch=('x86_64')
 url="https://github.com/xplodingeggo/hebnix-linux"
