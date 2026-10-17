@@ -2404,13 +2404,31 @@ impl HebnixApp {
                 }
                 AppMsg::StartupPluginUpdateCheck => {
                     self.console.write("[Core] Checking for plugin updates...");
-                    let mut payload = Vec::new();
-                    for p in &self.plugin_mgr.plugins {
-                        payload.push(serde_json::json!({
-                            "name": p.manifest.name,
-                            "author": p.manifest.author,
-                            "version": p.manifest.version,
-                        }));
+                    // the update API identifies plugins by the store's
+                    // plugin_id (written into plugin.toml by store downloads)
+                    // and rejects the whole request for an entry without one,
+                    // so plugins installed by hand are left out
+                    let payload = self
+                        .plugin_mgr
+                        .plugins
+                        .iter()
+                        .filter_map(|plugin| {
+                            plugin
+                                .manifest
+                                .plugin_id
+                                .as_deref()
+                                .filter(|id| !id.is_empty())
+                                .map(|id| {
+                                    serde_json::json!({
+                                        "plugin_id": id,
+                                        "version": plugin.manifest.version,
+                                    })
+                                })
+                        })
+                        .collect::<Vec<_>>();
+                    if payload.is_empty() {
+                        self.console.write("[Core] All plugins are up to date.");
+                        continue;
                     }
                     let payload_json = serde_json::Value::Array(payload);
                     let tx = self.tx.clone();
@@ -2455,11 +2473,11 @@ impl HebnixApp {
                             self.console.write("[Core] All plugins are up to date.");
                         } else {
                             for update in list {
-                                let id = update.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let name =
-                                    update.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                let author =
-                                    update.get("author").and_then(|v| v.as_str()).unwrap_or("");
+                                let id = update
+                                    .get("plugin_id")
+                                    .or_else(|| update.get("id"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
                                 let update_version = update
                                     .get("version")
                                     .and_then(|v| v.as_str())
@@ -2470,9 +2488,10 @@ impl HebnixApp {
                                 }
 
                                 if let Some(local_p) = self.plugin_mgr.plugins.iter().find(|p| {
-                                    p.manifest.name == name && p.manifest.author == author
+                                    p.manifest.plugin_id.as_deref() == Some(id)
                                 }) {
                                     let slug = local_p.slug.clone();
+                                    let name = local_p.manifest.name.clone();
                                     let was_enabled = local_p.enabled;
 
                                     self.plugin_mgr.set_enabled(&slug, false, &mut self.config);
