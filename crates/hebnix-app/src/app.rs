@@ -7436,7 +7436,7 @@ impl eframe::App for HebnixApp {
                                     self.patcher_ball.render_ball_tab(
                                         ui,
                                         &cooked_pc,
-                                        &cooked_pc.join("Mutators_Balls_SF.upk"),
+                                        &crate::patcher::game_path::resolve(&cooked_pc, "Mutators_Balls_SF.upk"),
                                         &backups_dir,
                                         &self.tx,
                                         ctx,

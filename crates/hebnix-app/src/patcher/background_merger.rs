@@ -1130,7 +1130,7 @@ fn package_source(cooked: &Path, name: &str) -> Result<PathBuf, String> {
     }
 }
 fn map_path(cooked: &Path, name: &str) -> PathBuf {
-    cooked.join(format!("{name}.upk"))
+    crate::patcher::game_path::resolve(&cooked, format!("{name}.upk"))
 }
 fn backup_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}{BACKUP_SUFFIX}", path.display()))

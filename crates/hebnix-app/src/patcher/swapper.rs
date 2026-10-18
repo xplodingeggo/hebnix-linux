@@ -158,7 +158,7 @@ fn swap_compatible(category: SwapCategory, source: &SwapItem, target: &SwapItem)
 
 fn inferred_thumbnail(category: SwapCategory, item: &SwapItem, cooked_pc: &Path) -> Option<String> {
     if let Some(name) = item.thumbnail.as_ref().filter(|name| !name.is_empty()) {
-        return cooked_pc.join(name).is_file().then(|| name.clone());
+        return crate::patcher::game_path::resolve(&cooked_pc, name).is_file().then(|| name.clone());
     }
     if matches!(category, SwapCategory::Boosts | SwapCategory::Goals)
         && (category != SwapCategory::Goals || item.upk_type == "simple")
@@ -166,7 +166,7 @@ fn inferred_thumbnail(category: SwapCategory, item: &SwapItem, cooked_pc: &Path)
         let lower = item.upk.to_ascii_lowercase();
         if lower.ends_with("_sf.upk") {
             let candidate = format!("{}_T_SF.upk", &item.upk[..item.upk.len() - 7]);
-            return cooked_pc.join(&candidate).is_file().then_some(candidate);
+            return crate::patcher::game_path::resolve(&cooked_pc, &candidate).is_file().then_some(candidate);
         }
     }
     None
@@ -175,7 +175,7 @@ fn inferred_thumbnail(category: SwapCategory, item: &SwapItem, cooked_pc: &Path)
 fn preview_thumbnail(category: SwapCategory, item: &SwapItem, cooked_pc: &Path) -> Option<String> {
     if category == SwapCategory::Engines {
         if let Some(name) = item.body_preview.as_ref().filter(|name| {
-            cooked_pc.join(name).is_file()
+            crate::patcher::game_path::resolve(&cooked_pc, name).is_file()
                 || cooked_pc.join("Backups").join(format!("{name}.bak")).is_file()
         }) {
             return Some(name.clone());
@@ -186,7 +186,7 @@ fn preview_thumbnail(category: SwapCategory, item: &SwapItem, cooked_pc: &Path) 
 
 // Preview availability must never determine whether an installed item is listed.
 fn source_upks_available(_category: SwapCategory, item: &SwapItem, cooked_pc: &Path) -> bool {
-    cooked_pc.join(&item.upk).is_file()
+    crate::patcher::game_path::resolve(&cooked_pc, &item.upk).is_file()
 }
 fn prettify_car_key(key: &str) -> String {
     key.split('_')
@@ -523,7 +523,7 @@ impl SwapperState {
                 key,
                 {
                     let backup = cooked_pc.join("Backups").join(format!("{filename}.bak"));
-                    if backup.is_file() { backup } else { cooked_pc.join(filename) }
+                    if backup.is_file() { backup } else { crate::patcher::game_path::resolve(&cooked_pc, filename) }
                 },
                 category.slug().to_string(),
                 ui.ctx().clone(),
@@ -838,8 +838,8 @@ impl SwapperState {
             ));
         }
         fs::create_dir_all(backups_dir).map_err(|error| error.to_string())?;
-        let source_live = cooked_pc.join(&source.upk);
-        let target_live = cooked_pc.join(&target.upk);
+        let source_live = crate::patcher::game_path::resolve(&cooked_pc, &source.upk);
+        let target_live = crate::patcher::game_path::resolve(&cooked_pc, &target.upk);
         let source_backup = backups_dir.join(format!("{}.bak", source.upk));
         let target_backup = backups_dir.join(format!("{}.bak", target.upk));
         // A source may already be replaced in this install.  Its .bak is the
@@ -885,13 +885,13 @@ impl SwapperState {
             if let (Some(source_name), Some(target_name)) =
                 (source.audio_bnk.as_deref(), target.audio_bnk.as_deref())
             {
-                let source_live = cooked_pc.join(source_name);
-                let target_live = cooked_pc.join(target_name);
+                let source_live = crate::patcher::game_path::resolve(&cooked_pc, source_name);
+                let target_live = crate::patcher::game_path::resolve(&cooked_pc, target_name);
                 let target_backup = backups_dir.join(format!("{target_name}.bak"));
                 if !source_live.is_file() || !target_live.is_file() {
                     let _ = fs::copy(
                         backups_dir.join(format!("{}.bak", target.upk)),
-                        cooked_pc.join(&target.upk),
+                        crate::patcher::game_path::resolve(&cooked_pc, &target.upk),
                     );
                     return Err(format!(
                         "Boost audio bank missing: {} or {}",
@@ -906,7 +906,7 @@ impl SwapperState {
                 if let Err(error) = patch_boost_bnk(&source_live, &target_backup, &target_live) {
                     let _ = fs::copy(
                         backups_dir.join(format!("{}.bak", target.upk)),
-                        cooked_pc.join(&target.upk),
+                        crate::patcher::game_path::resolve(&cooked_pc, &target.upk),
                     );
                     return Err(error);
                 }
@@ -919,8 +919,8 @@ impl SwapperState {
             inferred_thumbnail(category, target, cooked_pc),
         ) {
             if !source_name.eq_ignore_ascii_case(&target_name) {
-                let source_live = cooked_pc.join(&source_name);
-                let target_live = cooked_pc.join(&target_name);
+                let source_live = crate::patcher::game_path::resolve(&cooked_pc, &source_name);
+                let target_live = crate::patcher::game_path::resolve(&cooked_pc, &target_name);
                 let source_backup = backups_dir.join(format!("{source_name}.bak"));
                 let target_backup = backups_dir.join(format!("{target_name}.bak"));
                 if !target_backup.is_file() {
@@ -948,12 +948,12 @@ impl SwapperState {
                 if let Err(error) = thumbnail_result {
                     let _ = fs::copy(
                         backups_dir.join(format!("{}.bak", target.upk)),
-                        cooked_pc.join(&target.upk),
+                        crate::patcher::game_path::resolve(&cooked_pc, &target.upk),
                     );
                     if let Some(target_bnk) = target_bnk.as_deref() {
                         let _ = fs::copy(
                             backups_dir.join(format!("{target_bnk}.bak")),
-                            cooked_pc.join(target_bnk),
+                            crate::patcher::game_path::resolve(&cooked_pc, target_bnk),
                         );
                     }
                     let _ = fs::copy(&target_backup, &target_live);
@@ -994,7 +994,7 @@ impl SwapperState {
             .filter(|swap| swap.category == category.slug())
         {
             let backup = backups_dir.join(format!("{}.bak", swap.target_upk));
-            let live = cooked_pc.join(&swap.target_upk);
+            let live = crate::patcher::game_path::resolve(&cooked_pc, &swap.target_upk);
             if !backup.is_file() {
                 continue;
             }
@@ -1006,7 +1006,7 @@ impl SwapperState {
                 fs::remove_file(&backup)?;
                 if let Some(target_bnk) = swap.target_bnk.as_deref() {
                     let bnk_backup = backups_dir.join(format!("{target_bnk}.bak"));
-                    let bnk_live = cooked_pc.join(target_bnk);
+                    let bnk_live = crate::patcher::game_path::resolve(&cooked_pc, target_bnk);
                     if bnk_backup.is_file() {
                         fs::copy(&bnk_backup, &bnk_live)?;
                         fs::remove_file(&bnk_backup)?;
@@ -1014,7 +1014,7 @@ impl SwapperState {
                 }
                 if let Some(thumbnail) = swap.target_thumbnail.as_deref() {
                     let thumb_backup = backups_dir.join(format!("{thumbnail}.bak"));
-                    let thumb_live = cooked_pc.join(thumbnail);
+                    let thumb_live = crate::patcher::game_path::resolve(&cooked_pc, thumbnail);
                     if thumb_backup.is_file() {
                         fs::copy(&thumb_backup, &thumb_live)?;
                         fs::remove_file(&thumb_backup)?;
@@ -1051,7 +1051,7 @@ impl SwapperState {
     ) -> Result<(), String> {
         backup_guard::check_install(cooked_pc, backups_dir)?;
         let backup = backups_dir.join(format!("{target_upk}.bak"));
-        let live = cooked_pc.join(target_upk);
+        let live = crate::patcher::game_path::resolve(&cooked_pc, target_upk);
         if !backup.is_file() {
             return Err(format!("Backup not found: {}", backup.display()));
         }
@@ -1071,7 +1071,7 @@ impl SwapperState {
             .and_then(|swap| swap.target_bnk.as_deref())
         {
             let bnk_backup = backups_dir.join(format!("{target_bnk}.bak"));
-            let bnk_live = cooked_pc.join(target_bnk);
+            let bnk_live = crate::patcher::game_path::resolve(&cooked_pc, target_bnk);
             if bnk_backup.is_file() {
                 fs::copy(&bnk_backup, &bnk_live)
                     .map_err(|error| format!("Failed to restore {target_bnk}: {error}"))?;
@@ -1087,7 +1087,7 @@ impl SwapperState {
             .and_then(|swap| swap.target_thumbnail.as_deref())
         {
             let thumb_backup = backups_dir.join(format!("{thumbnail}.bak"));
-            let thumb_live = cooked_pc.join(thumbnail);
+            let thumb_live = crate::patcher::game_path::resolve(&cooked_pc, thumbnail);
             if thumb_backup.is_file() {
                 fs::copy(&thumb_backup, &thumb_live)
                     .map_err(|error| format!("Failed to restore {thumbnail}: {error}"))?;
@@ -1270,13 +1270,13 @@ impl SwapperState {
                             if backup.is_file() {
                                 backup
                             } else {
-                                cooked_pc.join(filename)
+                                crate::patcher::game_path::resolve(&cooked_pc, filename)
                             }
                         })
                         .or_else(|| {
                             swap.target_thumbnail
                                 .as_deref()
-                                .map(|filename| cooked_pc.join(filename))
+                                .map(|filename| crate::patcher::game_path::resolve(&cooked_pc, filename))
                                 .filter(|path| path.is_file())
                         });
                     let mut image_for = |path: Option<PathBuf>, role: &str| {

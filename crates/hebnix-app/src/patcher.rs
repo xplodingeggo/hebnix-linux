@@ -13,6 +13,7 @@ pub mod colours;
 pub mod cosmetic_thumbnail;
 pub mod cosmetic_upk;
 pub mod decal_patcher;
+pub mod game_path;
 pub mod heatseeker;
 pub mod menu_map;
 pub mod painted_swap;

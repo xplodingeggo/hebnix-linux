@@ -1155,7 +1155,7 @@ fn parse_texture_exports(
                     data,
                     export.serial_offset,
                     export.serial_size,
-                    &game_dir.join(format!("{name}.tfc")),
+                    &crate::patcher::game_path::resolve(&game_dir, format!("{name}.tfc")),
                     format_hint,
                 );
             }
@@ -1721,7 +1721,7 @@ fn restore_package_texture_regions(
         let Some(tfc_name) = texture.tfc_name else {
             continue;
         };
-        let tfc_path = game_dir.join(format!("{tfc_name}.tfc"));
+        let tfc_path = crate::patcher::game_path::resolve(&game_dir, format!("{tfc_name}.tfc"));
         for mip in texture.mips {
             let region = tfc_region_backup_path(backup_dir, &tfc_path, mip.tfc_offset);
             if !region.is_file() {
@@ -1740,7 +1740,7 @@ fn restore_package_texture_regions(
     }
     // Keep appended TFC chunks until Restore All: other active packages may
     // still point to data appended after this package was patched.
-    fs::copy(&package_backup, game_dir.join(package_name))
+    fs::copy(&package_backup, crate::patcher::game_path::resolve(&game_dir, package_name))
         .map_err(|error| format!("Failed to restore {package_name}: {error}"))?;
     Ok(())
 }
@@ -1873,7 +1873,7 @@ fn prepare_specific_decal_carrier(
     fields: &HashMap<String, Vec<u8>>,
     progress: &dyn Fn(f32, &str),
 ) -> Result<bool, String> {
-    let target_live = game_dir.join(target_upk);
+    let target_live = crate::patcher::game_path::resolve(&game_dir, target_upk);
     if package_supports_decal_fields(body_id, &target_live, game_dir, base_dir, fields)? {
         return Ok(false);
     }
@@ -1891,7 +1891,7 @@ fn prepare_specific_decal_carrier(
         if donor_upk.eq_ignore_ascii_case(target_upk) {
             continue;
         }
-        let donor_live = game_dir.join(donor_upk);
+        let donor_live = crate::patcher::game_path::resolve(&game_dir, donor_upk);
         let donor_backup = backup_dir.join(format!("{donor_upk}.bak"));
         let donor = if donor_backup.is_file() {
             &donor_backup
@@ -1944,7 +1944,7 @@ fn patch_decal_on_skin(
     let mut selected = None;
     let mut failures = Vec::new();
     for (index, (candidate, skin_specific)) in target_candidates.iter().enumerate() {
-        let upk_path = game_dir.join(candidate);
+        let upk_path = crate::patcher::game_path::resolve(&game_dir, candidate);
         if !upk_path.is_file() {
             failures.push(format!("{candidate}: file not found"));
             continue;
@@ -2062,7 +2062,7 @@ fn patch_decal_on_skin(
                 label, texture.export_name
             )
         })?;
-        let tfc_path = game_dir.join(format!("{tfc_name}.tfc"));
+        let tfc_path = crate::patcher::game_path::resolve(&game_dir, format!("{tfc_name}.tfc"));
         if !tfc_path.exists() {
             return Err(format!(
                 "{} was not found for texture '{}'",
@@ -2236,7 +2236,7 @@ fn patch_decal_on_skin(
                 let tfc_name = blank.tfc_name.as_ref().ok_or_else(|| {
                     format!("BlankSkin export '{}' has no TFC name", blank.export_name)
                 })?;
-                let tfc_path = game_dir.join(format!("{tfc_name}.tfc"));
+                let tfc_path = crate::patcher::game_path::resolve(&game_dir, format!("{tfc_name}.tfc"));
                 for mip_index in diffuse_patched_mips.iter().copied() {
                     let Some(mip) = blank.mips.get(mip_index) else {
                         continue;
@@ -2317,7 +2317,7 @@ fn restore_decal_candidates(
     for target_upk in target_candidates {
         let backup_upk = backups_dir.join(format!("{target_upk}.bak"));
         if backup_upk.is_file() {
-            fs::copy(&backup_upk, cooked_pc.join(target_upk))
+            fs::copy(&backup_upk, crate::patcher::game_path::resolve(&cooked_pc, target_upk))
                 .map_err(|error| format!("Failed to restore {target_upk}: {error}"))?;
             restored_package = true;
         }
@@ -2347,7 +2347,7 @@ fn restore_decal_candidates(
         let Ok(offset) = offset.parse::<u64>() else {
             continue;
         };
-        let tfc_path = cooked_pc.join(format!("{tfc_stem}.tfc"));
+        let tfc_path = crate::patcher::game_path::resolve(&cooked_pc, format!("{tfc_stem}.tfc"));
         let bytes = fs::read(path)
             .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
         let mut file = fs::OpenOptions::new()
@@ -2374,7 +2374,7 @@ fn restore_decal_candidates(
         }) else {
             continue;
         };
-        let tfc_path = cooked_pc.join(format!("{stem}.tfc"));
+        let tfc_path = crate::patcher::game_path::resolve(&cooked_pc, format!("{stem}.tfc"));
         fs::OpenOptions::new()
             .write(true)
             .open(&tfc_path)
@@ -2390,7 +2390,7 @@ fn restore_decal_candidates(
                 continue;
             };
             if let Some(original_name) = name.strip_suffix(".tfc.bak") {
-                fs::copy(path, cooked_pc.join(format!("{original_name}.tfc")))
+                fs::copy(path, crate::patcher::game_path::resolve(&cooked_pc, format!("{original_name}.tfc")))
                     .map_err(|error| format!("Failed to restore {original_name}.tfc: {error}"))?;
             }
         }
@@ -3007,7 +3007,7 @@ impl DecalPatcherState {
         std::thread::spawn(move || {
             let progress_tx = local_tx.clone();
             let snapshot =
-                fs::read(cooked_clone.join(&selected_skin_upk)).map_err(|error| error.to_string());
+                fs::read(crate::patcher::game_path::resolve(&cooked_clone, &selected_skin_upk)).map_err(|error| error.to_string());
             let result = snapshot
                 .as_ref()
                 .map_err(Clone::clone)
@@ -3058,7 +3058,7 @@ impl DecalPatcherState {
                 });
             if result.is_err() {
                 if let Ok(bytes) = snapshot {
-                    if let Err(error) = fs::write(cooked_clone.join(&selected_skin_upk), bytes) {
+                    if let Err(error) = fs::write(crate::patcher::game_path::resolve(&cooked_clone, &selected_skin_upk), bytes) {
                         let _ = local_tx.send(DecalOp::Error(format!(
                             "Could not roll back {selected_skin_upk}: {error}"
                         )));
@@ -3070,7 +3070,7 @@ impl DecalPatcherState {
                 Ok((target_upk, _patched_fields)) => {
                     if crate::speed_patch::is_active(speed) {
                         match crate::speed_patch::apply(
-                            &cooked_clone.join(&target_upk),
+                            &crate::patcher::game_path::resolve(&cooked_clone, &target_upk),
                             Some(&backups_clone.join(format!("{target_upk}.bak"))),
                             speed,
                         ) {

@@ -357,7 +357,7 @@ impl PatcherState {
                         if !crate::patch_core::gameinfo::is_ball_upk(&live_file_name) {
                             continue;
                         }
-                        let live_path = cooked_pc_clone.join(&live_file_name);
+                        let live_path = crate::patcher::game_path::resolve(&cooked_pc_clone, &live_file_name);
                         match fs::copy(&backup, &live_path) {
                             Ok(_) => restored += 1,
                             Err(error) => errors.push(format!("{live_name}.upk: {error}")),
@@ -398,7 +398,7 @@ impl PatcherState {
                         let Ok(offset) = offset.parse::<u64>() else {
                             continue;
                         };
-                        let tfc_live_path = cooked_pc_clone.join(tfc_name);
+                        let tfc_live_path = crate::patcher::game_path::resolve(&cooked_pc_clone, tfc_name);
                         if !tfc_live_path.exists() {
                             continue;
                         }
@@ -467,7 +467,7 @@ impl PatcherState {
         tx: &Sender<AppMsg>,
         ctx: &egui::Context,
     ) {
-        let upk = cooked_pc.join("Mutators_Balls_SF.upk");
+        let upk = crate::patcher::game_path::resolve(&cooked_pc, "Mutators_Balls_SF.upk");
         self.spawn_restore_thread(cooked_pc, &upk, backups_dir, tx, ctx);
     }
 
@@ -485,7 +485,7 @@ impl PatcherState {
             .find(|ball| ball.name == name)
             .cloned()
             .ok_or_else(|| format!("Ball '{name}' is not installed locally"))?;
-        let upk = cooked_pc.join("Mutators_Balls_SF.upk");
+        let upk = crate::patcher::game_path::resolve(&cooked_pc, "Mutators_Balls_SF.upk");
         self.spawn_apply_thread(&ball, cooked_pc, &upk, backups_dir, tx, ctx);
         Ok(())
     }
@@ -639,7 +639,7 @@ impl PatcherState {
 
         let cooked_pc = Path::new(rl_path).join("TAGame").join("CookedPCConsole");
         let backups_dir = cooked_pc.join("Backups");
-        let upk_path = cooked_pc.join("Mutators_Balls_SF.upk");
+        let upk_path = crate::patcher::game_path::resolve(&cooked_pc, "Mutators_Balls_SF.upk");
 
         egui::Panel::left("patcher_settings_list")
             .resizable(false)

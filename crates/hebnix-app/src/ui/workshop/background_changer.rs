@@ -165,8 +165,8 @@ impl BackgroundChangerState {
             .iter()
             .enumerate()
             .filter_map(|(index, (package, _))| {
-                (cooked.join(format!("{package}.upk")).is_file()
-                    || cooked.join(format!("{package}.upk.hbnx_mapbak")).is_file())
+                (crate::patcher::game_path::resolve(&cooked, format!("{package}.upk")).is_file()
+                    || crate::patcher::game_path::resolve(&cooked, format!("{package}.upk.hbnx_mapbak")).is_file())
                 .then_some(index)
             })
             .collect();
@@ -177,8 +177,8 @@ impl BackgroundChangerState {
         self.installed_donors = SCENERY_DONORS
             .iter()
             .filter(|(package, _)| {
-                cooked.join(format!("{package}.upk")).is_file()
-                    || cooked.join(format!("{package}.upk.hbnx_mapbak")).is_file()
+                crate::patcher::game_path::resolve(&cooked, format!("{package}.upk")).is_file()
+                    || crate::patcher::game_path::resolve(&cooked, format!("{package}.upk.hbnx_mapbak")).is_file()
             })
             .map(|(package, display)| DonorEntry {
                 package: (*package).to_string(),

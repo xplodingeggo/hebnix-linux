@@ -288,7 +288,7 @@ fn transaction(
     // Migrate every car before opening one: any other legacy baseline.upk in the same
     // CookedPCConsole tree can still collide with this package's imports.
     migrate_legacy_package_files(cooked)?;
-    let live = cooked.join(file);
+    let live = crate::patcher::game_path::resolve(&cooked, file);
     let current = read(&live)?;
     let current_hash = hash(&current);
     let dir = record_dir(cooked, file);

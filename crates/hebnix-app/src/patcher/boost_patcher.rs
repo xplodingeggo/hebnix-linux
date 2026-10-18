@@ -1372,7 +1372,7 @@ impl BoostPatcherState {
                 return;
             }
             let backup_gfx = backups_dir_clone.join(format!("{}.bak", GFX_UPK));
-            if backup_gfx.exists() && fs::copy(&backup_gfx, &cooked_pc_clone.join(GFX_UPK)).is_ok()
+            if backup_gfx.exists() && fs::copy(&backup_gfx, &crate::patcher::game_path::resolve(&cooked_pc_clone, GFX_UPK)).is_ok()
             {
                 let _ = local_tx.send(BoostOp::Restored);
             } else {

@@ -475,7 +475,7 @@ impl CarPatcherState {
                 target.name
             ));
         }
-        let live_path = cooked_pc.join(&target.upk_path);
+        let live_path = crate::patcher::game_path::resolve(&cooked_pc, &target.upk_path);
         if !live_path.is_file() {
             return Err(format!(
                 "BodyID {} resolved to {}, but {} does not exist",
@@ -592,7 +592,7 @@ impl CarPatcherState {
         if !backup.is_file() {
             return Err(format!("No original backup exists for {target_upk}"));
         }
-        fs::copy(&backup, cooked_pc.join(&target_upk))
+        fs::copy(&backup, crate::patcher::game_path::resolve(&cooked_pc, &target_upk))
             .map_err(|error| format!("Could not restore {target_upk}: {error}"))?;
         let patch_name = self.active_cars.remove(&target_upk).unwrap_or_default();
         config.patcher.active_cars = self.active_cars.clone();

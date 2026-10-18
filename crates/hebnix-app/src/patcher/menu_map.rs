@@ -1,6 +1,6 @@
 //! Complete menu-arena replacement. Gameplay packages are only read; menu-only
 //! copies contain the field, goals and recursively discovered streaming layers.
-use super::{backup_guard, upk_package::UpkPackage};
+use super::{backup_guard, game_path, upk_package::UpkPackage};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashSet, VecDeque};
@@ -32,6 +32,10 @@ pub struct ActiveSwap {
     original_sha256: String,
     patched_sha256: String,
     files: Vec<MenuFile>,
+}
+
+fn menu(cooked: &Path) -> PathBuf {
+    game_path::resolve(cooked, MENU)
 }
 
 fn state_dir(cooked: &Path) -> PathBuf {
@@ -149,7 +153,7 @@ fn arena_layers(cooked: &Path, arena: &str) -> Result<Vec<PathBuf>, String> {
         if seen.len() > 64 {
             return Err("This arena has too many streaming layers.".into());
         }
-        let path = cooked.join(format!("{name}.upk"));
+        let path = game_path::resolve(cooked, format!("{name}.upk"));
         let package = UpkPackage::load(&path).map_err(|e| format!("Could not load {name}: {e}"))?;
         for index in package.find_all_stream_name_indices() {
             queue.push_back(package.names[index].clone());
@@ -254,7 +258,7 @@ fn alias(index: usize, length: usize) -> Result<String, String> {
 /// Prepare the complete patch in an isolated directory. No installed files change.
 fn prepare(cooked: &Path, arena: &str, output: &Path) -> Result<Vec<MenuFile>, String> {
     let layers = arena_layers(cooked, arena)?;
-    let mut menu = UpkPackage::load(&cooked.join(MENU))?;
+    let mut menu = UpkPackage::load(&menu(cooked))?;
     let slots = arena_slots(&menu)?;
     if layers.len() > slots.len() {
         return Err(format!(
@@ -320,7 +324,7 @@ fn copy_new(source: &Path, destination: &Path) -> Result<(), String> {
 fn replace_menu(source: &Path, cooked: &Path) -> Result<(), String> {
     let temporary = cooked.join(".hebnix-menu-map-replace.tmp");
     copy_new(source, &temporary)?;
-    let result = fs::rename(&temporary, cooked.join(MENU))
+    let result = fs::rename(&temporary, menu(cooked))
         .map_err(|e| format!("Could not replace the menu: {e}"));
     if result.is_err() {
         let _ = fs::remove_file(temporary);
@@ -344,9 +348,9 @@ pub fn apply(cooked: &Path, arena: &str) -> Result<String, String> {
     fs::create_dir(&state).map_err(|e| format!("Could not create the menu backup folder: {e}"))?;
     let prepared = (|| {
         let build = backup_guard::build_id(cooked)?;
-        let original_sha256 = hash(&cooked.join(MENU))?;
+        let original_sha256 = hash(&menu(cooked))?;
         let files = prepare(cooked, arena, &state)?;
-        fs::copy(cooked.join(MENU), state.join(BACKUP)).map_err(|e| e.to_string())?;
+        fs::copy(menu(cooked), state.join(BACKUP)).map_err(|e| e.to_string())?;
         if hash(&state.join(BACKUP))? != original_sha256 {
             return Err("The menu changed while preparing the backup.".into());
         }
@@ -378,11 +382,11 @@ pub fn apply(cooked: &Path, arena: &str) -> Result<String, String> {
             copy_new(&state.join(format!("{i}.bin")), &cooked.join(&file.name))?;
         }
         ensure_closed()?;
-        if hash(&cooked.join(MENU))? != manifest.original_sha256 {
+        if hash(&menu(cooked))? != manifest.original_sha256 {
             return Err("The menu changed before the patch could be installed.".into());
         }
         replace_menu(&state.join("patched.bin"), cooked)?;
-        if hash(&cooked.join(MENU))? != manifest.patched_sha256 {
+        if hash(&menu(cooked))? != manifest.patched_sha256 {
             return Err("Installed menu verification failed.".into());
         }
         Ok::<_, String>(())
@@ -432,7 +436,7 @@ pub fn restore(cooked: &Path) -> Result<String, String> {
     let action = restore_action(
         &manifest,
         &backup_guard::build_id(cooked)?,
-        &hash(&cooked.join(MENU))?,
+        &hash(&menu(cooked))?,
     )?;
     // Check every owned file before restoring or removing anything. Missing
     // aliases are allowed so an interrupted installation can always be restored.
@@ -450,7 +454,7 @@ pub fn restore(cooked: &Path) -> Result<String, String> {
             return Err("The original menu backup failed verification.".into());
         }
         replace_menu(&state.join(BACKUP), cooked)?;
-        if hash(&cooked.join(MENU))? != manifest.original_sha256 {
+        if hash(&menu(cooked))? != manifest.original_sha256 {
             return Err("Restored menu verification failed.".into());
         }
     }
