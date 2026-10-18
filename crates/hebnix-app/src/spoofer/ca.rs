@@ -203,28 +203,76 @@ pub fn install(base_dir: &Path) -> Result<(), String> {
     trust(&["anchor", "--store", &der.to_string_lossy()]).map(|_| ())
 }
 
-/// is our CA currently trusted. p11-kit doesn't expose a thumbprint lookup
-/// like certutil's `-store root`, so this greps `trust list` for our label
-/// instead (good enough: we control COMMON_NAME and nothing else should be
-/// named "Hebnix Local CA").
-pub fn is_current_installed(base_dir: &Path) -> bool {
-    if !der_path(base_dir).is_file() {
-        return false;
-    }
-    match trust(&["list", "--filter=ca-anchors"]) {
-        Ok(out) => out.contains(COMMON_NAME),
-        Err(_) => false,
-    }
+/// one trusted anchor carrying our label, as printed by `trust dump`
+struct Anchor {
+    uri: String,
+    pem_body: String,
 }
 
-pub fn uninstall(base_dir: &Path) -> Result<(), String> {
-    // best-effort: if nothing is installed this errors, which callers
-    // already treat as "fine, nothing to remove" (see spoofer::mod install()).
-    let der = der_path(base_dir);
-    if !der.is_file() {
-        return Ok(());
+fn pem_body(pem: &str) -> String {
+    pem.lines()
+        .filter(|line| !line.starts_with("-----"))
+        .flat_map(|line| line.chars().filter(|c| !c.is_whitespace()))
+        .collect()
+}
+
+/// every anchor labelled COMMON_NAME. a CA re-minted after the old one was
+/// trusted leaves the old anchor behind under the same label, so matching on
+/// the label alone is not enough to know *our* cert is trusted.
+fn parse_anchors(dump: &str) -> Vec<Anchor> {
+    let label = format!("label: \"{COMMON_NAME}\"");
+    let mut anchors = Vec::new();
+    let mut uri: Option<&str> = None;
+    let mut ours = false;
+    let mut pem = String::new();
+    let mut in_pem = false;
+    for line in dump.lines() {
+        if line.starts_with("# pkcs11:") {
+            uri = Some(&line[2..]);
+            ours = false;
+            pem.clear();
+            in_pem = false;
+        } else if line.trim() == label {
+            ours = true;
+        } else if line.starts_with("-----BEGIN CERTIFICATE-----") {
+            in_pem = true;
+            pem.clear();
+        } else if line.starts_with("-----END CERTIFICATE-----") {
+            in_pem = false;
+            if let (true, Some(uri)) = (ours, uri.take()) {
+                anchors.push(Anchor {
+                    uri: uri.to_string(),
+                    pem_body: pem_body(&pem),
+                });
+            }
+        } else if in_pem {
+            pem.push_str(line);
+        }
     }
-    trust(&["anchor", "--remove", &der.to_string_lossy()]).map(|_| ())
+    anchors
+}
+
+fn installed_anchors() -> Result<Vec<Anchor>, String> {
+    trust(&["dump", "--filter=ca-anchors"]).map(|out| parse_anchors(&out))
+}
+
+/// is our current CA trusted. compares the trusted cert itself, not just the
+/// label, so a stale anchor from an older CA does not count.
+pub fn is_current_installed(base_dir: &Path) -> bool {
+    let Ok(cert_pem) = std::fs::read_to_string(cert_path(base_dir)) else {
+        return false;
+    };
+    let ours = pem_body(&cert_pem);
+    installed_anchors().is_ok_and(|anchors| anchors.iter().any(|a| a.pem_body == ours))
+}
+
+/// remove every anchor carrying our label, including ones from an older CA
+/// that no longer matches the files on disk.
+pub fn uninstall(_base_dir: &Path) -> Result<(), String> {
+    for anchor in installed_anchors()? {
+        trust(&["anchor", "--remove", &anchor.uri])?;
+    }
+    Ok(())
 }
 
 fn trust(args: &[&str]) -> Result<String, String> {
@@ -293,6 +341,31 @@ mod tests {
         assert!(!der.is_empty());
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn parses_only_our_anchors() {
+        let dump = "\
+# pkcs11:id=%01;type=cert
+[p11-kit-object-v1]
+label: \"Other CA\"
+-----BEGIN CERTIFICATE-----
+AAAA
+-----END CERTIFICATE-----
+
+# pkcs11:id=%A2%46;type=cert
+[p11-kit-object-v1]
+label: \"Hebnix Local CA\"
+trusted: true
+-----BEGIN CERTIFICATE-----
+MIID
+KTCC
+-----END CERTIFICATE-----
+";
+        let anchors = parse_anchors(dump);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].uri, "pkcs11:id=%A2%46;type=cert");
+        assert_eq!(anchors[0].pem_body, "MIIDKTCC");
     }
 
     // a CA we never installed must not read as installed
