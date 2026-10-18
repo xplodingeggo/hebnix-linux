@@ -2195,7 +2195,7 @@ dependencies = [
 
 [[package]]
 name = "hebnix-sdk"
-version = "0.1.0"
+version = "2.2.4"
 dependencies = [
  "aes",
  "crossbeam-channel",
