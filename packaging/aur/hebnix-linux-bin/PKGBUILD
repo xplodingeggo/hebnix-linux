@@ -46,6 +46,7 @@ sha256sums=('SKIP')
 package() {
 	cd "hebnix-$pkgver-linux-$CARCH-arch"
 	install -Dm755 bin/hebnix "$pkgdir/usr/bin/hebnix"
+	install -Dm755 lib/hebnix/hebnix-tc "$pkgdir/usr/lib/hebnix/hebnix-tc"
 	install -Dm644 share/applications/hebnix.desktop \
 		"$pkgdir/usr/share/applications/hebnix.desktop"
 	install -Dm644 share/icons/hicolor/256x256/apps/hebnix.png \

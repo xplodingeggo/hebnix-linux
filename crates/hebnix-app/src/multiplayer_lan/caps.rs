@@ -1,17 +1,17 @@
-//! Linux capabilities for Workshop LAN multiplayer and the spoofer.
+//! Linux capabilities for the spoofer and the LAN chat capture.
 //!
 //! Windows gates these features on running as administrator. Linux never
 //! elevates the app itself: `setcap` on the binary (done once, see
-//! grant_via_pkexec) grants CAP_NET_ADMIN (tailscaled's TUN device and
-//! routes, nftables), CAP_NET_RAW (the beacon capture socket) and
-//! CAP_NET_BIND_SERVICE (spoofer's port-443 proxy).
+//! grant_via_pkexec) grants CAP_NET_BIND_SERVICE (spoofer's port-443 proxy),
+//! CAP_NET_RAW (chat_capture.rs's packet tap) and CAP_NET_ADMIN (removing
+//! the nftables rules older versions added for Workshop multiplayer, which
+//! itself needs no capabilities any more).
 
 use std::process::Command;
 
 // per linux/capability.h
 const CAP_NET_BIND_SERVICE: u32 = 10;
 const CAP_NET_ADMIN: u32 = 12;
-const CAP_NET_RAW: u32 = 13;
 
 /// `setcap cap_net_admin+eip` on the binary only grants CAP_NET_ADMIN to
 /// *this* process - it does not propagate to child processes spawned via
@@ -39,8 +39,6 @@ pub fn raise_net_admin_ambient() {
     // setcap applied), or if running as root (which needs no capability
     // dance in the first place).
     let _ = caps::raise(None, CapSet::Inheritable, Capability::CAP_NET_ADMIN);
-    // tailscaled (see tsnet_sidecar.rs) also gets CAP_NET_RAW the same way
-    let _ = caps::raise(None, CapSet::Inheritable, Capability::CAP_NET_RAW);
 }
 
 /// builds a `Command` for `program` that raises CAP_NET_ADMIN into *this one
@@ -53,14 +51,6 @@ pub fn raise_net_admin_ambient() {
 /// raise itself needs the capability in both Permitted and Inheritable.
 pub(super) fn command_with_net_admin(program: &str) -> Command {
     command_with_caps(program, &[CAP_NET_ADMIN])
-}
-
-/// like command_with_net_admin, for tailscaled: it needs CAP_NET_ADMIN for
-/// its TUN device and routes, and CAP_NET_RAW for its raw sockets. A cap
-/// that isn't in our Permitted+Inheritable sets is silently skipped (the
-/// raise just fails), so an older grant without CAP_NET_RAW still starts it.
-pub(super) fn command_with_net_caps(program: &std::path::Path) -> Command {
-    command_with_caps(program, &[CAP_NET_ADMIN, CAP_NET_RAW])
 }
 
 fn command_with_caps(program: impl AsRef<std::ffi::OsStr>, caps: &[u32]) -> Command {
@@ -103,20 +93,6 @@ fn has_effective_capability(bit: u32) -> bool {
     mask & (1 << bit) != 0
 }
 
-pub fn has_net_admin_capability() -> bool {
-    has_effective_capability(CAP_NET_ADMIN)
-}
-
-/// the beacon capture (see beacon.rs) is a raw AF_PACKET socket
-pub fn has_net_raw_capability() -> bool {
-    has_effective_capability(CAP_NET_RAW)
-}
-
-/// everything Workshop multiplayer needs
-pub fn has_multiplayer_capabilities() -> bool {
-    has_net_admin_capability() && has_net_raw_capability()
-}
-
 /// spoofer's local MITM proxy binds 127.0.0.1:443 directly (see
 /// spoofer::socket::REVERSE_ADDR) - a privileged port, needing this same
 /// capability (or root). Granted by the same grant_via_pkexec() call as
@@ -125,9 +101,8 @@ pub fn has_net_bind_service_capability() -> bool {
     has_effective_capability(CAP_NET_BIND_SERVICE)
 }
 
-/// grants this binary every capability it can ever need (CAP_NET_ADMIN and
-/// CAP_NET_RAW for Workshop multiplayer, CAP_NET_BIND_SERVICE for spoofer's
-/// port-443 bind) via a graphical PolicyKit prompt (the Linux equivalent of
+/// grants this binary every capability it can ever need (see the top of
+/// this file) via a graphical PolicyKit prompt (the Linux equivalent of
 /// a Windows UAC dialog) instead of making the user open a terminal.
 /// Blocks until the user responds to the dialog - call from a background
 /// thread, not the UI thread. The *currently running* process can't pick

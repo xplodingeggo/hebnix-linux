@@ -5,7 +5,7 @@
 # build recipe -- `make release` is the one build path; `make install`
 # (with PREFIX/DESTDIR overridden as needed) is the one install path.
 
-.PHONY: all build release debug clean install uninstall run test check fmt clippy moon-bundle help
+.PHONY: all build release sidecar debug clean install uninstall run test check fmt clippy moon-bundle help
 
 # Default target
 all: release
@@ -13,12 +13,19 @@ all: release
 # Build release version
 build: release
 
-release:
+release: sidecar
 	@echo "Building release version..."
 	cargo build --release
 
+# The Workshop multiplayer helper (Go, see sidecar/hebnix-tc). Hebnix finds it
+# in ../lib/hebnix next to its own binary.
+SIDECAR := sidecar/hebnix-tc/hebnix-tc
+sidecar:
+	@echo "Building the multiplayer sidecar..."
+	cd sidecar/hebnix-tc && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o hebnix-tc .
+
 # Build debug version
-debug:
+debug: sidecar
 	@echo "Building debug version..."
 	cargo build
 
@@ -41,12 +48,14 @@ DESTDIR ?=
 BINDIR := $(DESTDIR)$(PREFIX)/bin
 APPDIR := $(DESTDIR)$(PREFIX)/share/applications
 ICONDIR := $(DESTDIR)$(PREFIX)/share/icons/hicolor/256x256/apps
+LIBDIR := $(DESTDIR)$(PREFIX)/lib/hebnix
 
 # Install the binary, .desktop file, and icon under PREFIX (DESTDIR-aware).
 # No sudo, no privileged paths touched here -- the caller decides PREFIX.
 install: release
 	@echo "Installing $(BIN_NAME) to $(BINDIR)..."
 	install -Dm755 target/release/$(CARGO_BIN) "$(BINDIR)/$(BIN_NAME)"
+	install -Dm755 $(SIDECAR) "$(LIBDIR)/hebnix-tc"
 	install -Dm644 packaging/hebnix.desktop "$(APPDIR)/hebnix.desktop"
 	install -Dm644 crates/hebnix-app/assets/hebnix.png "$(ICONDIR)/hebnix.png"
 	@echo "Installation complete. Run with: $(BIN_NAME) (make sure $(PREFIX)/bin is on your PATH)"
@@ -54,6 +63,7 @@ install: release
 uninstall:
 	@echo "Uninstalling $(BIN_NAME)..."
 	rm -f "$(BINDIR)/$(BIN_NAME)"
+	rm -f "$(LIBDIR)/hebnix-tc"
 	rm -f "$(APPDIR)/hebnix.desktop"
 	rm -f "$(ICONDIR)/hebnix.png"
 	@echo "Uninstall complete."

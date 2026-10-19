@@ -26,6 +26,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Go (multiplayer sidecar)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecar/hebnix-tc/go.mod
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -40,6 +45,7 @@ jobs:
           NAME="hebnix-nightly-${SHORT_SHA}-linux-x86_64"
           STAGE="$(mktemp -d)/$NAME"
           install -Dm755 target/release/hebnix-app "$STAGE/bin/hebnix"
+          install -Dm755 sidecar/hebnix-tc/hebnix-tc "$STAGE/lib/hebnix/hebnix-tc"
           install -Dm644 packaging/hebnix.desktop "$STAGE/share/applications/hebnix.desktop"
           install -Dm644 crates/hebnix-app/assets/hebnix.png \
             "$STAGE/share/icons/hicolor/256x256/apps/hebnix.png"

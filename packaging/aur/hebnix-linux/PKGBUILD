@@ -32,7 +32,7 @@ depends=(
 	'libxkbcommon'
 	'libayatana-appindicator'
 )
-makedepends=('rust' 'pkgconf')
+makedepends=('rust' 'go' 'pkgconf')
 # ring and mlua's vendored Lua compile a small amount of C/asm through the
 # `cc` crate, which picks up $CFLAGS. If the builder has makepkg's `lto`
 # option enabled, that C code gets built with GCC LTO bytecode objects
@@ -44,7 +44,6 @@ optdepends=(
 	'kdotool: window focus tracking on KDE/Plasma (AUR)'
 	'picom: compositing manager for the in-game overlay on i3 and other X11 window managers without one'
 	'kscreen: kscreen-doctor, used for monitor info on KDE/Plasma'
-	'tailscale: Workshop LAN multiplayer (Hebnix runs its own separate tailscaled)'
 	'dotnet-runtime: downloading Steam Workshop maps in the Import Map tab'
 )
 provides=('hebnix')
@@ -67,7 +66,8 @@ check() {
 package() {
 	cd "hebnix-linux-$pkgver"
 	# Canonical install path, DESTDIR/PREFIX-aware -- installs
-	# /usr/bin/hebnix, the .desktop file, and the icon. Never touches
+	# /usr/bin/hebnix, the multiplayer sidecar (/usr/lib/hebnix/hebnix-tc),
+	# the .desktop file, and the icon. Never touches
 	# $HOME: plugins/themes/config are created by Hebnix itself at
 	# $XDG_CONFIG_HOME/hebnix on first run.
 	make DESTDIR="$pkgdir" PREFIX=/usr install

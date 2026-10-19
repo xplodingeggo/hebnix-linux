@@ -19,6 +19,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Go (multiplayer sidecar)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecar/hebnix-tc/go.mod
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 

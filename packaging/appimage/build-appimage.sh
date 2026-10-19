@@ -51,6 +51,7 @@ echo "== staging AppDir =="
 # possibly in a separate CI step), so stage files the same way `make
 # install` would without re-triggering the cargo build.
 install -Dm755 "$BINARY" "$APPDIR/usr/bin/hebnix"
+install -Dm755 "$REPO_ROOT/sidecar/hebnix-tc/hebnix-tc" "$APPDIR/usr/lib/hebnix/hebnix-tc"
 install -Dm644 "$REPO_ROOT/packaging/hebnix.desktop" "$APPDIR/usr/share/applications/hebnix.desktop"
 install -Dm644 "$REPO_ROOT/crates/hebnix-app/assets/hebnix.png" \
     "$APPDIR/usr/share/icons/hicolor/256x256/apps/hebnix.png"

@@ -12,3 +12,6 @@ req_key.txt
 
 # Headscale pre-auth key embedded in local builds, never commit
 hs_key.txt
+/sidecar/hebnix-tc/hebnix-tc
+/sidecar/hebnix-tc/hebnix-tc.exe
+/directory_key.txt

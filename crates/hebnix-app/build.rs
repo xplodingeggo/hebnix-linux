@@ -1,32 +1,33 @@
-// Bakes every locales/<code>/*.ftl and the Headscale key into the binary.
+// Bakes every locales/<code>/*.ftl and the multiplayer directory key into the binary.
 
 use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     embed_locales();
-    embed_headscale_key();
+    embed_directory_key();
 }
 
-/// Bakes the Headscale pre-auth key for Workshop multiplayer into the build.
-/// Read from the HEBNIX_HS_KEY env var (CI) or `hs_key.txt` in the workspace
-/// root (local builds; gitignored). Without either the build still works, but
-/// multiplayer can't connect (see `multiplayer_lan::tailnet_auth_key`).
-fn embed_headscale_key() {
-    let key_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../hs_key.txt");
+/// Bakes the Workshop multiplayer directory's shared key into the build.
+/// Read from the HEBNIX_DIRECTORY_KEY env var (CI) or `directory_key.txt` in
+/// the workspace root (local builds; gitignored). Without either the build
+/// still works, but multiplayer can't connect (see
+/// `multiplayer_lan::directory_key`).
+fn embed_directory_key() {
+    let key_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../directory_key.txt");
     println!("cargo:rerun-if-changed={}", key_file.display());
-    println!("cargo:rerun-if-env-changed=HEBNIX_HS_KEY");
-    let key = std::env::var("HEBNIX_HS_KEY")
+    println!("cargo:rerun-if-env-changed=HEBNIX_DIRECTORY_KEY");
+    let key = std::env::var("HEBNIX_DIRECTORY_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| std::fs::read_to_string(&key_file).ok())
         .unwrap_or_default();
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(
-        out.join("hs_key.rs"),
+        out.join("directory_key.rs"),
         format!("pub const KEY: &str = {:?};\n", key.trim()),
     )
-    .expect("write embedded Headscale key");
+    .expect("write embedded directory key");
 }
 
 /// bakes every locales/<code>/*.ftl into the exe. adding a language is just

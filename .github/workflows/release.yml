@@ -41,11 +41,8 @@ permissions:
 
 # TOTP secret for req.hebnix.com, baked in at build time (see hebnix-sdk/build.rs).
 # Set the HEBNIX_REQ_KEY repository secret; without it the build sends no token.
-# Headscale pre-auth key for Workshop multiplayer (see hebnix-app/build.rs).
-# Set the HEBNIX_HS_KEY repository secret; without it multiplayer can't connect.
 env:
   HEBNIX_REQ_KEY: ${{ secrets.HEBNIX_REQ_KEY }}
-  HEBNIX_HS_KEY: ${{ secrets.HEBNIX_HS_KEY }}
 
 jobs:
   release:
@@ -68,6 +65,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Go (multiplayer sidecar)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecar/hebnix-tc/go.mod
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -83,6 +85,7 @@ jobs:
           NAME="hebnix-${{ steps.version.outputs.version }}-linux-x86_64"
           STAGE="$(mktemp -d)/$NAME"
           install -Dm755 target/release/hebnix-app "$STAGE/bin/hebnix"
+          install -Dm755 sidecar/hebnix-tc/hebnix-tc "$STAGE/lib/hebnix/hebnix-tc"
           install -Dm644 packaging/hebnix.desktop "$STAGE/share/applications/hebnix.desktop"
           install -Dm644 crates/hebnix-app/assets/hebnix.png \
             "$STAGE/share/icons/hicolor/256x256/apps/hebnix.png"
@@ -188,6 +191,7 @@ jobs:
           NAME="hebnix-${{ steps.version.outputs.version }}-linux-x86_64-arch"
           STAGE="$(mktemp -d)/$NAME"
           install -Dm755 target/release/hebnix-app "$STAGE/bin/hebnix"
+          install -Dm755 sidecar/hebnix-tc/hebnix-tc "$STAGE/lib/hebnix/hebnix-tc"
           install -Dm644 packaging/hebnix.desktop "$STAGE/share/applications/hebnix.desktop"
           install -Dm644 crates/hebnix-app/assets/hebnix.png \
             "$STAGE/share/icons/hicolor/256x256/apps/hebnix.png"

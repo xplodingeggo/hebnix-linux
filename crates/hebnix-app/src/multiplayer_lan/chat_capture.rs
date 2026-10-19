@@ -1,6 +1,6 @@
 // Reads text chat out of Rocket League's LAN game traffic (UDP, RL_LAN_PORT).
 // LAN game packets are not encrypted, so this only watches: the same
-// AF_PACKET tap beacon.rs uses (needs CAP_NET_RAW), both directions, and
+// AF_PACKET tap in raw_capture.rs (needs CAP_NET_RAW), both directions, and
 // nothing is ever sent or modified.
 //
 // A chat message is a bit-packed (LSB first, not byte aligned) record that
@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use super::beacon::{RawCapture, parse_udp_payload};
+use super::raw_capture::{RawCapture, parse_udp_payload};
 
 const MAX_MESSAGE_CHARS: i32 = 512;
 // a chat record can't be shorter than id(4+9) + 4 + msg(4+2) + 12

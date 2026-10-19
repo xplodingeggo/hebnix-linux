@@ -2397,7 +2397,6 @@ impl HebnixApp {
                         self.check_web_port();
                     }
                     if rl_state_changed || platform_changed {
-                        self.workshop.note_rl_state_changed();
                         self.workshop.refresh_launch_status(&self.tx, ctx);
                     }
                     self.workshop.tick_shutdown_grace();
@@ -2662,7 +2661,13 @@ impl HebnixApp {
                     self.workshop.set_multiplayer_progress(status);
                 }
                 AppMsg::WorkshopTailnetStarted { result } => {
-                    self.workshop.finish_tailnet_started(result);
+                    if let Err(error) = &result {
+                        self.console.write(format!(
+                            "[Multiplayer] Could not start: {}",
+                            crate::multiplayer_lan::redact(error)
+                        ));
+                    }
+                    self.workshop.finish_tailnet_started(result, &self.tx, ctx);
                 }
                 AppMsg::WorkshopMultiplayerLaunched { result } => {
                     self.workshop.finish_multiplayer_launch(result);
@@ -2681,9 +2686,6 @@ impl HebnixApp {
                     launch_ready,
                 } => {
                     self.workshop.finish_launch_check(rl_open, launch_ready);
-                    if self.workshop.retry_multihome_check() {
-                        self.workshop.refresh_launch_status(&self.tx, ctx);
-                    }
                 }
                 AppMsg::PluginFetch { result } => {
                     self.install_modal.fetching = false;
@@ -2839,55 +2841,16 @@ impl HebnixApp {
                     self.plugin_mgr.on_ws_close(&slug, &id, &reason);
                     ctx.request_repaint();
                 }
-                AppMsg::TsnetUpResult { result } => {
-                    if self.workshop.multiplayer_connection_requested() {
-                        match result {
-                            Ok(ip) => {
-                                self.console
-                                    .write("[Multiplayer] Connected to the Hebnix Network");
-                                self.workshop.set_tailnet_ip(ip);
-                                self.workshop.refresh_launch_status(&self.tx, ctx);
-                            }
-                            Err(error) => {
-                                self.console.write(format!(
-                                    "[Multiplayer] Could not connect: {}",
-                                    crate::multiplayer_lan::redact(&error)
-                                ));
-                                self.workshop.tailnet_failed(error);
-                            }
-                        }
-                    }
-                }
-                // not otherwise consumed yet -- peer-level status/events only
-                // drive the console for now.
-                AppMsg::TsnetStatus {
-                    state,
-                    tailnet_ip: _,
-                    peers,
-                } => {
-                    self.console.write(format!(
-                        "[Multiplayer] Network status: {state:?}; peers={}",
-                        peers.len()
-                    ));
-                }
-                AppMsg::TsnetPeerEvent {
-                    online,
-                    tailnet_ip: _,
-                } => {
-                    let word = if online { "online" } else { "offline" };
-                    self.console.write(format!("[Multiplayer] Peer {word}"));
-                }
-                AppMsg::TsnetDownResult { ok } => {
-                    if ok {
-                        self.console
-                            .write("[Multiplayer] Disconnected from the Hebnix Network");
-                    } else {
-                        self.console.write("[Multiplayer] Disconnect failed");
-                    }
-                }
-                AppMsg::TsnetSidecarDisconnected => {
+                AppMsg::TailcatPeer { name, online } => {
+                    let word = if online { "is on" } else { "left" };
                     self.console
-                        .write("[tsnet] lost connection to the multiplayer helper".to_string());
+                        .write(format!("[Multiplayer] {} {word}", crate::multiplayer_lan::redact(&name)));
+                }
+                AppMsg::TailcatStatus { peers } => {
+                    self.workshop.multiplayer_players(peers);
+                }
+                AppMsg::TailcatExited => {
+                    self.workshop.multiplayer_sidecar_exited(&self.tx);
                 }
             }
         }
