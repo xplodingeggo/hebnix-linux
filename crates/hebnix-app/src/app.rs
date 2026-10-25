@@ -43,7 +43,7 @@ pub const APP_VERSION: &str = "2.2.6";
 /// the hebnix-linux version shown in the About tab. kept equal to the Windows
 /// version it is based on (APP_VERSION above, which also tracks the engine/
 /// plugin compat version).
-pub const LINUX_PORT_VERSION: &str = "2.2.6-dev";
+pub const LINUX_PORT_VERSION: &str = "2.2.6";
 
 pub const DEFAULT_WIDTH: f32 = 1250.0;
 pub const DEFAULT_HEIGHT: f32 = 700.0;
