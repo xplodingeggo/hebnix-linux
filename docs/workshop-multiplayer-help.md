@@ -1,163 +1,159 @@
-# Workshop multiplayer: VPNs, proxies and common problems
+# Workshop multiplayer help
 
-Workshop multiplayer puts every player on a small private network. It is a
-Tailscale network that Hebnix runs by itself: its own `tailscaled`, its own
-network interface called `hebnixts0`, and addresses in `10.242.77.x`. Rocket
-League then sees the other players as if they were on your LAN.
+## How it works
 
-Most problems come from something on the PC getting in the way of that private
-network: a VPN or proxy app, or a firewall. Find your symptom below.
+When you click **Connect** in the Multiplayer tab, Hebnix starts a small
+helper program called `hebnix-tc`. It tells the Hebnix server
+(`mp.hebnix.com`) that you're online and gets a list of everyone else who is.
+Then it connects straight to each of those players. If a direct connection
+isn't possible, it goes through a relay server instead.
 
-- [I use a VPN or proxy](#i-use-a-vpn-or-proxy)
-- [It says "timeout waiting for Tailscale service to enter a Running state"](#timeout-waiting-for-running-state)
-- [Only one of us sees the other](#only-one-of-us-sees-the-other)
-- [We both see each other but no game shows up in Local Matches](#no-game-in-local-matches)
-- [`tailscale status` says it can't connect, or shows "Logged out"](#tailscale-status-says-it-cant-connect)
+Rocket League sees those players as if they were on your home network, so
+their matches show up under **Local Matches**. You don't need a VPN, admin
+rights or any special settings, and Rocket League's normal online play keeps
+working while you're connected.
+
+Everyone who is connected can see your LAN match. If you want it private, set
+a match password in Rocket League.
+
+Jump to your problem:
+
+- [Connect fails or never finishes](#connect-fails-or-never-finishes)
+- [I use a VPN or proxy app](#i-use-a-vpn-or-proxy-app)
+- [It says nobody else is online](#it-says-nobody-else-is-online)
+- [A player says "can't reach them right now"](#a-player-says-cant-reach-them-right-now)
+- [My ping is high](#my-ping-is-high)
+- [We're connected but the match doesn't show up](#were-connected-but-the-match-doesnt-show-up)
+- [Map downloads from other players don't work](#map-downloads-from-other-players-dont-work)
 - [Still stuck?](#still-stuck)
 
-## I use a VPN or proxy
+## Connect fails or never finishes
 
-Hebnix's network helper deliberately goes around other VPNs, so it doesn't loop
-through them. Most VPN and proxy apps are fine with that. Some of them block it,
-or answer name lookups with fake addresses, and then the connection fails.
+If you see "the multiplayer helper did not start in time" or "Could not start
+Workshop multiplayer", the helper couldn't reach the Hebnix server.
+
+1. Check that your internet works.
+2. If you run a VPN or proxy app, read the next section. It's the most common
+   cause.
+3. Try again in a minute. If the Hebnix server is down for a moment, nobody
+   can connect, but players who were already connected stay connected.
+
+If it says the helper can't be found, reinstall Hebnix. The helper ships with
+it (`lib/hebnix/hebnix-tc` on Linux, `hebnix-tc.exe` next to `hebnix.exe` on
+Windows).
+
+## I use a VPN or proxy app
+
+Most VPNs work fine. The trouble usually comes from apps that take over all
+traffic and hand out fake addresses for websites. Hebnix then talks to an
+address that doesn't exist and gives up.
 
 ### Clash, Mihomo, Clash Verge, FlClash, sing-box, v2rayN, Hiddify, Throne
 
-Your app is in **TUN mode**, usually with **fake-IP DNS** (addresses like
-`198.18.x.x`). The helper gets a fake address for the multiplayer server and
-can't reach it. The fix is to let the multiplayer traffic go direct.
-
-In the config file (or the app's DNS override / rules settings), add:
+These are usually in **TUN mode** with **fake-IP DNS** (you'll see addresses
+like `198.18.x.x`). Let Hebnix's traffic go direct. In your config (or the
+app's DNS and rules settings), add:
 
 ```yaml
 dns:
   fake-ip-filter:
     - "mp.hebnix.com"
-    - "+.tailscale.com"
-    - "+.tailscale.io"
-
-tun:
-  route-exclude-address:
-    - 10.242.77.0/24
+    - "tailcat.dev"
+    - "+.ipn.dev"
 
 rules:
-  # put these at the very top of your rules
+  # put these at the top of your rules
   - DOMAIN,mp.hebnix.com,DIRECT
-  - PROCESS-NAME,tailscaled,DIRECT
-  - IP-CIDR,10.242.77.0/24,DIRECT,no-resolve
+  - DOMAIN,tailcat.dev,DIRECT
+  - DOMAIN-SUFFIX,ipn.dev,DIRECT
+  - PROCESS-NAME,hebnix-tc,DIRECT
+  - PROCESS-NAME,hebnix-tc.exe,DIRECT
 ```
 
-If your rules use a named "no VPN" group instead of `DIRECT` (for example
-`🔓 NO VPN`), use that name.
+If your rules send direct traffic to a group with its own name (something like
+`NO VPN`), use that name instead of `DIRECT`. Restart the app, then click
+**Disconnect** and **Connect** in Hebnix.
 
-Restart the app, then in Hebnix click **Disconnect** and connect again.
+### Mullvad, Proton VPN, NordVPN, Windscribe and similar
 
-Still failing? Try `strict-route: false` under `tun:`. Strict routing can block
-traffic that goes around the tunnel.
+- Turn on **split tunneling** and leave out `hebnix-tc` (on Windows,
+  `hebnix-tc.exe`).
+- If the VPN has a **kill switch** or "block connections without VPN", turn it
+  off while you play.
+- Quick test: turn the VPN off and try again. If it works then, it's a VPN
+  setting.
 
-### Mullvad, Proton VPN, NordVPN, Windscribe, and other VPN apps
+### Your internet blocks direct connections
 
-- Turn on **split tunneling** (or "exclude apps") and exclude **Hebnix** and
-  **tailscaled** (on Windows: `hebnix.exe` and Hebnix's tailscale helper).
-- Turn off the **kill switch** / "block connections without VPN" / "lockdown
-  mode" while playing, or allow LAN / local network sharing. A kill switch
-  drops everything that doesn't go through the VPN.
-- Quickest test: disconnect the VPN and try again. If it works then, it's
-  the VPN's settings.
+In some countries, or on some school and work networks, direct connections
+are blocked. Hebnix then uses relays, which works but adds ping. If even that
+fails, try another network, like your phone's hotspot, to check.
 
-### Your country blocks direct connections
+## It says nobody else is online
 
-If you need a proxy to reach most sites, direct connections to the multiplayer
-server or to other players may be blocked by your ISP. The fixes above can't
-help then. Try a different network (a mobile hotspot, for example) to confirm.
+"No other players are on right now" means the Hebnix server has nobody else on
+the list. Make sure your friend has clicked **Connect** and that the Multiplayer
+tab says **Connected** for both of you. It can take up to 20 seconds for a new
+player to appear.
 
-## Timeout waiting for Running state
+## A player says "can't reach them right now"
 
-`timeout waiting for Tailscale service to enter a Running state` means the
-helper started but couldn't reach the multiplayer server in 30 seconds.
+You both reached the Hebnix server, but your two PCs can't talk to each other,
+not even through a relay. Usually a VPN, proxy or firewall on one side is
+blocking it.
 
-1. VPN or proxy running? See [the section above](#i-use-a-vpn-or-proxy). This
-   is the most common cause.
-2. Check the helper's log. It shows the real reason:
-   - Linux: `~/.config/hebnix/multiplayer-lan/tsnet-state/tailscaled.log`
-   - Look for lines like `fetch control key: ... connection timed out` or
-     `dial tcp 198.18...`. A `198.18.x.x` address means a proxy's fake-IP DNS.
-3. Is the whole internet reachable from that PC right now?
+- Read [I use a VPN or proxy app](#i-use-a-vpn-or-proxy-app) and check both
+  PCs.
+- **Windows**: if Windows Defender Firewall asks about `hebnix-tc.exe`, click
+  **Allow**. Antivirus suites with their own firewall may need the same.
+- **Linux**: most firewalls (ufw, firewalld) allow this by default because the
+  connection starts from your side. If you have strict outgoing rules, allow
+  UDP for `hebnix-tc`.
+- Both players click **Disconnect**, then **Connect** again.
 
-## Only one of us sees the other
+## My ping is high
 
-Player A sees player B in "Maps in use", but B doesn't see A. A's PC is
-blocking connections that come **in** over the private network. That's almost
-always a firewall.
+Next to each player Hebnix shows "connected direct" or "connected through a
+relay". A relay adds ping because your traffic takes a detour.
 
-**Linux**, on the player who can't be seen:
+- If you turned on **Hide my IP from other players**, everything goes through
+  a relay on purpose. Turn it off for lower ping.
+- Otherwise a router, VPN or strict network is blocking a direct connection.
+  Disconnecting and connecting again sometimes gets a direct one.
 
-```sh
-# which firewall is on?
-sudo ufw status
-systemctl is-active firewalld
-```
+## We're connected but the match doesn't show up
 
-- ufw (CachyOS, Ubuntu, Mint and more enable it by default):
-  `sudo ufw allow in on hebnixts0`
-- firewalld (Fedora, openSUSE):
-  `sudo firewall-cmd --permanent --zone=trusted --add-interface=hebnixts0 && sudo firewall-cmd --reload`
+You see each other in Hebnix, but **Local Matches** in Rocket League is empty.
 
-Both only open Hebnix's private network interface, not the whole PC. Then both
-players disconnect and connect again in Hebnix.
+- **You both need the same Workshop map in the same map slot.** Hebnix shows
+  who has which map, and you can download a missing one from the other player
+  there.
+- The host has to actually be in the LAN match. Then press **Refresh** in
+  Local Matches.
+- If Hebnix says Rocket League was started with `-multihome`, remove that from
+  your launch options and restart the game. Older versions of Hebnix needed it.
+  This one doesn't, and it breaks the connection.
+- If the match has a password, the joining player has to type it in.
 
-**Windows**: allow Hebnix and its tailscale helper when Windows Defender
-Firewall asks, on **private** networks. Third-party firewalls and antivirus
-suites may need the same exception.
+## Map downloads from other players don't work
 
-A VPN or proxy on the player who **can't see** the other can cause this too. See
-[I use a VPN or proxy](#i-use-a-vpn-or-proxy).
+Maps can be downloaded from another player only while you're both connected.
 
-## No game in Local Matches
-
-Both players see each other in Hebnix, but **Local Matches** is empty.
-
-- **Start Rocket League from Hebnix** (the Multiplayer tab's
-  "Start Rocket League" button). Hebnix adds a launch option that puts Rocket
-  League on the private network. Started from Steam, Epic or Heroic directly,
-  it won't be.
-- **Both players need the same Workshop map** in the same slot. "Maps in use"
-  shows who has what, and you can download a missing map from a player there.
-- While the host is in a LAN match, the host's **"sent"** counter should go up.
-  If it stays at 0, the host's Hebnix isn't picking up Rocket League's LAN
-  announcement. Update to the newest Hebnix, restart Rocket League from Hebnix,
-  and check the log for `Beacon relay` lines. The "received" counter always
-  shows 0; that's normal.
-- The player who can't see the game: check
-  [Only one of us sees the other](#only-one-of-us-sees-the-other). The same
-  firewall block stops the game announcements.
-- Press **Refresh List** in Local Matches after the host has started the match.
-
-## `tailscale status` says it can't connect
-
-Hebnix runs its **own** tailscale helper with a private control socket. Plain
-`tailscale status` looks for the system one, so it fails or talks to the wrong
-one. Use Hebnix's socket instead (Linux):
-
-```sh
-tailscale --socket="$XDG_RUNTIME_DIR/hebnix/tailscaled.sock" status
-```
-
-A working connection lists your own `10.242.77.x` address and the other
-players. "Logged out" means the helper never reached the server. See
-[Timeout waiting for Running state](#timeout-waiting-for-running-state).
-
-You do **not** need to install or enable the system `tailscaled` service. If
-you already use Tailscale for other things, turn the system one off while
-playing. Two tailscale helpers at once fight over the same routing table.
+- The other player may have turned off **P2P File Sharing** in Settings. Ask
+  them to turn it on, or download the map from the Hebnix Workshop instead.
+- Maps you imported yourself, rather than ones from the Hebnix Workshop, can
+  only come from a player who has them.
 
 ## Still stuck?
 
-Open an issue on GitHub (or ask in Discord) with:
+Open an issue on GitHub or ask in Discord. Include:
 
-- your OS, and whether you use a VPN, proxy or firewall app
-- the error text from Hebnix's Multiplayer tab
-- the last 60 lines of the tailscale helper log (Linux:
-  `~/.config/hebnix/multiplayer-lan/tsnet-state/tailscaled.log`)
-- the Workshop multiplayer lines from Hebnix's own log:
-  `grep -iE "tsnet|beacon|map sync" ~/.config/hebnix/hebnix.log | tail -40`
+- your OS, and any VPN, proxy, firewall or antivirus you use
+- the exact error from the Multiplayer tab
+- the multiplayer lines from Hebnix's log:
+  - Linux: `grep -iE "hebnix-tc|multiplayer|map sync" ~/.config/hebnix/hebnix.log | tail -60`
+  - Windows: open `%AppData%\Hebnix\hebnix.log` and copy the lines with
+    `hebnix-tc` in them
+
+Hebnix blanks out connection tokens and IP addresses in those lines, so
+they're safe to share.
