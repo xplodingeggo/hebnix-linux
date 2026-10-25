@@ -41,8 +41,11 @@ permissions:
 
 # TOTP secret for req.hebnix.com, baked in at build time (see hebnix-sdk/build.rs).
 # Set the HEBNIX_REQ_KEY repository secret; without it the build sends no token.
+# HEBNIX_DIRECTORY_KEY is the multiplayer directory key (see hebnix-app/build.rs);
+# without it Workshop multiplayer can't find other players.
 env:
   HEBNIX_REQ_KEY: ${{ secrets.HEBNIX_REQ_KEY }}
+  HEBNIX_DIRECTORY_KEY: ${{ secrets.HEBNIX_DIRECTORY_KEY }}
 
 jobs:
   release:
