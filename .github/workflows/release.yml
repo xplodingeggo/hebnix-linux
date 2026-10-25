@@ -177,7 +177,11 @@ jobs:
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build release
-        run: make release
+        run: |
+          # the checkout belongs to another user in the container; without
+          # this git refuses it and go build fails to stamp VCS info
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          make release
 
       - name: Verify libxdo soname
         run: |
