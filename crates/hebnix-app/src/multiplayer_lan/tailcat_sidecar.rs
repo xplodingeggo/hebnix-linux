@@ -285,7 +285,7 @@ fn hide_console_window(_command: &mut Command) {}
 
 /// `../lib/hebnix` from the Hebnix binary (`make install`, the packages and
 /// the AppImage), next to it (Windows), Hebnix's config folder, PATH, or the
-/// sidecar's source folder in a dev checkout
+/// sidecar's source folder in the checkout Hebnix was built from
 fn find_binary() -> Result<PathBuf, String> {
     let mut dirs = Vec::new();
     if let Some(exe_dir) = std::env::current_exe()
@@ -299,9 +299,9 @@ fn find_binary() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
-    if cfg!(debug_assertions) {
-        dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecar/hebnix-tc"));
-    }
+    // a checkout's own build (`make sidecar`), for running target/debug or
+    // target/release straight from the tree; a missing path is just skipped
+    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecar/hebnix-tc"));
     dirs.into_iter()
         .map(|dir| dir.join(BINARY))
         .find(|path| path.is_file())
