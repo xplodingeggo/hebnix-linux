@@ -38,24 +38,11 @@ unset)
 
 ## Workshop LAN multiplayer
 
-Workshop multiplayer joins a private Tailscale network (tailnet) for the
-session. Hebnix starts its **own** `tailscaled` with its own interface
-(`hebnixts0`), socket and state, separate from any Tailscale you already
-use, so you only need the `tailscale` package installed (Arch: `sudo pacman
--S tailscale`; others: https://tailscale.com/download/linux). The system
-`tailscaled` service does not need to be enabled. If you dont have them installed as a package, put the
-`tailscale` and `tailscaled` binaries in `~/.config/hebnix/tailscale-bin/`.
-
-It needs `CAP_NET_ADMIN` and `CAP_NET_RAW` on the `hebnix` binary (for the
-network interface, firewall rules and the LAN beacon relay). The
-Multiplayer tab has a Grant permission button, and `install.sh` offers to
-do it after installing. To do it yourself:
-
-```sh
-sudo setcap cap_net_admin,cap_net_raw+eip ~/.local/bin/hebnix
-```
-
-Everything else in the app works fine without it and it only affects multiplayer.
+Workshop multiplayer runs over tailcat: Hebnix starts its own small helper
+(`hebnix-tc`, shipped in `lib/hebnix/`) that finds the other players through
+the Hebnix directory and forwards Rocket League's LAN traffic over loopback.
+It needs no root, network interface or extra permissions on the `hebnix`
+binary, and Rocket League keeps working online in the same session.
 
 If you use a VPN or proxy (Clash/Mihomo, Mullvad and so on), a firewall, or
 have issues see this shit [Workshop multiplayer help](docs/workshop-multiplayer-help.md).

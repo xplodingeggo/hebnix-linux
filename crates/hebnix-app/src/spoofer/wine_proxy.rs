@@ -69,10 +69,26 @@ pub fn restore(backup: &Backup) -> Result<(), String> {
 }
 
 /// does the prefix's proxy currently point at `server`?
+#[cfg(test)]
 pub fn is_applied(prefix: &Path, server: &str) -> bool {
     read(prefix).is_ok_and(|text| {
         get_value(&text, INTERNET_SETTINGS, "ProxyServer").as_deref() == Some(&quote(server))
     })
+}
+
+/// the port of a Hebnix proxy setting (`proxy_server(host, port)`) in the
+/// prefix, None when the prefix has no proxy or someone else's
+pub fn applied_port(prefix: &Path, host: &str) -> Option<u16> {
+    let text = read(prefix).ok()?;
+    let value = get_value(&text, INTERNET_SETTINGS, "ProxyServer")?;
+    let server = value.strip_prefix('"')?.strip_suffix('"')?;
+    let port: u16 = server
+        .strip_prefix(&format!("http={host}:"))?
+        .split_once(';')?
+        .0
+        .parse()
+        .ok()?;
+    (server == proxy_server(host, port)).then_some(port)
 }
 
 fn read(prefix: &Path) -> Result<String, String> {
@@ -253,6 +269,8 @@ mod tests {
         );
         apply(&dir, &server).unwrap();
         assert!(is_applied(&dir, &server));
+        assert_eq!(applied_port(&dir, "127.0.0.1"), Some(8080));
+        assert_eq!(applied_port(&dir, "10.0.0.1"), None);
         let text = std::fs::read_to_string(dir.join("user.reg")).unwrap();
         assert!(text.contains("\"ProxyEnable\"=dword:00000001\n"));
         assert!(text.contains("\"ProxyServer\"=\"http=127.0.0.1:8080;https=127.0.0.1:8080\"\n"));

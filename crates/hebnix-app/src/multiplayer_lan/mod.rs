@@ -29,7 +29,7 @@ pub use models::{
     RoomCredentials, UpdatePlayerRequest,
 };
 pub use tailcat_sidecar::{PeerLink, TailcatSidecarHandle, redact};
-pub use caps::{grant_via_pkexec, has_net_bind_service_capability, raise_net_admin_ambient};
+pub use caps::raise_net_admin_ambient;
 
 mod directory_auth {
     include!(concat!(env!("OUT_DIR"), "/directory_key.rs"));

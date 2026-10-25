@@ -13,7 +13,6 @@ network: a VPN or proxy app, or a firewall. Find your symptom below.
 - [Only one of us sees the other](#only-one-of-us-sees-the-other)
 - [We both see each other but no game shows up in Local Matches](#no-game-in-local-matches)
 - [`tailscale status` says it can't connect, or shows "Logged out"](#tailscale-status-says-it-cant-connect)
-- [Grant permission / capability errors](#grant-permission--capability-errors)
 - [Still stuck?](#still-stuck)
 
 ## I use a VPN or proxy
@@ -151,18 +150,6 @@ players. "Logged out" means the helper never reached the server. See
 You do **not** need to install or enable the system `tailscaled` service. If
 you already use Tailscale for other things, turn the system one off while
 playing. Two tailscale helpers at once fight over the same routing table.
-
-## Grant permission / capability errors
-
-On Linux, Workshop multiplayer needs three network permissions on the Hebnix
-binary. Click **Grant permission** in the Multiplayer tab, or run:
-
-```sh
-sudo setcap cap_net_admin,cap_net_raw,cap_net_bind_service=eip /usr/bin/hebnix
-```
-
-Check with `getcap /usr/bin/hebnix`. Updating or reinstalling Hebnix can
-remove the permission again.
 
 ## Still stuck?
 

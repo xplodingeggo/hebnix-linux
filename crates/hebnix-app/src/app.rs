@@ -45,9 +45,6 @@ pub const APP_VERSION: &str = "2.2.6";
 /// plugin compat version).
 pub const LINUX_PORT_VERSION: &str = "2.2.6-dev";
 
-/// passed to the process a restart starts, see HebnixApp::restart
-pub const RESTART_ARG: &str = "--restarted";
-
 pub const DEFAULT_WIDTH: f32 = 1250.0;
 pub const DEFAULT_HEIGHT: f32 = 700.0;
 pub const MIN_WIDTH: f32 = DEFAULT_WIDTH;
@@ -634,7 +631,6 @@ pub struct HebnixApp {
     rl_launch_shortcut_candidates: Vec<crate::rl_launch::ShortcutCandidate>,
     quitting: bool,
     /// quitting to restart (see restart), so the proxy is not handed off
-    restarting: bool,
     last_size: (u32, u32),
     last_pos: Option<(i32, i32)>,
     overlay: crate::overlay::Overlay,
@@ -1090,7 +1086,6 @@ impl HebnixApp {
             rl_launch_draft,
             rl_launch_shortcut_candidates: Vec::new(),
             quitting: false,
-            restarting: false,
             last_size,
             last_pos,
             overlay: crate::overlay::Overlay::new(),
@@ -2154,27 +2149,6 @@ impl HebnixApp {
         crate::visibility::applied(ctx);
     }
 
-    /// start a fresh Hebnix and quit this one. The new process waits for
-    /// this one to release the single-instance lock (RESTART_ARG), and this
-    /// one shuts the proxy down instead of handing it off, so it really exits.
-    fn restart(&mut self, ctx: &egui::Context) {
-        self.restarting = true;
-        if let Ok(exe) = std::env::current_exe() {
-            let mut args: Vec<String> = std::env::args()
-                .skip(1)
-                // a hebnix:// link was already handled by this instance
-                .filter(|arg| arg != RESTART_ARG && !arg.starts_with("hebnix://"))
-                .collect();
-            args.push(RESTART_ARG.to_string());
-            if let Err(error) = std::process::Command::new(exe).args(args).spawn() {
-                self.restarting = false;
-                self.console
-                    .write(format!("[Core] Could not restart Hebnix, start it again manually: {error}"));
-            }
-        }
-        self.force_quit(ctx);
-    }
-
     /// custom titlebar: with_decorations(false) (see main.rs) drops the
     /// compositor's own window chrome everywhere, so this thin strip is the
     /// only close/minimize/drag affordance. Drawn above the themed shell too.
@@ -2221,7 +2195,7 @@ impl HebnixApp {
         }
         self.save_config();
 
-        if !self.restarting && crate::watchdog::handoff_live_spoofer(Arc::clone(&self.spoofer_mgr)) {
+        if crate::watchdog::handoff_live_spoofer(Arc::clone(&self.spoofer_mgr)) {
             self.plugin_mgr.unload_all();
             self.stats.stop();
             self.ws_stats.stop();
@@ -2406,17 +2380,6 @@ impl HebnixApp {
                         let _ = tx.send(AppMsg::PluginUpdatesFound { updates: result });
                         ctx_local.request_repaint();
                     });
-                }
-                AppMsg::NetAdminGranted { result } => match result {
-                    Ok(()) => {
-                        self.console
-                            .write("[Core] Permission granted. Restarting Hebnix to apply it...");
-                        self.restart(ctx);
-                    }
-                    Err(error) => {
-                        self.console
-                            .write(format!("[Core] Could not grant permission: {error}"));
-                    }
                 }
                 AppMsg::NotificationFetched(notification) => {
                     if notification.is_newer_than(self.config.notification_id) {

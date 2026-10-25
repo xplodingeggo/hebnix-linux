@@ -207,23 +207,15 @@ fn main() -> eframe::Result {
     deep_link::register_and_queue_from_args(&base_dir);
     setup_panic_hook(&base_dir);
     tracing::info!("Hebnix {} starting", app::APP_VERSION);
-    // no-op unless the binary was setcap'd (see multiplayer_lan::GRANTED_CAPS) -
-    // lets Workshop LAN multiplayer's `nft`/`tailscaled` child processes
-    // inherit the capabilities instead of needing them set on those binaries.
+    // no-op unless an older install left CAP_NET_ADMIN on the binary (see
+    // multiplayer_lan/caps.rs): lets the legacy `nft` rule cleanup use it.
     multiplayer_lan::raise_net_admin_ambient();
 
     let cfg = config::Config::load(&base_dir);
     i18n::init(&cfg.settings.language, Some(base_dir.join("locales")));
 
-    // single instance guard. A restart (after Grant Permission) starts this
-    // process while the old one is still shutting down, so wait for it to
-    // let go of the lock instead of exiting as a duplicate.
-    let restarting = std::env::args().any(|arg| arg == app::RESTART_ARG);
-    let Some(_lock) = winutil::acquire_single_instance_waiting(if restarting {
-        std::time::Duration::from_secs(30)
-    } else {
-        std::time::Duration::ZERO
-    }) else {
+    // single instance guard
+    let Some(_lock) = winutil::acquire_single_instance() else {
         winutil::focus_existing_instance();
         return Ok(());
     };

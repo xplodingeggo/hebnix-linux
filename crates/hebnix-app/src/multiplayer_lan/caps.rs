@@ -1,16 +1,13 @@
-//! Linux capabilities for the spoofer and the LAN chat capture.
-//!
-//! Windows gates these features on running as administrator. Linux never
-//! elevates the app itself: `setcap` on the binary (done once, see
-//! grant_via_pkexec) grants CAP_NET_BIND_SERVICE (spoofer's port-443 proxy),
-//! CAP_NET_RAW (chat_capture.rs's packet tap) and CAP_NET_ADMIN (removing
-//! the nftables rules older versions added for Workshop multiplayer, which
-//! itself needs no capabilities any more).
+//! Linux capabilities. Nothing needs any now: Workshop multiplayer runs over
+//! tailcat, the spoofer's proxy uses an unprivileged port and the LAN chat
+//! capture is gone, so the packages no longer setcap the binary. Older
+//! installs may still carry CAP_NET_ADMIN, which is then used to remove the
+//! nftables rules those versions added (firewall.rs); without it that
+//! cleanup is a no-op.
 
 use std::process::Command;
 
 // per linux/capability.h
-const CAP_NET_BIND_SERVICE: u32 = 10;
 const CAP_NET_ADMIN: u32 = 12;
 
 /// `setcap cap_net_admin+eip` on the binary only grants CAP_NET_ADMIN to
@@ -68,66 +65,4 @@ fn command_with_caps(program: impl AsRef<std::ffi::OsStr>, caps: &[u32]) -> Comm
         });
     }
     cmd
-}
-
-/// Checks the process's effective capability set directly rather than
-/// reusing the (root-only) admin check the spoofer feature uses.
-fn has_effective_capability(bit: u32) -> bool {
-    // root implicitly has every capability, including a plain `cargo run`
-    // during development where setcap was never applied to the debug binary
-    if nix::unistd::geteuid().is_root() {
-        return true;
-    }
-    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
-        return false;
-    };
-    let Some(line) = status.lines().find(|line| line.starts_with("CapEff:")) else {
-        return false;
-    };
-    let Some(hex) = line.split_whitespace().nth(1) else {
-        return false;
-    };
-    let Ok(mask) = u64::from_str_radix(hex, 16) else {
-        return false;
-    };
-    mask & (1 << bit) != 0
-}
-
-/// spoofer's local MITM proxy binds 127.0.0.1:443 directly (see
-/// spoofer::socket::REVERSE_ADDR) - a privileged port, needing this same
-/// capability (or root). Granted by the same grant_via_pkexec() call as
-/// CAP_NET_ADMIN, one setcap covering both.
-pub fn has_net_bind_service_capability() -> bool {
-    has_effective_capability(CAP_NET_BIND_SERVICE)
-}
-
-/// grants this binary every capability it can ever need (see the top of
-/// this file) via a graphical PolicyKit prompt (the Linux equivalent of
-/// a Windows UAC dialog) instead of making the user open a terminal.
-/// Blocks until the user responds to the dialog - call from a background
-/// thread, not the UI thread. The *currently running* process can't pick
-/// up a capability granted to its own file after the fact (capabilities
-/// are fixed at exec() time) - the caller needs to relaunch Hebnix for it
-/// to take effect, same as any setcap change.
-/// the `setcap` capability list, also shown in the manual instructions
-pub const GRANTED_CAPS: &str = "cap_net_admin,cap_net_raw,cap_net_bind_service=eip";
-
-pub fn grant_via_pkexec() -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|error| format!("could not find Hebnix's own binary path: {error}"))?;
-    let output = Command::new("pkexec")
-        .args(["setcap", GRANTED_CAPS])
-        .arg(&exe)
-        .output()
-        .map_err(|error| format!("could not run pkexec: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            "pkexec was cancelled or denied".to_string()
-        } else {
-            stderr
-        })
-    }
 }

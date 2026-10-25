@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam_channel::Sender;
 
 use crate::messages::AppMsg;
-use crate::spoofer::ca::CRL_PORT;
+use crate::spoofer::ca::CRL_PORTS;
 
 pub struct CrlServer {
     running: Arc<AtomicBool>,
@@ -19,13 +19,25 @@ pub struct CrlServer {
 
 impl CrlServer {
     pub fn start(crl_der: Vec<u8>, tx: Sender<AppMsg>) -> Result<Self, String> {
-        Self::start_on(&format!("127.0.0.1:{CRL_PORT}"), crl_der, tx).map(|(s, _)| s)
+        let listener = super::bind_local("CRL server", CRL_PORTS)?;
+        let (server, port) = Self::serve(listener, crl_der, tx)?;
+        crate::spoofer::ca::set_crl_port(port);
+        Ok(server)
     }
 
     /// port 0 picks a free one, thats what the tests use
+    #[cfg(test)]
     fn start_on(addr: &str, crl_der: Vec<u8>, tx: Sender<AppMsg>) -> Result<(Self, u16), String> {
         let listener =
             TcpListener::bind(addr).map_err(|e| format!("cant bind crl port {addr}: {e}"))?;
+        Self::serve(listener, crl_der, tx)
+    }
+
+    fn serve(
+        listener: TcpListener,
+        crl_der: Vec<u8>,
+        tx: Sender<AppMsg>,
+    ) -> Result<(Self, u16), String> {
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let running = Arc::new(AtomicBool::new(true));
         let crl = Arc::new(crl_der);

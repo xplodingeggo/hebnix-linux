@@ -14,8 +14,21 @@ use rcgen::{
 pub const COMMON_NAME: &str = "Hebnix Local CA"; // trust matches on this, dont change it
 
 // leaf certs point here for the revoke check
-pub const CRL_PORT: u16 = 8081;
-pub const CRL_URL: &str = "http://127.0.0.1:8081/hebnix.crl";
+/// CRL server ports, tried in order (Windows uses a fixed 8081). The leaf
+/// certificates carry whichever one the running CRL server got.
+pub const CRL_PORTS: &[u16] = &[6968, 6967, 6966, 6965, 0];
+static CRL_PORT_IN_USE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(6968);
+
+pub fn set_crl_port(port: u16) {
+    CRL_PORT_IN_USE.store(port, std::sync::atomic::Ordering::Release);
+}
+
+pub fn crl_url() -> String {
+    format!(
+        "http://127.0.0.1:{}/hebnix.crl",
+        CRL_PORT_IN_USE.load(std::sync::atomic::Ordering::Acquire)
+    )
+}
 
 pub fn dir(base_dir: &Path) -> PathBuf {
     base_dir.join("spoofer")
@@ -98,7 +111,7 @@ impl Ca {
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         params.crl_distribution_points = vec![CrlDistributionPoint {
-            uris: vec![CRL_URL.to_string()],
+            uris: vec![crl_url()],
         }];
         params.not_before = date_time_ymd(2024, 1, 1);
         params.not_after = date_time_ymd(2034, 1, 1);
@@ -322,7 +335,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let ca = ensure(&base).expect("mint failed");
         let leaf = ca.sign_leaf("config.psynet.gg").expect("leaf sign failed");
-        let needle = CRL_URL.as_bytes();
+        let url = crl_url();
+        let needle = url.as_bytes();
         assert!(
             leaf.cert_der.windows(needle.len()).any(|w| w == needle),
             "leaf missing the CRL distribution point url"

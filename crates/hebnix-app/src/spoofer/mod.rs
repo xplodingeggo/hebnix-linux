@@ -24,7 +24,34 @@ use crate::spoofer::rules::{NameRule, Rule, TitleSpoofSettings};
 use http::HttpProxy;
 
 pub const PROXY_HOST: &str = "127.0.0.1";
-pub const PROXY_PORT: u16 = 8080;
+/// HTTP proxy ports, tried in order. Windows uses a fixed 8080, which
+/// steamwebhelper (and plenty of dev servers) already hold on Linux. 143 is
+/// only bindable where unprivileged ports start low enough; 0 lets the
+/// kernel pick a free port as the last resort.
+pub const PROXY_PORTS: &[u16] = &[6969, 143, 6970, 6971, 6972, 6973, 0];
+
+/// bind the first free port of `ports` on PROXY_HOST
+pub(crate) fn bind_local(what: &str, ports: &[u16]) -> Result<std::net::TcpListener, String> {
+    let mut last_error = None;
+    for &port in ports {
+        match std::net::TcpListener::bind((PROXY_HOST, port)) {
+            Ok(listener) => {
+                if let Ok(address) = listener.local_addr() {
+                    tracing::info!("{what} listening on {address}");
+                }
+                return Ok(listener);
+            }
+            Err(error) => {
+                tracing::debug!("{what}: {PROXY_HOST}:{port} unavailable: {error}");
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(format!(
+        "Cannot bind {what}: {}",
+        last_error.map_or_else(|| "no ports to try".to_string(), |e| e.to_string())
+    ))
+}
 pub const MAX_NAME_LENGTH: usize = 32;
 pub const WEBSOCKET_UNAVAILABLE: &str = "WebSocket proxy features are unavailable.";
 
@@ -184,8 +211,8 @@ fn marker_path(base_dir: &Path) -> PathBuf {
     ca::dir(base_dir).join("proxy_backup.json")
 }
 
-fn our_proxy_server() -> String {
-    wine_proxy::proxy_server(PROXY_HOST, PROXY_PORT)
+fn our_proxy_server(port: u16) -> String {
+    wine_proxy::proxy_server(PROXY_HOST, port)
 }
 
 const WAITING_FOR_PREFIX: &str =
@@ -219,7 +246,7 @@ fn restore_prefix_proxy(base_dir: &Path) -> Restore {
         return Restore::PrefixInUse;
     }
     // only undo our own setting; leave one the user changed since
-    if wine_proxy::is_applied(&backup.prefix, &our_proxy_server()) {
+    if wine_proxy::applied_port(&backup.prefix, PROXY_HOST).is_some() {
         if let Err(error) = wine_proxy::restore(&backup) {
             tracing::error!("Could not restore the Wine prefix proxy settings: {error}");
             return Restore::Failed;
@@ -424,16 +451,33 @@ impl SpooferManager {
                 })
                 .collect(),
         );
-        let proxy = HttpProxy::start(ca, rules, self.tx.clone())?;
+        // A prefix that still points at an earlier listener (a running game,
+        // or a restart while it runs) must keep that port when it is free.
+        let mut ports = Vec::new();
+        if let Some(prefix) = restore_prefix_proxy_pending(&self.base_dir) {
+            ports.extend(wine_proxy::applied_port(&prefix, PROXY_HOST).filter(|&p| p != 0));
+        }
+        ports.extend_from_slice(PROXY_PORTS);
+        let proxy = HttpProxy::start(ca, rules, self.tx.clone(), &ports)?;
         self.http_active.store(true, Ordering::Release);
         *self
             .http_proxy
             .lock()
             .map_err(|_| "HTTP proxy lock poisoned")? = Some(proxy);
-        let _ = self.tx.send(AppMsg::Log(
-            "[Spoofer] HTTP proxy started. WebSocket proxy is unavailable.".into(),
-        ));
+        let _ = self.tx.send(AppMsg::Log(format!(
+            "[Spoofer] HTTP proxy started on {PROXY_HOST}:{port}. WebSocket proxy is unavailable.",
+            port = self.listener_port().unwrap_or_default()
+        )));
         Ok(())
+    }
+
+    fn listener_port(&self) -> Option<u16> {
+        self.http_proxy
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|proxy| proxy.is_running())
+            .map(HttpProxy::port)
     }
 
     fn listener_running(&self) -> bool {
@@ -446,8 +490,21 @@ impl SpooferManager {
     /// already runs without it: user.reg can only change while the prefix is
     /// idle, so it takes effect with the next launch.
     fn apply_prefix_proxy(&self) -> Result<bool, String> {
+        let port = self.listener_port().ok_or("HTTP proxy is not running.")?;
+        let server = our_proxy_server(port);
         let backup = marker_path(&self.base_dir);
-        if backup.exists() {
+        if let Some(prefix) = restore_prefix_proxy_pending(&self.base_dir) {
+            if wine_proxy::applied_port(&prefix, PROXY_HOST) == Some(port) {
+                return Ok(true);
+            }
+            // set by an earlier listener on another port: repoint it while
+            // the prefix is idle, keeping the original backup
+            if hebnix_sdk::process::prefix_in_use(&prefix) {
+                return Err(format!(
+                    "Rocket League still uses the HTTP proxy on another port. Restart Rocket League to use {PROXY_HOST}:{port}."
+                ));
+            }
+            wine_proxy::apply(&prefix, &server)?;
             return Ok(true);
         }
         let prefix = hebnix_sdk::process::rocket_league_prefix().ok_or(
@@ -465,7 +522,7 @@ impl SpooferManager {
             let _ = std::fs::remove_file(&backup);
             return Err("Could not start HTTP proxy recovery watchdog.".into());
         }
-        if let Err(error) = wine_proxy::apply(&prefix, &our_proxy_server()) {
+        if let Err(error) = wine_proxy::apply(&prefix, &server) {
             let _ = std::fs::remove_file(&backup);
             return Err(error);
         }

@@ -98,7 +98,7 @@ impl AutoUploadReplays {
             } else if !game_running {
                 "Waiting for Rocket League"
             } else {
-                "Waiting for the proxy · the port 443 permission and a trusted certificate are required"
+                "Waiting for the proxy · a trusted certificate is required"
             }.to_string();
         }
     }

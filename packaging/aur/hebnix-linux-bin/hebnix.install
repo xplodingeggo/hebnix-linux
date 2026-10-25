@@ -1,12 +1,7 @@
 post_install() {
-	# Same capabilities as Hebnix's own "Grant Permission" button
-	# (multiplayer_lan::GRANTED_CAPS): cap_net_admin/cap_net_raw for Workshop
-	# LAN multiplayer (its own tailscaled, beacon relay + nftables rules),
-	# cap_net_bind_service for the spoofer/replay proxy on port 443. Setting
-	# them here means no permission prompt and no restart inside Hebnix, and
-	# upgrades (which replace the binary and drop file capabilities) keep them.
-	setcap cap_net_admin,cap_net_raw,cap_net_bind_service=eip /usr/bin/hebnix 2>/dev/null || \
-		echo "==> Note: could not set capabilities on /usr/bin/hebnix. Use Grant Permission in Hebnix, or run: sudo setcap cap_net_admin,cap_net_raw,cap_net_bind_service=eip /usr/bin/hebnix"
+	# Hebnix needs no file capabilities any more (Workshop multiplayer runs
+	# over tailcat, the spoofer proxy uses an unprivileged port). Installing
+	# the new binary drops any an older version set.
 
 	cat <<'EOF'
 ==> Hebnix installed. To run: hebnix
