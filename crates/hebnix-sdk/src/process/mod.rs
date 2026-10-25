@@ -11,7 +11,8 @@ pub use detector::{
     get_save_data_path, is_rocket_league_running, save_data_dir_in,
 };
 pub use wine_prefix::{
-    candidate_documents_dirs, documents_dir_for_exe, rocket_league_documents_dir,
+    candidate_documents_dirs, documents_dir_for_exe, prefix_in_use, rocket_league_documents_dir,
+    rocket_league_prefix,
     set_documents_override, steam_library_steamapps_dirs, wine_prefixes,
 };
 pub use window::{

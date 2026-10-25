@@ -170,7 +170,7 @@ impl TrackerClient {
         let mut request = agent
             .get(&url)
             .set("Accept", "application/json")
-            .set("User-Agent", "Hebnix-Linux/2.2.4")
+            .set("User-Agent", "Hebnix-Linux/2.2.6")
             .timeout(self.timeout);
         // builds without a baked-in key still send the request, just untokened
         if let Some(token) = crate::req_auth::app_token_if_configured()? {

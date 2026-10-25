@@ -25,8 +25,6 @@ pub enum AppMsg {
     RlApiResponse(Result<Value, String>),
     ReplayUploadFinished(crate::auto_upload_replays::UploadResult),
     GameEvent(StatsEvent),
-    /// text chat read off the LAN match traffic (see multiplayer_lan::chat_capture)
-    ChatMessage(crate::multiplayer_lan::ChatMessage),
     // periodic RL monitor result. root_dir is the game install folder resolved
     // from the running process, used to auto-fill the configured paths.
     RlStatus {
@@ -39,7 +37,7 @@ pub enum AppMsg {
     // only sent when it changes
     WindowMode(WindowMode),
     ToggleVisibility,
-    TrayOpen,
+    TrayToggleVisibility,
     TrayQuit,
     HotkeyCaptured(Option<String>),
     // should the main window be topmost (RL or hebnix focused)

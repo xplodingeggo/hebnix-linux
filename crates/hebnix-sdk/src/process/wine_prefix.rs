@@ -356,6 +356,42 @@ fn running_game_documents() -> Option<PathBuf> {
         .find(|documents| documents.join(RL_DIR).is_dir())
 }
 
+/// the Wine prefix (the folder holding `drive_c` and `user.reg`) Rocket
+/// League runs in: the one rocket_league_documents_dir picked
+pub fn rocket_league_prefix() -> Option<PathBuf> {
+    let documents = rocket_league_documents_dir()?;
+    let drive_c = documents
+        .ancestors()
+        .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "drive_c"))?;
+    drive_c.parent().map(Path::to_path_buf)
+}
+
+/// is a wineserver (or the game) running in `prefix`? While one is, the
+/// prefix's registry lives in that wineserver's memory and is written back
+/// to user.reg when it exits, so user.reg must not be edited.
+pub fn prefix_in_use(prefix: &Path) -> bool {
+    let wanted = prefix.canonicalize().unwrap_or_else(|_| prefix.to_path_buf());
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let pid = entry.file_name();
+        if !pid.to_string_lossy().bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+        let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
+            return false;
+        };
+        let comm = comm.trim().to_ascii_lowercase();
+        if comm != "wineserver" && !comm.contains("rocketleague") {
+            return false;
+        }
+        prefix_from_environ(&entry.path().join("environ")).is_some_and(|found| {
+            found.canonicalize().unwrap_or(found) == wanted
+        })
+    })
+}
+
 fn prefix_from_environ(path: &Path) -> Option<PathBuf> {
     let environ = std::fs::read(path).ok()?;
     let mut wine_prefix = None;

@@ -36,6 +36,7 @@ mod monitor;
 mod multiplayer_lan;
 mod notifications;
 mod overlay;
+mod owned_inventory;
 mod veryimportantfile;
 mod patch_core {
     pub use crate::patcher::patch_core::*;
@@ -56,12 +57,15 @@ mod theme;
 mod toast;
 mod tray;
 mod ui;
+mod ui_work;
 mod upk_keys {
     pub use crate::patcher::upk_keys::*;
 }
 mod watchdog;
 mod webview;
 mod winutil;
+mod window_state;
+mod visibility;
 
 use app::HebnixApp;
 
@@ -133,7 +137,6 @@ fn setup_panic_hook(base_dir: &std::path::Path) {
     let crash_path = base_dir.join("crash.txt");
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = spoofer::hosts::clear();
         let backtrace = std::backtrace::Backtrace::force_capture();
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -226,6 +229,9 @@ fn main() -> eframe::Result {
     };
 
     spoofer::restore_if_crashed(&base_dir);
+    if let Err(error) = spoofer::cleanup_websocket_once(&base_dir) {
+        tracing::warn!("WebSocket proxy cleanup: {error}");
+    }
     let _ = watchdog::spawn();
 
     #[cfg(target_os = "linux")]

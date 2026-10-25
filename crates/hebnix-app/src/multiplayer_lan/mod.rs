@@ -9,19 +9,16 @@
 //! Map sync (map_sync.rs) runs over the same connections.
 
 mod caps;
-mod chat_capture;
 mod firewall;
 mod hosting;
 mod map_sync;
 mod models;
-mod raw_capture;
 mod room_api;
 mod tailcat_sidecar;
 
 use std::time::Duration;
 
 // one session type for hosting and joining, see hosting.rs
-pub use chat_capture::{ChatCapture, ChatMessage};
 pub use hosting::HostSession;
 pub use map_sync::{
     LocalInfo, MAP_SYNC_PORT, MAX_MAP_BYTES, MapFileProvider, MapProvider, PeerOffer, SlotMap,
@@ -62,10 +59,6 @@ pub fn directory_key() -> Result<&'static str, String> {
         Ok(key)
     }
 }
-
-/// Rocket League's LAN game port. A guest's sidecar proxies
-/// 127.0.0.1:RL_LAN_PORT to the host's, and chat_capture.rs watches it.
-pub const RL_LAN_PORT: u16 = 7777;
 
 /// how long a session stays alive after Rocket League exits before Hebnix
 /// tears the room/tailnet down for real -- covers an ordinary crash/restart

@@ -1,7 +1,7 @@
 //! cleanup watchdog: a *separate* subprocess (`hebnix-app --cleanup-watchdog
 //! <owner-pid>`) that outlives the main app and undoes anything that needs
-//! undoing (hosts file redirect, multihome state) if the main process dies
-//! without cleaning up after itself.
+//! undoing (the Wine prefix's HTTP proxy setting, multiplayer state) if the
+//! main process dies without cleaning up after itself.
 //!
 //! Since the owner is a real separate process (exec'd, not a thread), we
 //! can't `waitpid` on it -- that only works for actual child processes, and
@@ -16,14 +16,14 @@ use nix::unistd::Pid;
 
 use crate::spoofer::SpooferManager;
 
-// Keep the live listeners in this process after the UI closes. Recreating
-// them in the cleanup child would drop Rocket League's active WebSocket.
+// Windows restores the system proxy live and stops the proxy right away.
+// Rocket League under Wine only reads the prefix proxy at launch, so a game
+// that is still running needs the HTTP proxy until it exits: keep it alive
+// in this process after the UI closes.
 static LIVE_SPOOFER: OnceLock<Arc<SpooferManager>> = OnceLock::new();
 
 pub fn handoff_live_spoofer(spoofer: Arc<SpooferManager>) -> bool {
-    if !hebnix_sdk::process::is_rocket_league_running()
-        || !(spoofer.http_running() || spoofer.socket_running() || spoofer.relay_running())
-    {
+    if !crate::spoofer::prefix_proxy_in_use(&crate::config::base_dir()) {
         return false;
     }
     spoofer.disable_spoofing();
@@ -38,25 +38,16 @@ pub fn finish_live_handoff() {
     let Some(spoofer) = LIVE_SPOOFER.get() else {
         return;
     };
-    tracing::info!("Hebnix UI closed; proxy watchdog remains active until Rocket League exits");
-    while hebnix_sdk::process::is_rocket_league_running() {
+    tracing::info!("Hebnix UI closed; HTTP proxy stays up until Rocket League exits");
+    while crate::spoofer::prefix_proxy_in_use(&crate::config::base_dir()) {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     spoofer.shutdown();
-    for _ in 0..5 {
-        if crate::winutil::clear_rocket_league_web_cache().is_ok() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    let _ = crate::winutil::clear_rocket_league_multihome();
-    tracing::info!("Rocket League closed; proxy watchdog cleaned up");
+    tracing::info!("Rocket League closed; Wine prefix proxy restored");
 }
 
 pub const CLEANUP_WATCHDOG_ARG: &str = "--cleanup-watchdog";
 static CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
-static RECOVERY_INSTALLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 pub fn is_ready() -> bool {
     CHILD.lock().ok().is_some_and(|mut child| {
@@ -66,28 +57,12 @@ pub fn is_ready() -> bool {
     })
 }
 
-pub fn ensure_protected(base_dir: &std::path::Path) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
-    if !RECOVERY_INSTALLED.load(Ordering::Acquire) {
-        crate::recovery_tasks::install(base_dir)?;
-        RECOVERY_INSTALLED.store(true, Ordering::Release);
-    }
-    if !spawn() {
-        return Err(
-            "Could not start the Epic connection cleanup watchdog. Proxy was left off.".into(),
-        );
-    }
-    Ok(())
-}
-
 fn pid_alive(pid: u32) -> bool {
     kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
-/// spawn the watchdog subprocess. Doesn't need to already be root itself -
-/// its own hosts-file cleanup goes through spoofer::run_privileged (a
-/// one-shot pkexec call) the same as everywhere else in spoofer, not by
-/// assuming it inherited root.
+/// spawn the watchdog subprocess. Needs no privileges: the proxy setting it
+/// restores lives in the user's own Wine prefix.
 pub fn spawn() -> bool {
     use std::io::Read;
 
@@ -182,46 +157,14 @@ pub fn run(parent_pid: u32) {
             }
         }
     }
-    // Windows also clears the hosts file here whenever the game is closed,
-    // without waiting for Hebnix to exit. On Linux that needs a pkexec
-    // prompt, so only the unprivileged session cache is cleaned meanwhile.
     while pid_alive(parent_pid) {
-        if !hebnix_sdk::process::is_rocket_league_running() && !replacement_is_running(parent_pid) {
-            let _ = crate::spoofer::clean_session_cache(&crate::config::base_dir());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
     if replacement_is_running(parent_pid) {
         return;
     }
-    if crate::spoofer::hosts::has_redirects() {
-        let base_dir = crate::config::base_dir();
-        let _ =
-            crate::spoofer::run_privileged(crate::spoofer::PrivilegedAction::ClearHosts, &base_dir);
-    }
-    while hebnix_sdk::process::is_rocket_league_running() {
-        if replacement_is_running(parent_pid) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    if replacement_is_running(parent_pid) {
-        return;
-    }
-    // Game shutdown can briefly keep WebCache files locked. Retry cleanup
-    // after the process has gone.
-    for _ in 0..5 {
-        if crate::winutil::clear_rocket_league_web_cache().is_ok() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    for _ in 0..3 {
-        let _ = crate::winutil::clear_rocket_league_multihome();
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
+    crate::spoofer::restore_when_prefix_free(&crate::config::base_dir());
     let _ = crate::multiplayer_lan::cleanup_system_state();
-    let _ = crate::spoofer::clean_session_cache(&crate::config::base_dir());
     if watchdog_owner().is_some_and(|owner| owner == parent_pid) {
         let _ = std::fs::remove_file(watchdog_owner_path());
     }
