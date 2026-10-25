@@ -30,8 +30,17 @@ jobs:
       - name: Build release
         run: make release
 
+      # bin/ + lib/hebnix/ like the release tarballs: Hebnix looks for the
+      # multiplayer helper in ../lib/hebnix next to its own binary.
+      # Artifact zips drop the executable bit, so chmod +x both after unzipping.
+      - name: Stage binary and multiplayer helper
+        run: |
+          install -Dm755 target/release/hebnix-app artifact/bin/hebnix-app
+          install -Dm755 sidecar/hebnix-tc/hebnix-tc artifact/lib/hebnix/hebnix-tc
+
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: hebnix-app-linux
-          path: target/release/hebnix-app
+          path: artifact/
+          if-no-files-found: error
