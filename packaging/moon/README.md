@@ -1,6 +1,7 @@
 # `.moon` bundles https://moonpkg.github.io/cli / https://github.com/moonpkg/cli
 
-A `.moon` bundle is one file that carries a whole app: the program, its
+A `.moon` bundle is one file that carries a whole app: the program (with its
+multiplayer helper), its
 manifest, its menu entry and its icon. A user unpacks nothing, signs into
 nothing and adds no repository:
 
@@ -31,6 +32,7 @@ hebnix-2.2.4.moon           # (tar.gz)
 ├── hebnix.manifest         # moon's own key=value manifest, paths relative
 ├── app/
 │   ├── bin/hebnix          # the binary
+│   ├── lib/hebnix/hebnix-tc  # the Workshop multiplayer helper
 │   └── share/…             # README and LICENSE
 ├── desktop/hebnix.desktop  # the menu entry
 └── icon/hebnix.png         # the icon

@@ -9,7 +9,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 BIN_NAME="hebnix"
 CARGO_BIN="hebnix-app"
+SIDECAR_NAME="hebnix-tc"
 BINARY=""
+SIDECAR=""
 FROM=""
 VERSION=""
 OUTPUT=""
@@ -21,6 +23,8 @@ usage() {
 usage: build-moon-bundle.sh [options]
 
   --binary PATH   binary to bundle (default: target/release/$CARGO_BIN)
+  --sidecar PATH  multiplayer helper to bundle (default: the one in the
+                  --from tarball, else sidecar/hebnix-tc/$SIDECAR_NAME)
   --from PATH     take the binary from a release tarball or a bare binary
   --version V     version recorded in the manifest (default: latest git tag)
   --output FILE   bundle to write (default: dist/$BIN_NAME-<version>.moon)
@@ -38,6 +42,7 @@ die() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --binary) BINARY="$2"; shift 2 ;;
+        --sidecar) SIDECAR="$2"; shift 2 ;;
         --from) FROM="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
         --output) OUTPUT="$2"; shift 2 ;;
@@ -79,6 +84,9 @@ if [ -n "$FROM" ]; then
         FOUND="$(find "$FROM_DIR" -type f -name "$BIN_NAME" -perm -u+x | head -1)"
         [ -n "$FOUND" ] || die "--from: no '$BIN_NAME' executable inside $FROM"
         BINARY="$FOUND"
+        if [ -z "$SIDECAR" ]; then
+            SIDECAR="$(find "$FROM_DIR" -type f -name "$SIDECAR_NAME" -path "*/lib/hebnix/*" | head -1)"
+        fi
     elif [ -x "$FROM" ]; then
         BINARY="$FROM"
     else
@@ -91,9 +99,17 @@ if [ -z "$BINARY" ]; then
 fi
 [ -f "$BINARY" ] || die "binary not found at $BINARY (build with 'make release' first, or pass --from)"
 
+# the Workshop multiplayer helper. Hebnix looks for it in ../lib/hebnix next
+# to its own (symlink-resolved) binary, so it goes in app/lib/hebnix.
+if [ -z "$SIDECAR" ]; then
+    SIDECAR="$REPO_ROOT/sidecar/hebnix-tc/$SIDECAR_NAME"
+fi
+[ -f "$SIDECAR" ] || die "multiplayer helper not found at $SIDECAR (build with 'make sidecar', or pass --sidecar)"
+
 STAGE="$WORK/$BIN_NAME-moon"
 echo "== staging bundle =="
 install -Dm755 "$BINARY" "$STAGE/app/bin/$BIN_NAME"
+install -Dm755 "$SIDECAR" "$STAGE/app/lib/hebnix/$SIDECAR_NAME"
 install -Dm644 "$REPO_ROOT/packaging/$BIN_NAME.desktop" "$STAGE/desktop/$BIN_NAME.desktop"
 install -Dm644 "$REPO_ROOT/crates/hebnix-app/assets/$BIN_NAME.png" "$STAGE/icon/$BIN_NAME.png"
 install -Dm644 "$REPO_ROOT/README.md" "$STAGE/app/share/doc/$BIN_NAME/README.md"
@@ -135,6 +151,7 @@ fi
 LISTING="$(tar -tzf "$OUT")"
 echo "$LISTING" | grep -q "$BIN_NAME.manifest" || die "the bundle has no $BIN_NAME.manifest"
 echo "$LISTING" | grep -q "app/bin/$BIN_NAME" || die "the bundle has no app/bin/$BIN_NAME"
+echo "$LISTING" | grep -q "app/lib/hebnix/$SIDECAR_NAME" || die "the bundle has no app/lib/hebnix/$SIDECAR_NAME"
 
 echo "== done =="
 echo "  bundle: $OUT"
