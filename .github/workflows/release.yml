@@ -161,7 +161,7 @@ jobs:
     steps:
       - name: Install git + build dependencies
         run: |
-          pacman -Syu --noconfirm --needed git rust pkgconf \
+          pacman -Syu --noconfirm --needed git rust go pkgconf \
             gtk3 libayatana-appindicator wayland libxkbcommon systemd-libs \
             alsa-lib openssl xdotool webkit2gtk-4.1 libsoup3 gtk-layer-shell
 
