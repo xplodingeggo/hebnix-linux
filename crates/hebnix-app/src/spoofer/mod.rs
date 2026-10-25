@@ -215,9 +215,6 @@ fn our_proxy_server(port: u16) -> String {
     wine_proxy::proxy_server(PROXY_HOST, port)
 }
 
-const WAITING_FOR_PREFIX: &str =
-    "Rocket League is already running. The HTTP proxy starts with its next launch.";
-
 #[derive(Debug, PartialEq, Eq)]
 enum Restore {
     /// nothing left to restore
@@ -228,32 +225,73 @@ enum Restore {
     Failed,
 }
 
-/// put back the prefix proxy settings saved in the marker. The marker is
-/// kept until that has worked.
+/// the backups of every prefix Hebnix pointed at its proxy. Older builds
+/// wrote a single backup.
+fn read_marker(marker: &Path) -> Result<Vec<wine_proxy::Backup>, String> {
+    let bytes = std::fs::read(marker).map_err(|e| e.to_string())?;
+    serde_json::from_slice::<Vec<wine_proxy::Backup>>(&bytes)
+        .or_else(|_| serde_json::from_slice::<wine_proxy::Backup>(&bytes).map(|one| vec![one]))
+        .map_err(|e| e.to_string())
+}
+
+fn write_marker(marker: &Path, backups: &[wine_proxy::Backup]) -> Result<(), String> {
+    if backups.is_empty() {
+        return match std::fs::remove_file(marker) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+            _ => Ok(()),
+        };
+    }
+    let bytes = serde_json::to_vec(backups).map_err(|e| e.to_string())?;
+    std::fs::write(marker, bytes)
+        .map_err(|error| format!("Could not save the Wine proxy settings: {error}"))
+}
+
+fn pending_backups(base_dir: &Path) -> Vec<wine_proxy::Backup> {
+    read_marker(&marker_path(base_dir)).unwrap_or_default()
+}
+
+/// put back the prefix proxy settings saved in the marker. A prefix stays
+/// in the marker until it has been restored.
 fn restore_prefix_proxy(base_dir: &Path) -> Restore {
     let marker = marker_path(base_dir);
     if !marker.is_file() {
         return Restore::Done;
     }
-    let Some(backup) = std::fs::read(&marker)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<wine_proxy::Backup>(&bytes).ok())
-    else {
+    let Ok(backups) = read_marker(&marker) else {
         tracing::error!("Cannot read the Wine proxy backup; keeping it for recovery");
         return Restore::Failed;
     };
-    if hebnix_sdk::process::prefix_in_use(&backup.prefix) {
-        return Restore::PrefixInUse;
-    }
-    // only undo our own setting; leave one the user changed since
-    if wine_proxy::applied_port(&backup.prefix, PROXY_HOST).is_some() {
-        if let Err(error) = wine_proxy::restore(&backup) {
-            tracing::error!("Could not restore the Wine prefix proxy settings: {error}");
-            return Restore::Failed;
+    let mut in_use = false;
+    let mut failed = false;
+    let mut kept = Vec::new();
+    for backup in backups {
+        if hebnix_sdk::process::prefix_in_use(&backup.prefix) {
+            in_use = true;
+            kept.push(backup);
+            continue;
+        }
+        // only undo our own setting; leave one the user changed since
+        if wine_proxy::applied_port(&backup.prefix, PROXY_HOST).is_some() {
+            if let Err(error) = wine_proxy::restore(&backup) {
+                tracing::error!(
+                    "Could not restore the proxy settings of {}: {error}",
+                    backup.prefix.display()
+                );
+                failed = true;
+                kept.push(backup);
+            }
         }
     }
-    let _ = std::fs::remove_file(&marker);
-    Restore::Done
+    if write_marker(&marker, &kept).is_err() {
+        failed = true;
+    }
+    if in_use {
+        Restore::PrefixInUse
+    } else if failed {
+        Restore::Failed
+    } else {
+        Restore::Done
+    }
 }
 
 pub fn restore_if_crashed(base_dir: &Path) {
@@ -276,13 +314,25 @@ pub fn restore_when_prefix_free(base_dir: &Path) {
 /// is our proxy set in a prefix that is running right now? Rocket League
 /// then depends on the HTTP proxy until it exits.
 pub fn prefix_proxy_in_use(base_dir: &Path) -> bool {
-    restore_prefix_proxy_pending(base_dir)
-        .is_some_and(|prefix| hebnix_sdk::process::prefix_in_use(&prefix))
+    pending_backups(base_dir)
+        .iter()
+        .any(|backup| hebnix_sdk::process::prefix_in_use(&backup.prefix))
 }
 
-fn restore_prefix_proxy_pending(base_dir: &Path) -> Option<PathBuf> {
-    let bytes = std::fs::read(marker_path(base_dir)).ok()?;
-    Some(serde_json::from_slice::<wine_proxy::Backup>(&bytes).ok()?.prefix)
+/// the lifecycle monitor retries every 250 ms; log each problem only once
+fn warn_once(error: &str) {
+    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    if let Ok(mut logged) = LOGGED.lock() {
+        if !logged.iter().any(|seen| seen == error) {
+            tracing::warn!("Wine prefix proxy: {error}");
+            logged.push(error.to_string());
+        }
+    }
+}
+
+fn same_prefix(a: &Path, b: &Path) -> bool {
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    canonical(a) == canonical(b)
 }
 
 pub struct SpooferManager {
@@ -454,8 +504,12 @@ impl SpooferManager {
         // A prefix that still points at an earlier listener (a running game,
         // or a restart while it runs) must keep that port when it is free.
         let mut ports = Vec::new();
-        if let Some(prefix) = restore_prefix_proxy_pending(&self.base_dir) {
-            ports.extend(wine_proxy::applied_port(&prefix, PROXY_HOST).filter(|&p| p != 0));
+        for backup in pending_backups(&self.base_dir) {
+            if let Some(port) = wine_proxy::applied_port(&backup.prefix, PROXY_HOST) {
+                if port != 0 && !ports.contains(&port) {
+                    ports.push(port);
+                }
+            }
         }
         ports.extend_from_slice(PROXY_PORTS);
         let proxy = HttpProxy::start(ca, rules, self.tx.clone(), &ports)?;
@@ -486,51 +540,96 @@ impl SpooferManager {
             .is_ok_and(|proxy| proxy.as_ref().is_some_and(HttpProxy::is_running))
     }
 
-    /// point Rocket League's prefix at the proxy. Ok(false) while the game
-    /// already runs without it: user.reg can only change while the prefix is
-    /// idle, so it takes effect with the next launch.
-    fn apply_prefix_proxy(&self) -> Result<bool, String> {
+    /// point every Rocket League prefix at the proxy, so whichever copy
+    /// (Steam, Epic, ...) starts next already uses it. user.reg can only
+    /// change while a prefix is idle, so a game that is already running
+    /// without the proxy only gets it with its next launch: Ok(Some(warning))
+    /// then, while the listener keeps serving the prefixes that have it.
+    fn apply_prefix_proxy(&self) -> Result<Option<String>, String> {
         let port = self.listener_port().ok_or("HTTP proxy is not running.")?;
         let server = our_proxy_server(port);
-        let backup = marker_path(&self.base_dir);
-        if let Some(prefix) = restore_prefix_proxy_pending(&self.base_dir) {
-            if wine_proxy::applied_port(&prefix, PROXY_HOST) == Some(port) {
-                return Ok(true);
+        let marker = marker_path(&self.base_dir);
+        let mut backups = match read_marker(&marker) {
+            Ok(backups) => backups,
+            Err(_) if !marker.exists() => Vec::new(),
+            Err(error) => return Err(format!("Cannot read the Wine proxy backup: {error}")),
+        };
+        let mut errors = Vec::new();
+
+        // prefixes set earlier: repoint those an earlier listener on another
+        // port left behind while they are idle, keeping the original backup
+        for backup in &backups {
+            if wine_proxy::applied_port(&backup.prefix, PROXY_HOST) == Some(port)
+                || hebnix_sdk::process::prefix_in_use(&backup.prefix)
+            {
+                continue;
             }
-            // set by an earlier listener on another port: repoint it while
-            // the prefix is idle, keeping the original backup
-            if hebnix_sdk::process::prefix_in_use(&prefix) {
-                return Err(format!(
-                    "Rocket League still uses the HTTP proxy on another port. Restart Rocket League to use {PROXY_HOST}:{port}."
-                ));
+            if let Err(error) = wine_proxy::apply(&backup.prefix, &server) {
+                errors.push(error);
             }
-            wine_proxy::apply(&prefix, &server)?;
-            return Ok(true);
         }
-        let prefix = hebnix_sdk::process::rocket_league_prefix().ok_or(
-            "Could not find Rocket League's Wine prefix. Pick its Documents folder in Settings > Directories.",
-        )?;
-        if hebnix_sdk::process::prefix_in_use(&prefix) {
-            return Ok(false);
+
+        for prefix in hebnix_sdk::process::rocket_league_prefixes() {
+            if backups.iter().any(|backup| same_prefix(&backup.prefix, &prefix))
+                || !wine_proxy::user_reg(&prefix).is_file()
+                || hebnix_sdk::process::prefix_in_use(&prefix)
+            {
+                continue;
+            }
+            let backup = match wine_proxy::read_backup(&prefix) {
+                Ok(backup) => backup,
+                Err(error) => {
+                    errors.push(error);
+                    continue;
+                }
+            };
+            backups.push(backup);
+            write_marker(&marker, &backups)?;
+            // Arm crash recovery before changing the prefix's proxy.
+            if !crate::watchdog::spawn() {
+                backups.pop();
+                write_marker(&marker, &backups)?;
+                return Err("Could not start HTTP proxy recovery watchdog.".into());
+            }
+            if let Err(error) = wine_proxy::apply(&prefix, &server) {
+                backups.pop();
+                write_marker(&marker, &backups)?;
+                errors.push(error);
+                continue;
+            }
+            let _ = self.tx.send(AppMsg::Log(format!(
+                "[Spoofer] HTTP proxy set in the Wine prefix {}",
+                prefix.display()
+            )));
         }
-        let saved = serde_json::to_vec(&wine_proxy::read_backup(&prefix)?)
-            .map_err(|e| e.to_string())?;
-        std::fs::write(&backup, saved)
-            .map_err(|error| format!("Could not save the Wine proxy settings: {error}"))?;
-        // Arm crash recovery before changing the prefix's proxy.
-        if !crate::watchdog::spawn() {
-            let _ = std::fs::remove_file(&backup);
-            return Err("Could not start HTTP proxy recovery watchdog.".into());
+
+        // a running game must be in a prefix that has our proxy on this port
+        for running in hebnix_sdk::process::running_game_prefixes() {
+            let ours = backups.iter().any(|backup| same_prefix(&backup.prefix, &running));
+            match wine_proxy::applied_port(&running, PROXY_HOST) {
+                Some(applied) if ours && applied == port => {}
+                Some(_) if ours => {
+                    return Ok(Some(format!(
+                        "Rocket League still uses the HTTP proxy on another port. Restart Rocket League to use {PROXY_HOST}:{port}."
+                    )));
+                }
+                _ => {
+                    return Ok(Some(format!(
+                        "Rocket League was started without the HTTP proxy (Wine prefix {}). Restart Rocket League to use the spoofer.",
+                        running.display()
+                    )));
+                }
+            }
         }
-        if let Err(error) = wine_proxy::apply(&prefix, &server) {
-            let _ = std::fs::remove_file(&backup);
-            return Err(error);
+        if backups.is_empty() {
+            return Err(errors.into_iter().next().unwrap_or_else(|| {
+                "Could not find Rocket League's Wine prefix. Pick its Documents folder in Settings > Directories.".into()
+            }));
         }
-        let _ = self.tx.send(AppMsg::Log(format!(
-            "[Spoofer] HTTP proxy set in the Wine prefix {}",
-            prefix.display()
-        )));
-        Ok(true)
+        for error in errors {
+            warn_once(&error);
+        }
+        Ok(None)
     }
 
     /// stop spoofing. The listener keeps forwarding while a running game
@@ -576,8 +675,8 @@ impl SpooferManager {
             return Err(error);
         }
         match self.apply_prefix_proxy() {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(WAITING_FOR_PREFIX.into()),
+            Ok(None) => Ok(()),
+            Ok(Some(warning)) => Err(warning),
             Err(error) => {
                 self.stop_http();
                 Err(error)
@@ -704,5 +803,68 @@ mod proxy_tests {
                 assert!(!effective.psynet && !effective.replays);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod prefix_proxy_tests {
+    use super::*;
+
+    const USER_REG: &str = "WINE REGISTRY Version 2\n\
+\n\
+[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Internet Settings] 1700000000\n\
+\"ProxyEnable\"=dword:00000000\n";
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hebnix-prefix-proxy-{name}-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn prefix(name: &str) -> PathBuf {
+        let dir = temp(name);
+        std::fs::write(dir.join("user.reg"), USER_REG).unwrap();
+        dir
+    }
+
+    #[test]
+    fn every_prefix_in_the_marker_is_restored() {
+        let base = temp("base");
+        std::fs::create_dir_all(ca::dir(&base)).unwrap();
+        let steam = prefix("steam");
+        let epic = prefix("epic");
+        let backups: Vec<_> = [&steam, &epic]
+            .iter()
+            .map(|prefix| wine_proxy::read_backup(prefix).unwrap())
+            .collect();
+        write_marker(&marker_path(&base), &backups).unwrap();
+        for prefix in [&steam, &epic] {
+            wine_proxy::apply(prefix, &our_proxy_server(6969)).unwrap();
+            assert_eq!(wine_proxy::applied_port(prefix, PROXY_HOST), Some(6969));
+        }
+        assert_eq!(restore_prefix_proxy(&base), Restore::Done);
+        for (prefix, backup) in [&steam, &epic].into_iter().zip(&backups) {
+            assert_eq!(wine_proxy::applied_port(prefix, PROXY_HOST), None);
+            assert_eq!(&wine_proxy::read_backup(prefix).unwrap(), backup);
+        }
+        assert!(!marker_path(&base).exists());
+        for dir in [base, steam, epic] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn a_single_backup_from_an_older_build_still_reads() {
+        let base = temp("legacy");
+        std::fs::create_dir_all(ca::dir(&base)).unwrap();
+        let prefix = prefix("legacy-prefix");
+        let backup = wine_proxy::read_backup(&prefix).unwrap();
+        std::fs::write(marker_path(&base), serde_json::to_vec(&backup).unwrap()).unwrap();
+        assert_eq!(read_marker(&marker_path(&base)).unwrap(), vec![backup]);
+        let _ = std::fs::remove_dir_all(base);
+        let _ = std::fs::remove_dir_all(prefix);
     }
 }

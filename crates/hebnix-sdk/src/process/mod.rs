@@ -12,7 +12,7 @@ pub use detector::{
 };
 pub use wine_prefix::{
     candidate_documents_dirs, documents_dir_for_exe, prefix_in_use, rocket_league_documents_dir,
-    rocket_league_prefix,
+    rocket_league_prefixes, running_game_prefixes,
     set_documents_override, steam_library_steamapps_dirs, wine_prefixes,
 };
 pub use window::{

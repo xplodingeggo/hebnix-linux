@@ -356,14 +356,84 @@ fn running_game_documents() -> Option<PathBuf> {
         .find(|documents| documents.join(RL_DIR).is_dir())
 }
 
-/// the Wine prefix (the folder holding `drive_c` and `user.reg`) Rocket
-/// League runs in: the one rocket_league_documents_dir picked
-pub fn rocket_league_prefix() -> Option<PathBuf> {
-    let documents = rocket_league_documents_dir()?;
+/// the prefix (the folder holding `drive_c` and `user.reg`) a Documents
+/// folder belongs to, None for the host's own Documents
+fn prefix_of_documents(documents: &Path) -> Option<PathBuf> {
     let drive_c = documents
         .ancestors()
         .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "drive_c"))?;
     drive_c.parent().map(Path::to_path_buf)
+}
+
+static PREFIXES_CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<PathBuf>)>> =
+    std::sync::Mutex::new(None);
+
+/// every Wine prefix Rocket League has run in (one with a "My Games/Rocket
+/// League" folder), plus the one picked in Settings and the prefixes of
+/// running games. With Steam and Epic copies side by side there are
+/// several, and until a game starts there is no telling which one comes
+/// next. Cached for a few seconds, like rocket_league_documents_dir.
+pub fn rocket_league_prefixes() -> Vec<PathBuf> {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+    if let Ok(cache) = PREFIXES_CACHE.lock() {
+        if let Some((at, value)) = cache.as_ref() {
+            if at.elapsed() < TTL {
+                return value.clone();
+            }
+        }
+    }
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut push = |prefix: PathBuf| {
+        let prefix = prefix.canonicalize().unwrap_or(prefix);
+        if !found.contains(&prefix) {
+            found.push(prefix);
+        }
+    };
+    if let Some(prefix) = documents_override().as_deref().and_then(prefix_of_documents) {
+        push(prefix);
+    }
+    for prefix in running_game_prefixes() {
+        push(prefix);
+    }
+    for documents in candidate_documents_dirs() {
+        if documents.join(RL_DIR).is_dir() {
+            if let Some(prefix) = prefix_of_documents(&documents) {
+                push(prefix);
+            }
+        }
+    }
+    if let Ok(mut cache) = PREFIXES_CACHE.lock() {
+        *cache = Some((std::time::Instant::now(), found.clone()));
+    }
+    found
+}
+
+/// the prefixes running Rocket League processes use, from their
+/// environment
+pub fn running_game_prefixes() -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut prefixes = Vec::new();
+    for entry in entries.flatten() {
+        let pid = entry.file_name();
+        if !pid.to_string_lossy().bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
+            continue;
+        };
+        if !comm.trim().to_ascii_lowercase().contains("rocketleague") {
+            continue;
+        }
+        if let Some(prefix) = prefix_from_environ(&entry.path().join("environ")) {
+            let prefix = prefix.canonicalize().unwrap_or(prefix);
+            if !prefixes.contains(&prefix) {
+                prefixes.push(prefix);
+            }
+        }
+    }
+    prefixes
 }
 
 /// is a wineserver (or the game) running in `prefix`? While one is, the
