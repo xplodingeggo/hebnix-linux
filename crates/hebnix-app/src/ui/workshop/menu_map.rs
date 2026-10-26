@@ -7,6 +7,12 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 
+/// The BakkesMod plugin that previews camera and car values live in game.
+const MENUCAM_URL: &str = "https://github.com/xplodingeggo/menucam";
+
+/// Width of the plugin card beside the settings.
+const PLUGIN_CARD_WIDTH: f32 = 260.0;
+
 /// A downloaded or imported workshop map that can stand in for the stadium.
 pub struct CustomMap {
     pub id: String,
@@ -240,6 +246,34 @@ impl MenuMapState {
     }
 
     pub fn render(
+        &mut self,
+        ui: &mut egui::Ui,
+        rl_path: &str,
+        custom: &[CustomMap],
+        tx: &Sender<AppMsg>,
+    ) {
+        let spacing = ui.spacing().item_spacing.x * 2.0;
+        let main_width = ui.available_width() - PLUGIN_CARD_WIDTH - spacing;
+        // Narrow windows get the card on top instead of beside the settings.
+        if main_width < 420.0 {
+            render_plugin_card(ui);
+            ui.add_space(12.0);
+            self.render_settings(ui, rl_path, custom, tx);
+            return;
+        }
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(main_width);
+                self.render_settings(ui, rl_path, custom, tx);
+            });
+            ui.vertical(|ui| {
+                ui.set_width(PLUGIN_CARD_WIDTH);
+                render_plugin_card(ui);
+            });
+        });
+    }
+
+    fn render_settings(
         &mut self,
         ui: &mut egui::Ui,
         rl_path: &str,
@@ -584,4 +618,23 @@ fn camera_purpose(tag: &str) -> Option<String> {
         "MainMenuPlay" => Some(t("menu-map-camera-play")),
         _ => None,
     }
+}
+
+/// Points to the MenuCam BakkesMod plugin, which moves the menu camera and
+/// cars live so values can be found without restarting the game.
+fn render_plugin_card(ui: &mut egui::Ui) {
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.strong(t("menu-map-plugin-title"));
+        ui.add_space(4.0);
+        ui.label(t("menu-map-plugin-description"));
+        ui.add_space(8.0);
+        if ui
+            .button(t("menu-map-plugin-button"))
+            .on_hover_text(MENUCAM_URL)
+            .clicked()
+        {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(MENUCAM_URL));
+        }
+    });
 }
