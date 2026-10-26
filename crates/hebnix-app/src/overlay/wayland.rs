@@ -98,8 +98,21 @@ impl LayerShellHandler for State {
         if w > 0 && h > 0 {
             self.width = w;
             self.height = h;
+            self.configured = true;
+        } else if w == 0 && h == 0 {
+            // with all anchors set, compositor should give us full size and keep previous size if we have one
+            if self.width > 0 && self.height > 0 {
+                self.configured = true;
+            }
+        } else {
+            if w > 0 && h > 0 {
+                self.width = w;
+                self.height = h;
+                self.configured = true;
+            } else if self.width > 0 && self.height > 0 {
+                self.configured = true;
+            }
         }
-        self.configured = true;
     }
 }
 
@@ -203,17 +216,11 @@ impl WaylandOverlay {
         if !self.state.configured {
             // re-mapping after hide(): wlr-layer-shell wants a commit with
             // no buffer, then a fresh configure, before a buffer may be
-            // attached again. Attaching straight away is the "layerSurface
-            // was not configured, but a buffer was attached" protocol error
-            // that used to kill the connection every time the overlay came
-            // back.
+            // attached again.
             if !self.visible {
+                self.state.layer.set_size(0, 0);
                 self.state.layer.commit();
             }
-            // Block for the initial configure (one-time cost at overlay
-            // startup). TODO(linux-port): switch to a non-blocking
-            // fd-readiness check (e.g. via calloop) so a monitor
-            // hotplug/resize after startup is picked up without a stall.
             let _ = self.queue.roundtrip(&mut self.state);
         } else {
             // `dispatch_pending` alone only processes events already read
@@ -276,6 +283,10 @@ impl WaylandOverlay {
     /// buffer and commit it. Reuses a buffer the compositor has already
     /// released rather than allocating a fresh one every call.
     pub fn present(&mut self, pixmap: &tiny_skia::Pixmap) {
+        // if not configured or zero size, try to get size first
+        if !self.state.configured || self.state.width == 0 || self.state.height == 0 {
+            let _ = self.poll_size();
+        }
         let width = self.state.width;
         let height = self.state.height;
         if width == 0 || height == 0 {
@@ -343,7 +354,7 @@ impl WaylandOverlay {
         self.state.closed
     }
 
-    /// unmap the surface (attach a null buffer) so nothing is shown.
+    /// hide the surface
     pub fn hide(&mut self) {
         if !self.visible {
             return;
@@ -352,9 +363,6 @@ impl WaylandOverlay {
         surface.attach(None, 0, 0);
         surface.commit();
         self.visible = false;
-        // an unmapped layer surface is back to its just-created state; it
-        // has to be configured again before the next buffer (see poll_size)
-        self.state.configured = false;
         let _ = self.conn.flush();
     }
 }

@@ -23,6 +23,8 @@
 
 use std::path::{Path, PathBuf};
 
+#[allow(unused_imports)]
+use gdk;
 use gtk::prelude::*;
 use gtk_layer_shell::LayerShell;
 use webkit2gtk::WebViewExt;
@@ -177,6 +179,8 @@ impl WebviewOverlay {
             // interactive, same click-through intent as the draw overlay.
             window.set_keyboard_interactivity(false);
             window.set_keyboard_mode(gtk_layer_shell::KeyboardMode::None);
+            // set size explicitly to avoid width 0 requests
+            window.set_size_request(1, 1);
         } else {
             window.set_keep_above(true);
             window.set_accept_focus(false);
@@ -404,13 +408,19 @@ impl WebviewOverlay {
         }
         if let Some(window) = &self.window {
             tracing::info!("html overlay: show (Rocket League focused)");
-            if !is_wayland_session() {
+            if is_wayland_session() {
+                // restore full click-through input region
+                let empty_region = cairo::Region::create();
+                window.input_shape_combine_region(Some(&empty_region));
+                window.move_(0, 0);
+                window.show_all();
+            } else {
                 // follow the game's monitor
                 let (x, y, w, h) = x11_target();
                 window.move_(x, y);
                 window.resize(w, h);
+                window.show_all();
             }
-            window.show();
             self.visible = true;
         }
     }
@@ -421,7 +431,14 @@ impl WebviewOverlay {
         }
         if let Some(window) = &self.window {
             tracing::info!("html overlay: hide (Rocket League not focused)");
-            window.hide();
+            if is_wayland_session() {
+                // move off-screen and clear input region to be click-through
+                window.move_(-20000, -20000);
+                let empty_region = cairo::Region::create();
+                window.input_shape_combine_region(Some(&empty_region));
+            } else {
+                window.hide();
+            }
         }
         self.visible = false;
     }
