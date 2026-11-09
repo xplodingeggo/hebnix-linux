@@ -664,6 +664,34 @@ fn local_colour_parameter(name: &str) -> bool {
     )
 }
 
+fn has_imported_paint_settings(package: &UpkPackage) -> Result<bool, String> {
+    for export in &package.exports {
+        if !strip(&package.class_of(export)).starts_with("ProductAsset_") {
+            continue;
+        }
+        let (props, _) = package.serialized_props(export)?;
+        for array in props
+            .iter()
+            .filter(|p| p.name == "Attributes" && p.tag_type == "ArrayProperty")
+        {
+            let at = export.serial_offset + array.value_offset;
+            let count = package.read_int(at)?;
+            if count < 0 || array.size != 4 + count as usize * 4 {
+                return Err("Invalid product attribute array".into());
+            }
+            for index in 0..count as usize {
+                let reference = package.read_int(at + 4 + index * 4)?;
+                if reference < 0
+                    && package.reference_class(reference)?.1 == "ProductAttribute_PaintSettings_TA"
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
 // Prefer the asset's paint settings. Without inventory paint metadata, use
 // explicit material colour controls belonging to the visual product itself.
 fn bake_declared_paint(path: &Path, paint: SwapPaint, write: bool) -> Result<usize, String> {
@@ -1275,6 +1303,12 @@ fn bake_declared_paint(path: &Path, paint: SwapPaint, write: bool) -> Result<usi
     changes.sort_by_key(|(at, _)| *at);
     changes.dedup_by_key(|(at, _)| *at);
     if changes.len() == routing_changes && insertions.is_empty() {
+        // Common wheels such as OEM keep their real paint settings/materials
+        // in Startup.upk. Their seek-free package only imports those objects;
+        // absence of local parameters does not mean the wheel is unpaintable.
+        if has_imported_paint_settings(&package)? {
+            return Err("This item's paint settings are stored in a shared game package, such as Startup.upk. Recolouring shared paint assets is not supported yet. No change was installed.".into());
+        }
         return Err("This item has no editable local colour parameters. Its colours may be fixed in textures or controlled by the game. No change was installed.".into());
     }
     if !write {

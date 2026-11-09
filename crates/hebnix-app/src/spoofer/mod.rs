@@ -301,6 +301,9 @@ pub fn restore_if_crashed(base_dir: &Path) {
             tracing::warn!("Rocket League's prefix is in use; the proxy is restored after it closes");
         }
     }
+    if let Err(error) = crate::hosts_file::set_host_redirect(http::ACCOUNT_HOST,false) {
+        tracing::warn!("Could not clean up the account HTTP redirect: {error}");
+    }
 }
 
 /// for the cleanup watchdog: restore the prefix proxy once nothing runs in
@@ -343,6 +346,7 @@ pub struct SpooferManager {
     pub discovered_friends: Arc<Mutex<HashMap<String, String>>>,
     http_proxy: Mutex<Option<HttpProxy>>,
     http_active: Arc<AtomicBool>,
+    redirect_active: AtomicBool,
     game_present: Arc<AtomicBool>,
     item_cleanup: crate::item_cleanup::Cleaner,
     crl: Mutex<Option<crl::CrlServer>>,
@@ -389,6 +393,7 @@ impl SpooferManager {
             discovered_friends: Arc::new(Mutex::new(HashMap::new())),
             http_proxy: Mutex::new(None),
             http_active: Arc::new(AtomicBool::new(false)),
+            redirect_active: AtomicBool::new(false),
             game_present: Arc::new(AtomicBool::new(
                 hebnix_sdk::process::is_rocket_league_running(),
             )),
@@ -415,6 +420,9 @@ impl SpooferManager {
                 .http_proxy
                 .lock()
                 .is_ok_and(|proxy| proxy.as_ref().is_some_and(HttpProxy::is_running))
+    }
+    pub fn account_redirect_active(&self) -> bool {
+        self.redirect_active.load(Ordering::Acquire)
     }
     pub fn socket_running(&self) -> bool {
         false
@@ -650,6 +658,7 @@ impl SpooferManager {
                 crl.stop();
             }
         }
+        Ok(())
     }
 
     fn sync_proxy_options(&self) -> Result<(), String> {
@@ -691,7 +700,10 @@ impl SpooferManager {
         let _guard = self.runtime_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.requested_http.store(false, Ordering::Release);
         self.disable_rlapi();
-        self.stop_http();
+        if let Err(error) = self.stop_http() {
+            tracing::error!("Account HTTP proxy cleanup failed: {error}");
+            let _ = self.tx.send(AppMsg::Log(format!("[Spoofer] Account redirect cleanup failed: {error}")));
+        }
     }
     pub fn block_for_certificate_removal(&self) {
         self.certificate_blocked.store(true, Ordering::Release);
@@ -748,6 +760,29 @@ impl SpooferManager {
 #[cfg(test)]
 mod proxy_tests {
     use super::ProxyOptions;
+    #[test]
+    fn busy_ports_fall_back_to_the_next_one() {
+        let taken = std::net::TcpListener::bind((super::PROXY_HOST, 0)).unwrap();
+        let busy = taken.local_addr().unwrap().port();
+        let listener = super::bind_local("test", &[busy, 0]).unwrap();
+        assert_ne!(listener.local_addr().unwrap().port(), busy);
+        assert!(super::bind_local("test", &[busy]).is_err());
+    }
+    #[test]
+    fn hebnix_proxy_settings_are_recognised_on_any_port() {
+        for port in [6969, 143, 8080, 51234] {
+            assert!(super::is_hebnix_proxy_server(&super::proxy_server(port)));
+        }
+        assert!(super::is_hebnix_proxy_server("127.0.0.1:8080"));
+        for other in [
+            "http=127.0.0.1:6969;https=127.0.0.1:7000",
+            "http=10.0.0.1:6969;https=10.0.0.1:6969",
+            "proxy.example.com:3128",
+            "",
+        ] {
+            assert!(!super::is_hebnix_proxy_server(other), "{other}");
+        }
+    }
     #[test]
     fn declined_elevation_disables_http_features_but_preserves_customisation() {
         let unique = std::time::SystemTime::now()

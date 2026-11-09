@@ -39,6 +39,7 @@ impl CrlServer {
         tx: Sender<AppMsg>,
     ) -> Result<(Self, u16), String> {
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        crate::spoofer::ca::set_crl_port(port);
         let running = Arc::new(AtomicBool::new(true));
         let crl = Arc::new(crl_der);
 

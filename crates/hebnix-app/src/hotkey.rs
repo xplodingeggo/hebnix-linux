@@ -15,6 +15,12 @@ pub struct ToggleHotkey {
 }
 
 impl ToggleHotkey {
+    pub fn clear(&mut self) {
+        if let Ok(mut key) = self.key.write() {
+            *key = None;
+        }
+    }
+
     pub fn new() -> Option<Self> {
         Some(Self {
             current_name: Arc::new(Mutex::new(String::new())),

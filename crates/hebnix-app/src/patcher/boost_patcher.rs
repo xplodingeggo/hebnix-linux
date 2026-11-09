@@ -1233,7 +1233,7 @@ pub fn patch_boost_meter(
 
     let final_out = repack_package(&package)?;
     fs::write(&upk_path, &final_out).map_err(|e| format!("Failed to write patched UPK: {}", e))?;
-    Ok(())
+    crate::patcher::chat_paste::reapply(Path::new(game_dir), Path::new(backup_dir))
 }
 
 #[derive(Deserialize)]
@@ -1458,7 +1458,12 @@ impl BoostPatcherState {
             let backup_gfx = backups_dir_clone.join(format!("{}.bak", GFX_UPK));
             if backup_gfx.exists() && fs::copy(&backup_gfx, &crate::patcher::game_path::resolve(&cooked_pc_clone, GFX_UPK)).is_ok()
             {
-                let _ = local_tx.send(BoostOp::Restored);
+                let _ = local_tx.send(
+                    match crate::patcher::chat_paste::reapply(&cooked_pc_clone, &backups_dir_clone) {
+                        Ok(()) => BoostOp::Restored,
+                        Err(error) => BoostOp::Error(error),
+                    },
+                );
             } else {
                 let _ = local_tx.send(BoostOp::Error("No backup found to restore.".into()));
             }
@@ -1604,7 +1609,7 @@ impl BoostPatcherState {
             }
         }
 
-        crate::ui::browser::header(ui, t("tab-boost-meter-patcher"), |ui| {
+        crate::ui::browser::header(ui, t("nav-boost-meter"), |ui| {
             if ui.button(t("btn-refresh")).clicked() {
                 if self.source == PatchSource::Catalog {
                     self.catalog.refresh(ctx);
@@ -1714,7 +1719,7 @@ impl BoostPatcherState {
         egui::ScrollArea::vertical()
             .id_salt("patcher_boosts_scroll")
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show(ui, |ui| crate::panel::followed(ui, |ui| {
                 for row in visible.chunks(column_count) {
                     ui.columns(column_count, |columns| {
                         for (column, boost) in row.iter().enumerate() {
@@ -1840,7 +1845,7 @@ impl BoostPatcherState {
                     });
                     ui.add_space(6.0);
                 }
-            });
+            }));
 
         if let Some(boost_to_delete) = self.confirm_delete.clone() {
             let mut close = false;

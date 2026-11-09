@@ -1,5 +1,13 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod auto_upload_replays;
+mod replay_metadata;
+mod replay_scan;
+mod replay_timeline;
+mod replay_source;
+mod replay_history_log;
+mod replay_history_patch;
 mod patcher;
 mod ball {
     pub use crate::patcher::ball::*;
@@ -27,14 +35,34 @@ mod decal_patcher {
 mod deep_link;
 mod discord_link;
 mod discord_presence;
+#[cfg(target_os = "windows")]
 mod dpi_fix;
+#[cfg(target_os = "linux")]
+#[path = "dpi_fix_linux.rs"]
+mod dpi_fix;
+mod panel;
+mod preview_server;
+#[cfg(target_os = "windows")]
 mod hotkey;
+#[cfg(target_os = "linux")]
+#[path = "hotkey_linux.rs"]
+mod hotkey;
+#[cfg(target_os = "windows")]
+mod hosts_file;
 mod i18n;
 mod item_cleanup;
 mod messages;
+#[cfg(target_os = "windows")]
+mod monitor;
+#[cfg(target_os = "linux")]
+#[path = "monitor_linux.rs"]
 mod monitor;
 mod multiplayer_lan;
 mod notifications;
+#[cfg(target_os = "windows")]
+#[path = "overlay/mod_windows.rs"]
+mod overlay;
+#[cfg(target_os = "linux")]
 mod overlay;
 mod owned_inventory;
 mod veryimportantfile;
@@ -42,9 +70,16 @@ mod patch_core {
     pub use crate::patcher::patch_core::*;
 }
 mod plugins;
+mod profile_pictures;
+mod scoreboard;
+mod name_bridge;
 mod presets;
 mod recovery_tasks;
 mod screen;
+#[cfg(target_os = "windows")]
+mod spoofer;
+#[cfg(target_os = "linux")]
+#[path = "spoofer/mod_linux.rs"]
 mod spoofer;
 mod statsapi_ini;
 mod speed_patch {
@@ -61,10 +96,26 @@ mod ui_work;
 mod upk_keys {
     pub use crate::patcher::upk_keys::*;
 }
+#[cfg(target_os = "windows")]
 mod watchdog;
+#[cfg(target_os = "linux")]
+#[path = "watchdog_linux.rs"]
+mod watchdog;
+#[cfg(target_os = "windows")]
+mod webview;
+#[cfg(target_os = "linux")]
+#[path = "webview_linux.rs"]
 mod webview;
 mod winutil;
+#[cfg(target_os = "windows")]
 mod window_state;
+#[cfg(target_os = "linux")]
+#[path = "window_state_linux.rs"]
+mod window_state;
+#[cfg(target_os = "windows")]
+mod visibility;
+#[cfg(target_os = "linux")]
+#[path = "visibility_linux.rs"]
 mod visibility;
 
 use app::HebnixApp;
@@ -111,7 +162,6 @@ fn setup_logging(base_dir: &std::path::Path) {
         .unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=warn,naga=warn".into());
 
     // sync writer, nothing buffered so the log survives a hard crash.
-    // volume's low enough that sync writes don't matter.
     let log_file = open_fresh_log(base_dir).map_err(|error| {
         eprintln!("failed to refresh hebnix.log: {error}");
     });
@@ -131,8 +181,6 @@ fn setup_logging(base_dir: &std::path::Path) {
     }
 }
 
-/// On panic dump msg + backtrace to AppData's crash.txt, also log it,
-/// then fall through to the default hook.
 fn setup_panic_hook(base_dir: &std::path::Path) {
     let crash_path = base_dir.join("crash.txt");
     let default_hook = std::panic::take_hook();
@@ -213,17 +261,21 @@ fn main() -> eframe::Result {
 
     let cfg = config::Config::load(&base_dir);
     i18n::init(&cfg.settings.language, Some(base_dir.join("locales")));
+    tracing::info!("startup localization initialized");
 
     // single instance guard
     let Some(_lock) = winutil::acquire_single_instance() else {
         winutil::focus_existing_instance();
         return Ok(());
     };
+    tracing::info!("startup single-instance guard acquired");
 
     spoofer::restore_if_crashed(&base_dir);
+    tracing::info!("checking legacy WebSocket cleanup");
     if let Err(error) = spoofer::cleanup_websocket_once(&base_dir) {
         tracing::warn!("WebSocket proxy cleanup: {error}");
     }
+    tracing::info!("legacy WebSocket cleanup check complete");
     let _ = watchdog::spawn();
 
     #[cfg(target_os = "linux")]
@@ -274,11 +326,15 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
+    tracing::info!("starting main window renderer");
     let result = eframe::run_native(
         "Hebnix",
         options,
         Box::new(|cc| Ok(Box::new(HebnixApp::new(cc)))),
     );
+    if let Err(error) = &result {
+        tracing::error!(%error, "main window renderer failed");
+    }
     watchdog::finish_live_handoff();
     result
 }

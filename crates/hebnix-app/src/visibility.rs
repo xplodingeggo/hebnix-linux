@@ -69,4 +69,44 @@ mod tests {
         assert!(queue_toggle());
         cancel_queued_toggle();
     }
+
+    #[test]
+    fn stalled_startup_or_toggle_releases_controls_without_replaying_requests() {
+        for hidden in [true, false] {
+            for drawn in [false, true] {
+                let mut gate = Gate::new();
+                assert!(gate.begin(hidden, 0));
+                let Phase::Changing(mut pending) = gate.phase else {
+                    unreachable!()
+                };
+                pending.applied = true;
+                pending.drawn_frame = drawn.then_some(1);
+                // Cover both a missing first frame and a stalled shell update.
+                pending.taskbar = drawn.then_some(1);
+                gate.phase = Phase::Changing(pending);
+                assert_eq!(
+                    gate.settling(1),
+                    Some(pending),
+                    "native recovery must run without a drawn UI frame"
+                );
+                if !hidden && !drawn {
+                    assert!(gate.candidate(1).is_none());
+                }
+                assert!(
+                    gate.expire(pending.started_at + Duration::from_secs(2))
+                        .is_none()
+                );
+                assert!(!gate.queue());
+                assert_eq!(
+                    gate.expire(pending.started_at + Duration::from_secs(3)),
+                    Some(pending)
+                );
+                assert_eq!(gate.phase, Phase::Idle);
+                assert!(!gate.complete(pending, 1, true));
+                assert!(gate.queue());
+                assert!(!gate.queue());
+                assert!(gate.begin(!hidden, 2));
+            }
+        }
+    }
 }

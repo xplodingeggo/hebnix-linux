@@ -15,6 +15,10 @@ use mlua::{Lua, LuaSerdeExt, SerializeOptions, Table, Value as LuaValue, Variadi
 
 use hebnix_sdk::tracker::TrackerClient;
 
+#[cfg(target_os = "windows")]
+use crate::overlay::rect as rect_styled;
+#[cfg(target_os = "linux")]
+use crate::overlay::rect_styled;
 use crate::messages::AppMsg;
 use crate::plugins::cvar::{CvarRegistry, CvarValue};
 use crate::plugins::store::PluginStore;
@@ -38,6 +42,9 @@ pub struct HostShared {
     /// Process-local values registered by enabled plugins. Any plugin may read
     /// or write them; ownership is used to clean them up when a plugin unloads.
     pub cvars: CvarRegistry,
+    /// Produced only by UI-thread Lua callbacks and drained every UI logic pass.
+    /// Keep bulky browser payloads out of the background game-event queue.
+    pub overlay_messages: Vec<(String, serde_json::Value)>,
 }
 
 const RL_CONFIG_FILES: [(&str, &str); 2] = [
@@ -561,6 +568,18 @@ fn clear_asset_dir(plugin_dir: &std::path::Path, rel: &str) -> bool {
     ok
 }
 
+#[cfg(target_os = "windows")]
+fn shell_open(target: &str) -> bool {
+    std::process::Command::new("xdg-open")
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+#[cfg(target_os = "linux")]
 fn shell_open(target: &str) -> bool {
     std::process::Command::new("xdg-open")
         .arg(target)
@@ -3435,10 +3454,7 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
             "send",
             lua.create_function(move |lua, value: LuaValue| {
                 let data: serde_json::Value = lua.from_value(value)?;
-                let _ = host.tx.send(AppMsg::OverlayPost {
-                    slug: host.slug.clone(),
-                    data,
-                });
+                host.shared.borrow_mut().overlay_messages.push((host.slug.clone(), data));
                 Ok(())
             })?,
         )?;
@@ -3528,6 +3544,7 @@ pub fn install_api(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<()> {
                         text: color("text"),
                         duration: opts.as_ref().and_then(|t| t.get::<f32>("duration").ok()),
                         image,
+                        failed: false,
                     },
                 });
                 Ok(())
@@ -3598,14 +3615,39 @@ fn build_draw_table(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<Table> {
         "rect",
         lua.create_function(
             |_, (x, y, w, h, opts): (f32, f32, f32, f32, Option<Table>)| {
-                overlay::rect(
+                let filled = opt_bool(&opts, "filled", false);
+                let border = opts
+                    .as_ref()
+                    .and_then(|table| table.get::<f32>("border").ok())
+                    .or_else(|| {
+                        opts.as_ref()
+                            .and_then(|table| table.get::<f32>("border_size").ok())
+                    })
+                    .unwrap_or_else(|| {
+                        if filled {
+                            0.0
+                        } else {
+                            opt_f32(&opts, "width", 1.0)
+                        }
+                    });
+                let radius = opts
+                    .as_ref()
+                    .and_then(|table| table.get::<f32>("radius").ok())
+                    .or_else(|| {
+                        opts.as_ref()
+                            .and_then(|table| table.get::<f32>("border_radius").ok())
+                    })
+                    .unwrap_or(0.0);
+                rect_styled(
                     x,
                     y,
                     w,
                     h,
                     opt_rgba(&opts, "color", WHITE),
-                    opt_f32(&opts, "width", 1.0),
-                    opt_bool(&opts, "filled", false),
+                    opt_rgba(&opts, "border_color", opt_rgba(&opts, "color", WHITE)),
+                    border,
+                    filled,
+                    radius,
                 );
                 Ok(())
             },
@@ -4159,16 +4201,15 @@ fn build_ui_table(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<Table> {
     {
         ui.set(
             "readonly_textbox",
-            lua.create_function(move |_, text: String| {
+            lua.create_function(move |_, (text, height): (String, Option<f32>)| {
                 let _ = with_current_ui(|ui| {
-                    let mut display_text = text;
-
-                    // add_sized forces the TextEdit to fill all remaining window space
-                    ui.add_sized(
-                        ui.available_size(),
-                        egui::TextEdit::multiline(&mut display_text)
-                            .font(egui::TextStyle::Monospace),
-                    );
+                    let display_text = text;
+                    let height = height.unwrap_or(260.0).max(48.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(height)
+                        .show(ui, |ui| crate::panel::followed(ui, |ui| {
+                            ui.monospace(&display_text);
+                        }));
                 });
                 Ok(())
             })?,
@@ -4383,13 +4424,13 @@ fn build_ui_table(lua: &Lua, host: Rc<HostCtx>) -> mlua::Result<Table> {
                     .max_height(max_height.max(20.0))
                     .auto_shrink([false, true])
                     .stick_to_bottom(true)
-                    .show(outer, |inner| {
+                    .show(outer, |inner| crate::panel::followed(inner, |inner| {
                         with_ui_scope(inner, || {
                             if let Err(e) = f.call::<()>(ui_tbl.clone()) {
                                 tracing::warn!("plugin ui.scroll_area callback error: {e}");
                             }
                         });
-                    });
+                    }));
             });
             Ok(())
         })?,

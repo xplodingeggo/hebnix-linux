@@ -111,7 +111,13 @@ pub fn find_font_file(fonts_dir: &Path, name: &str) -> Option<std::path::PathBuf
             continue;
         }
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if stem.eq_ignore_ascii_case(name) {
+            // exact stem, or a family name followed by a variant suffix:
+            // "Lexend" matches "Lexend-VariableFont_wght.ttf"
+            let (stem, name_lc) = (stem.to_ascii_lowercase(), name.to_ascii_lowercase());
+            let variant = stem.strip_prefix(name_lc.as_str()).is_some_and(|rest| {
+                matches!(rest.chars().next(), Some('-' | '_' | ' '))
+            });
+            if stem == name_lc || variant {
                 return Some(path);
             }
         }

@@ -9,6 +9,8 @@ const BACKUP_SUFFIX: &str = ".hbnx_mapbak";
 const MANIFEST: &str = "background_swaps.json";
 const NO_BACKGROUND_DONOR: &str = "__HBNX_NO_BACKGROUND__";
 pub const CUSTOM_DONOR_PREFIX: &str = "custom:";
+/// `arena:Park_P` borrows a whole arena's look instead of just its sky and background.
+pub use super::map_swap::ARENA_DONOR_PREFIX;
 const SAFE_DONORS: &[&str] = &[
     "ShatterShot_VFX",
     "BG_Stadium_10A_P",
@@ -29,7 +31,7 @@ struct SwapState {
 }
 
 type State = HashMap<String, SwapState>;
-type Patch = (usize, Vec<u8>);
+pub(super) type Patch = (usize, Vec<u8>);
 
 pub fn run(
     command: &str,
@@ -176,8 +178,12 @@ fn apply(
 ) -> Result<String, String> {
     validate_name(host_name)?;
     let custom_donor = donor_name.starts_with(CUSTOM_DONOR_PREFIX);
+    let arena_donor = donor_name.strip_prefix(ARENA_DONOR_PREFIX);
     let donor_path = if custom_donor {
         custom_donor_path(donor_name)?
+    } else if let Some(arena) = arena_donor {
+        validate_name(arena)?;
+        map_path(cooked, arena)
     } else {
         validate_name(donor_name)?;
         if !SAFE_DONORS
@@ -188,7 +194,7 @@ fn apply(
         }
         map_path(cooked, donor_name)
     };
-    if host_name.eq_ignore_ascii_case(donor_name) {
+    if host_name.eq_ignore_ascii_case(arena_donor.unwrap_or(donor_name)) {
         return Err("Pick two different arenas.".into());
     }
     ensure_game_closed("applying a background")?;
@@ -220,7 +226,10 @@ fn apply(
     } else {
         donor_path.clone()
     };
-    let result = apply_inner(cooked, &host_path, &donor_source, donor_name, custom_donor);
+    let result = match arena_donor {
+        Some(arena) => super::map_swap::apply_arena(cooked, host_name, &donor_source, arena),
+        None => apply_inner(cooked, &host_path, &donor_source, donor_name, custom_donor),
+    };
     match result {
         Ok((copy_name, patched_sub_levels)) => {
             state.insert(
@@ -236,11 +245,14 @@ fn apply(
                 let _ = undo_core(cooked, &mut state, host_name);
                 return Err(e);
             }
-            Ok(format!(
-                "{} now uses {}'s fog, sky and background.",
-                friendly(host_name),
-                friendly(donor_name)
-            ))
+            Ok(match arena_donor {
+                Some(arena) => format!("{} now looks like {}.", friendly(host_name), friendly(arena)),
+                None => format!(
+                    "{} now uses {}'s fog, sky and background.",
+                    friendly(host_name),
+                    friendly(donor_name)
+                ),
+            })
         }
         Err(error) => {
             for new_backup in matching_files(cooked, |name| name.ends_with(".upk.hbnx_mapbak"))
@@ -599,7 +611,7 @@ fn host_sky_patches(package: &UpkPackage, preserve_sky: bool) -> Result<Vec<Patc
     Ok(patches)
 }
 
-fn disable_old_atmosphere(package: &UpkPackage) -> Result<Vec<Patch>, String> {
+pub(super) fn disable_old_atmosphere(package: &UpkPackage) -> Result<Vec<Patch>, String> {
     const GLOBAL: &[&str] = &[
         "DirectionalLightComponent",
         "DominantDirectionalLightComponent",
@@ -648,7 +660,7 @@ fn disable_old_atmosphere(package: &UpkPackage) -> Result<Vec<Patch>, String> {
     Ok(patches)
 }
 
-fn world_visual_patches(host: &UpkPackage, donor: &UpkPackage) -> Result<Vec<Patch>, String> {
+pub(super) fn world_visual_patches(host: &UpkPackage, donor: &UpkPackage) -> Result<Vec<Patch>, String> {
     let Some(he) = host
         .exports
         .iter()
@@ -754,7 +766,7 @@ fn ambient_particle(package: &UpkPackage, e: &ExportEntry, reference: i32) -> bo
     .iter()
     .any(|x| lower.contains(x))
 }
-fn is_gameplay_actor_class(class: &str) -> bool {
+pub(super) fn is_gameplay_actor_class(class: &str) -> bool {
     let n = class.to_ascii_lowercase();
     [
         "gameevent",
@@ -934,19 +946,19 @@ fn is_gameplay_structure(mesh: &str) -> bool {
         && !is_atmosphere_visual(mesh)
 }
 
-fn visible_sublevel(name: &str) -> bool {
+pub(super) fn visible_sublevel(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     !["sfx", "audio", "sound", "ambient", "tutorial"]
         .iter()
         .any(|x| n.contains(x))
 }
-fn apply_patches(package: &mut UpkPackage, patches: Vec<Patch>) -> Result<(), String> {
+pub(super) fn apply_patches(package: &mut UpkPackage, patches: Vec<Patch>) -> Result<(), String> {
     for (offset, data) in patches {
         package.patch(offset, &data)?
     }
     Ok(())
 }
-fn make_copy_name(donor: &str, len: usize) -> Result<String, String> {
+pub(super) fn make_copy_name(donor: &str, len: usize) -> Result<String, String> {
     if len < 6 {
         return Err("This host's streaming slot is too short".into());
     }
@@ -958,7 +970,7 @@ fn make_copy_name(donor: &str, len: usize) -> Result<String, String> {
     Ok(name)
 }
 
-fn donor_copy_label(donor: &str) -> String {
+pub(super) fn donor_copy_label(donor: &str) -> String {
     donor
         .strip_prefix(CUSTOM_DONOR_PREFIX)
         .and_then(|name| Path::new(name).file_stem())
@@ -1085,6 +1097,24 @@ fn save_state(dir: &Path, state: &State) -> Result<(), String> {
         std::fs::remove_file(&path).map_err(|e| format!("Could not replace state: {e}"))?
     }
     std::fs::rename(temp, path).map_err(|e| format!("Could not finish state update: {e}"))
+}
+fn rocket_league_running() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("tasklist.exe")
+            .args(["/FI", "IMAGENAME eq RocketLeague.exe", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .output();
+        output.ok().is_some_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .to_ascii_lowercase()
+                .contains("rocketleague.exe")
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        hebnix_sdk::process::is_rocket_league_running()
+    }
 }
 fn ensure_game_closed(action: &str) -> Result<(), String> {
     if hebnix_sdk::process::is_rocket_league_running() {

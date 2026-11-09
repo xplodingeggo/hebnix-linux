@@ -38,6 +38,8 @@ pub enum AppMsg {
     WindowMode(WindowMode),
     ToggleVisibility,
     TrayToggleVisibility,
+    // controller chord: open or close the docked side panel
+    TogglePanel,
     TrayQuit,
     HotkeyCaptured(Option<String>),
     // should the main window be topmost (RL or hebnix focused)
@@ -97,6 +99,14 @@ pub enum AppMsg {
         name: String,
         text: String,
         style: crate::toast::ToastStyle,
+    },
+    // file work with a bar, see toast::report
+    Progress {
+        key: String,
+        text: String,
+        fraction: Option<f32>,
+        done: bool,
+        failed: bool,
     },
     // http result, slug picks the plugin that asked
     PluginHttpRes {

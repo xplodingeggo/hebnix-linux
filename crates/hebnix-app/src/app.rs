@@ -1,4 +1,9 @@
 // crates/hebnix-app/src/app.rs
+#[path = "ui/home.rs"]
+mod home;
+#[cfg(test)]
+#[path = "ui/navigation_tests.rs"]
+mod navigation_tests;
 #[cfg(test)]
 #[path = "ui/sidebar_tests.rs"]
 mod sidebar_tests;
@@ -8,6 +13,8 @@ mod name;
 mod spoofer_controls;
 #[path = "ui/titles.rs"]
 mod titles;
+#[path = "ui/menu_textures.rs"]
+mod menu_textures;
 #[cfg(test)]
 #[path = "ui/titles_tests.rs"]
 mod titles_tests;
@@ -39,11 +46,11 @@ use crate::ui::console::ConsoleState;
 use crate::ui::workshop::{ImageState, WorkshopState};
 use crate::winutil;
 
-pub const APP_VERSION: &str = "2.2.6";
+pub const APP_VERSION: &str = "2.3.0";
 /// the hebnix-linux version shown in the About tab. kept equal to the Windows
 /// version it is based on (APP_VERSION above, which also tracks the engine/
 /// plugin compat version).
-pub const LINUX_PORT_VERSION: &str = "2.2.6";
+pub const LINUX_PORT_VERSION: &str = "2.3.0-dev";
 
 pub const DEFAULT_WIDTH: f32 = 1250.0;
 pub const DEFAULT_HEIGHT: f32 = 700.0;
@@ -125,22 +132,13 @@ const RANK_SPOOF_PLAYLISTS: &[(i32, &str)] = &[
     (28, "Rumble"),
     (29, "Dropshot"),
     (30, "Snow Day"),
+    (61, "Quads"),
     (63, "Heatseeker"),
 ];
 
 #[allow(dead_code)]
-fn playlist_name(id: i32) -> &'static str {
-    match id {
-        10 => "Ranked 1v1",
-        11 => "Ranked 2v2",
-        13 => "Ranked 3v3",
-        27 => "Hoops",
-        28 => "Rumble",
-        29 => "Dropshot",
-        30 => "Snow Day",
-        63 => "Heatseeker",
-        _ => "Unknown Playlist",
-    }
+fn playlist_name(id: i32) -> String {
+    hebnix_sdk::utils::playlists::display_name(i64::from(id))
 }
 
 fn rank_name(id: i32) -> &'static str {
@@ -377,6 +375,7 @@ impl RankSpoofState {
     }
 }
 
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FriendSpoofState {
     enabled: bool,
@@ -386,11 +385,13 @@ struct FriendSpoofState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Home,
     Console,
     Workshop,
     Spoofer,
-    Colours,
+    Items,
     Patcher,
+    GameMods,
     Settings,
     Plugins,
     Replays,
@@ -398,26 +399,30 @@ enum Tab {
 }
 
 impl Tab {
-    const ALL: [Self; 9] = [
-        Self::Console,
+    const ALL: [Self; 11] = [
+        Self::Home,
         Self::Workshop,
-        Self::Spoofer,
-        Self::Colours,
+        Self::Items,
         Self::Patcher,
-        Self::Settings,
-        Self::Plugins,
+        Self::GameMods,
+        Self::Spoofer,
         Self::Replays,
+        Self::Plugins,
+        Self::Settings,
+        Self::Console,
         Self::About,
     ];
 
     /// translated tab name for the UI
     fn label(self) -> String {
         match self {
+            Self::Home => t("home-title"),
             Self::Console => t("tab-console"),
             Self::Workshop => t("tab-workshop"),
-            Self::Spoofer => t("tab-spoofer"),
-            Self::Patcher => t("tab-patcher"),
-            Self::Colours => t("tab-colours"),
+            Self::Spoofer => t("nav-player"),
+            Self::Items => t("tab-patcher"),
+            Self::Patcher => t("nav-upk-studio"),
+            Self::GameMods => t("tab-game-mods"),
             Self::Settings => t("tab-settings"),
             Self::Plugins => t("tab-plugins"),
             Self::Replays => t("tab-replays"),
@@ -429,11 +434,13 @@ impl Tab {
     /// Legacy names are handled by `from_config_key` so existing configs keep working.
     fn config_key(self) -> &'static str {
         match self {
+            Self::Home => "Home",
             Self::Console => "Console",
             Self::Workshop => "Maps",
             Self::Spoofer => "Spoofer",
-            Self::Patcher => "Items",
-            Self::Colours => "Colours",
+            Self::Items => "Items",
+            Self::Patcher => "UPK Studio",
+            Self::GameMods => "Game Mods",
             Self::Settings => "Settings",
             Self::Plugins => "Plugins",
             Self::Replays => "Replays",
@@ -442,6 +449,13 @@ impl Tab {
     }
 
     fn from_config_key(key: &str) -> Self {
+        // Keep saved defaults from earlier navigation layouts working.
+        match key {
+            "Colours" | "UPK Studio" | "Patcher" => return Self::Patcher,
+            "Workshop" => return Self::Workshop,
+            "Player" | "Customisation" => return Self::Spoofer,
+            _ => {}
+        }
         // Preserve the saved default from before Experimental became Replays.
         if key == "Experimental" {
             return Self::Replays;
@@ -449,7 +463,7 @@ impl Tab {
         Self::ALL
             .into_iter()
             .find(|tab| tab.config_key() == key)
-            .unwrap_or(Self::Console)
+            .unwrap_or(Self::Home)
     }
 }
 
@@ -458,10 +472,45 @@ enum ItemsMode {
     Swapper,
     Recolour,
     Patching,
-    Spawner,
     SpeedPatch,
     WheelAlignment,
     BallAppearance,
+    GameColours,
+    ArenaBackgrounds,
+    GoalExplosion,
+    ItemNames,
+    Manage,
+    ItemsActive,
+    Presets,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StudioSection {
+    Tools,
+    CustomAssets,
+    Appearance,
+    Active,
+}
+
+impl ItemsMode {
+    fn section(self) -> Option<StudioSection> {
+        Some(match self {
+            Self::Swapper | Self::Recolour | Self::ItemsActive | Self::Presets => return None,
+            Self::SpeedPatch => StudioSection::Tools,
+            Self::Patching | Self::ItemNames => StudioSection::CustomAssets,
+            Self::WheelAlignment | Self::BallAppearance | Self::GameColours | Self::ArenaBackgrounds | Self::GoalExplosion => StudioSection::Appearance,
+            Self::Manage => StudioSection::Active,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemsSubTab {
+    Swapper,
+    Colours,
+    Active,
+    Presets,
+    Loadouts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +519,8 @@ enum PatcherSubTab {
     BoostMeter,
     Decal,
     Car,
+    Anthem,
+    Thumbnail,
     Swapper(crate::swapper::SwapCategory),
     Active,
     Presets,
@@ -478,12 +529,20 @@ enum PatcherSubTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplaysSubTab {
     AutoUploadReplays,
+    ReplayTimeline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SettingsSubTab {
-    Hebnix,
-    Plugin,
+enum PluginsSubTab {
+    Installed,
+    Browse,
+    Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppearanceSubTab {
+    General,
+    Theme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,9 +557,13 @@ enum HebnixSettingsTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpooferSubTab {
     Username,
+    NameBridgeTest,
     Titles,
+    ProfilePictures,
+    Scoreboard,
     TitleRank,
     Friends,
+    MenuTextures,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -566,6 +629,7 @@ pub struct HebnixApp {
     control_rx: Receiver<AppMsg>,
 
     stats: Arc<StatsClient>,
+    home: home::HomeState,
     ws_stats: Arc<hebnix_sdk::stats::websocket::WsStatsClient>,
     stats_tx: crossbeam_channel::Sender<hebnix_sdk::stats::StatsEvent>,
     monitor: Monitor,
@@ -574,20 +638,25 @@ pub struct HebnixApp {
     plugin_mgr: PluginManager,
     tray: Option<Tray>,
     hotkey: Option<ToggleHotkey>,
+    panel: crate::panel::Panel,
     _secretsequence: crate::veryimportantfile::SecretSequenceListener,
 
     tab: Tab,
-    settings_subtab: SettingsSubTab,
+    plugins_subtab: PluginsSubTab,
     hebnix_settings_tab: HebnixSettingsTab,
+    appearance_subtab: AppearanceSubTab,
     spoofer_subtab: SpooferSubTab,
     patcher_subtab: PatcherSubTab,
     swapper_subtab: PatcherSubTab,
+    items_subtab: ItemsSubTab,
     replays_subtab: ReplaysSubTab,
+    replay_timeline: crate::replay_timeline::ReplayTimeline,
     speed_patch: crate::speed_patch::State,
     console: ConsoleState,
     workshop: WorkshopState,
     rlapi_panel: crate::ui::rlapi::RlApiPanel,
     auto_upload_replays: crate::auto_upload_replays::AutoUploadReplays,
+    replay_history_patch: crate::replay_history_patch::State,
 
     hidden: bool,
     topmost: bool,
@@ -656,6 +725,10 @@ pub struct HebnixApp {
     spoofer_title_glow: bool,
     spoofer_title_glow_color: [u8; 3],
     title_editor: titles::TitleEditorState,
+    profile_pictures: crate::profile_pictures::State,
+    scoreboard: crate::scoreboard::State,
+    name_bridge: crate::name_bridge::State,
+    menu_textures: menu_textures::MenuTextureState,
     spoofer_title_target: Option<String>,
     spoofer_titles: Vec<TitleSpoofSettings>,
     spoofer_title_filter: String,
@@ -678,13 +751,28 @@ pub struct HebnixApp {
     colours: crate::colours::ColoursState,
     patcher_car: crate::car_patcher::CarPatcherState,
     item_action_prompt_open: bool,
+    colour_admin_prompt_open: bool,
+    admin_prompt_open: bool,
+    launch_path_notice: bool,
+    patcher_anthem: crate::patcher::anthem_patcher::AnthemPatcherState,
     wheel_alignment: crate::patcher::wheel_alignment::WheelAlignmentState,
+    goal_explosion: crate::patcher::goal_explosion::State,
+    goal_explosion_volume: crate::patcher::goal_explosion_volume::State,
+    forfeit_command: crate::patcher::forfeit_command::State,
+    celebration: crate::patcher::celebration::State,
+    bots_freeplay: crate::patcher::bots_freeplay::State,
+    delete_backups: crate::patcher::delete_backups::State,
+    chat_export: crate::patcher::chat_export::State,
+    lan_commands: crate::patcher::lan_commands::State,
+    chat_paste: crate::patcher::chat_paste::State,
+    instant_suite: crate::patcher::instant_suite::State,
     swapper: crate::swapper::SwapperState,
     plugin_delete_prompt: Option<String>,
     catalogs_loading: bool,
     catalogs_loaded: bool,
     catalogs_error: Option<String>,
     presets: crate::presets::PresetStore,
+    loadouts: crate::ui::loadouts::LoadoutsPanel,
 }
 
 /// hand the Rocket League documents folder picked in settings (if any) to
@@ -715,6 +803,7 @@ impl HebnixApp {
         hebnix_sdk::input::init_controllers();
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
+        crate::patcher::chat_export::watch();
         let base_dir = crate::config::base_dir();
         let themes_dir = base_dir.join("themes");
         let fonts_dir = base_dir.join("fonts");
@@ -725,6 +814,10 @@ impl HebnixApp {
 
         let mut config = Config::load(&base_dir);
         let rl_launch_draft = config.rl_launch.clone();
+        if !config.settings.home_default_migrated {
+            config.settings.default_tab = "Home".to_string();
+            config.settings.home_default_migrated = true;
+        }
 
         let error_file = base_dir.join("theme_errors.txt");
         match theme::apply_theme(
@@ -753,6 +846,18 @@ impl HebnixApp {
 
         let (tx, rx) = crossbeam_channel::unbounded::<AppMsg>();
         let (control_tx, control_rx) = crossbeam_channel::unbounded();
+        crate::toast::install_sink(tx.clone(), cc.egui_ctx.clone());
+        #[cfg(windows)]
+        match crate::hosts_file::startup_repair() {
+            Some(Ok(backup)) => {
+                let _ = tx.send(AppMsg::Log(t_args(
+                    "hosts-repair-done",
+                    &[("backup", backup.display().to_string().into())],
+                )));
+            }
+            Some(Err(error)) => crate::toast::report_failed("hosts-repair", error),
+            None => {}
+        }
         crate::notifications::check_on_start(
             config.notification_id,
             tx.clone(),
@@ -801,8 +906,13 @@ impl HebnixApp {
         plugin_mgr.refresh(&mut config, true);
         let _ = config.save(&base_dir);
 
-        let hidden = config.settings.start_in_tray;
         winutil::set_minimize_to_tray(config.settings.minimize_to_tray);
+        let hidden = config.settings.start_in_tray && !crate::window_state::safe_rendering();
+        tracing::info!(
+            hidden,
+            theme = %config.settings.theme,
+            "main window startup settings"
+        );
         let tray = Tray::new(&base_dir, "Hebnix", hidden);
         if let Some(tray) = &tray {
             tray.listen(control_tx.clone(), cc.egui_ctx.clone());
@@ -819,6 +929,8 @@ impl HebnixApp {
                 ctx.request_repaint();
             });
         }
+
+        let panel = crate::panel::Panel::new(control_tx.clone(), cc.egui_ctx.clone());
 
         let secretsequence = crate::veryimportantfile::SecretSequenceListener::new();
         secretsequence.start();
@@ -986,7 +1098,6 @@ impl HebnixApp {
         let patcher_ball = crate::ball::PatcherState::new(&base_dir, &config);
         let patcher_boost = crate::boost_patcher::BoostPatcherState::new(&base_dir, &config);
         let patcher_decal = crate::decal_patcher::DecalPatcherState::new(&base_dir, &config);
-        let colours = crate::colours::ColoursState::new();
         let mut patcher_car = crate::car_patcher::CarPatcherState::new(&base_dir, &config);
         // linux-port: start from the last downloaded (or embedded) bodies
         // catalog so the car tools work before/without the download
@@ -999,6 +1110,8 @@ impl HebnixApp {
             wheel_alignment.set_catalog(&bodies);
             let _ = patcher_car.set_catalog(bodies);
         }
+        let patcher_anthem = crate::patcher::anthem_patcher::AnthemPatcherState::new(&base_dir, &config);
+        let swapper = crate::swapper::SwapperState::new(&base_dir);
         let owned_restart_marker = base_dir.join("enable_owned_replacements.pending");
         if owned_restart_marker.is_file() {
             let _ = std::fs::remove_file(&owned_restart_marker);
@@ -1008,6 +1121,11 @@ impl HebnixApp {
         let rl_launch_unconfigured =
             config.rl_launch.mode == crate::config::RlLaunchMode::Unconfigured;
         let default_tab = Tab::from_config_key(&config.settings.default_tab);
+        let default_items_mode = if config.settings.default_tab == "Colours" {
+            ItemsMode::GameColours
+        } else {
+            ItemsMode::Patching
+        };
 
         let discord_presence =
             crate::discord_presence::DiscordPresence::start(config.settings.discord_rich_presence);
@@ -1027,7 +1145,8 @@ impl HebnixApp {
             rx,
             control_rx,
             stats,
-            ws_stats,
+            home: home::HomeState::default(),
+            ws_stats: Arc::clone(&ws_stats),
             stats_tx,
             monitor,
             discord_presence,
@@ -1035,19 +1154,24 @@ impl HebnixApp {
             plugin_mgr,
             tray,
             hotkey,
+            panel,
             _secretsequence: secretsequence,
             tab: default_tab,
-            settings_subtab: SettingsSubTab::Hebnix,
+            plugins_subtab: PluginsSubTab::Installed,
             hebnix_settings_tab: HebnixSettingsTab::Interface,
+            appearance_subtab: AppearanceSubTab::General,
             spoofer_subtab: SpooferSubTab::Username,
-            patcher_subtab: PatcherSubTab::Ball,
-            swapper_subtab: PatcherSubTab::Swapper(crate::swapper::SwapCategory::ALL[0]),
-            replays_subtab: ReplaysSubTab::AutoUploadReplays,
+            patcher_subtab: PatcherSubTab::Car,
+            swapper_subtab: PatcherSubTab::Swapper(crate::swapper::SwapCategory::Bodies),
+            items_subtab: ItemsSubTab::Swapper,
+            replays_subtab: ReplaysSubTab::ReplayTimeline,
+            replay_timeline: crate::replay_timeline::ReplayTimeline::new(&base_dir, &cc.egui_ctx),
             speed_patch: crate::speed_patch::State::default(),
             console: ConsoleState::default(),
             workshop,
             rlapi_panel: crate::ui::rlapi::RlApiPanel::default(),
-            auto_upload_replays: crate::auto_upload_replays::AutoUploadReplays::new(&base_dir),
+            auto_upload_replays: crate::auto_upload_replays::AutoUploadReplays::new(&base_dir).with_refresh_client(Arc::clone(&ws_stats)),
+            replay_history_patch: Default::default(),
             hidden,
             topmost: false,
             currently_connected: false,
@@ -1110,6 +1234,10 @@ impl HebnixApp {
             spoofer_title_glow,
             spoofer_title_glow_color: spoofer_title_glow_color.unwrap_or(spoofer_title_color),
             title_editor,
+            profile_pictures: crate::profile_pictures::State::new(&base_dir),
+            scoreboard: Default::default(),
+            name_bridge: Default::default(),
+            menu_textures: Default::default(),
             spoofer_title_target,
             spoofer_titles,
             spoofer_title_filter: String::new(),
@@ -1124,20 +1252,35 @@ impl HebnixApp {
             spoofer_friends,
             friends_search: String::new(),
             item_clear_error: None,
-            items_mode: ItemsMode::Swapper,
+            items_mode: default_items_mode,
             patcher_ball,
             patcher_boost,
             patcher_decal,
-            colours,
             patcher_car,
-            item_action_prompt_open: false,
-            wheel_alignment,
+            patcher_anthem,
+            wheel_alignment: Default::default(),
+            goal_explosion: Default::default(),
+            goal_explosion_volume: Default::default(),
+            forfeit_command: Default::default(),
+            celebration: Default::default(),
+            bots_freeplay: Default::default(),
+            delete_backups: Default::default(),
+            chat_export: Default::default(),
+            lan_commands: Default::default(),
+            chat_paste: Default::default(),
+            instant_suite: Default::default(),
             swapper,
+            colours: crate::patcher::colours::ColoursState::new(),
+            colour_admin_prompt_open: false,
+            admin_prompt_open: false,
+            launch_path_notice: false,
+            item_action_prompt_open: false,
             plugin_delete_prompt: None,
             catalogs_loading: true,
             catalogs_loaded: true,
             catalogs_error: None,
             presets: crate::presets::PresetStore::new(&base_dir.clone()),
+            loadouts: Default::default(),
         };
 
         if hidden {
@@ -1147,6 +1290,17 @@ impl HebnixApp {
         app.plugin_mgr.shared.borrow_mut().is_gui_open = !hidden;
         app.refresh_stats_api_viewer();
         app.check_web_port();
+
+        let item_status = app.spoofer_mgr.item_status();
+        if item_status.active > 0 || item_status.legacy > 0 {
+            match app.spoofer_mgr.begin_item_clear() {
+                Ok(()) => app.check_item_clear(),
+                Err(error) => app.console.write(format!("[Items] Could not remove tracked items: {error}")),
+            }
+        } else if item_status.clearing {
+            // Finish a removal interrupted after its item counts reached zero.
+            app.check_item_clear();
+        }
 
         app.save_friends_internal();
         app.save_ranks_internal();
@@ -1170,10 +1324,6 @@ impl HebnixApp {
     }
 
     fn save_config(&mut self) {
-        let http_requested = self.http_spoofer_features().any();
-        self.config
-            .replay_upload
-            .enforce_spoofer(http_requested);
         if let Err(e) = self.config.save(&self.base_dir) {
             self.console
                 .write(format!("[Console] Failed to save config: {e}"));
@@ -1257,6 +1407,9 @@ impl HebnixApp {
             .cloned()
             .ok_or_else(|| "The bodies catalog was not downloaded".to_string())?;
         self.swapper.set_catalogs(&catalogs)?;
+        if let Some(anthems) = catalogs.get("anthems") {
+            self.patcher_anthem.set_catalog(anthems.clone());
+        }
         self.wheel_alignment.set_catalog(&bodies);
         self.patcher_decal.set_catalogs(skins, bodies)?;
         self.patcher_car.set_catalog(
@@ -1303,116 +1456,171 @@ impl HebnixApp {
         }
     }
 
-    fn render_replay_auto_upload_tab(&mut self, ui: &mut egui::Ui) {
-        ui.weak(spoofer::WEBSOCKET_UNAVAILABLE);
-        ui.disable();
-        let session = hebnix_sdk::rlapi::session::shared_game_session();
-        let options_were_enabled = self.replay_options_enabled();
+    fn render_game_mods_tab(&mut self, ui: &mut egui::Ui) {
+        ui.label(t("game-mods-intro"));
+        ui.add_space(8.0);
+        let cooked_pc = PathBuf::from(&self.config.settings.rl_path).join("TAGame").join("CookedPCConsole");
+        let backups_dir = cooked_pc.join("Backups");
+        if self.forfeit_command.render(ui, &cooked_pc, &backups_dir, &mut self.config.game_mods.forfeit_key, &mut self.config.game_mods.forfeit_pad) {
+            self.save_config();
+        }
+        ui.add_space(8.0);
+        self.chat_export.render(ui, &cooked_pc, &backups_dir);
+        ui.add_space(8.0);
+        self.lan_commands.render(ui, &cooked_pc, &backups_dir);
+        ui.add_space(8.0);
+        self.chat_paste.render(ui, &cooked_pc, &backups_dir);
+        ui.add_space(8.0);
+        if self.instant_suite.render(ui, &cooked_pc, &backups_dir, &mut self.config.game_mods.instant_suite_mode, &mut self.config.game_mods.instant_suite_map) {
+            self.save_config();
+        }
+        ui.add_space(8.0);
+        if self.celebration.render(ui, &cooked_pc, &backups_dir, &mut self.config.game_mods.celebration_key, &mut self.config.game_mods.celebration_pad) {
+            self.save_config();
+        }
+        ui.add_space(8.0);
+        if self.bots_freeplay.render(ui, &cooked_pc, &backups_dir, &mut self.config.game_mods.bots_freeplay_key, &mut self.config.game_mods.bots_freeplay_pad) {
+            self.save_config();
+        }
+    }
 
+    fn render_replay_auto_upload_tab(&mut self, ui: &mut egui::Ui) {
         let mut config_changed = false;
-        ui.scope(|ui| {
-            config_changed |= ui
-                .checkbox(
-                    &mut self.config.replay_upload.save_locally,
-                    "Save replays locally",
-                )
-                .changed();
-            config_changed |= ui
-                .checkbox(
-                    &mut self.config.replay_upload.upload_enabled,
-                    "Upload to ballchasing.com",
-                )
-                .changed();
-        });
-        ui.add_enabled_ui(self.config.replay_upload.upload_enabled, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Provider:");
-                egui::ComboBox::from_id_salt("replay_upload_provider")
-                    .selected_text("ballchasing.com")
-                    .show_ui(ui, |ui| {
-                        config_changed |= ui
-                            .selectable_value(
-                                &mut self.config.replay_upload.provider,
-                                "ballchasing.com".to_string(),
-                                "ballchasing.com",
-                            )
-                            .changed();
-                    });
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.heading("Auto Save + Upload");
+            ui.separator();
+            ui.label("Replay history is checked when a match ends or is left while Rocket League is open.");
+            self.replay_history_patch.show(ui);
+            ui.add_enabled_ui(self.replay_history_patch.enabled(), |ui| {
+                config_changed |= ui
+                    .checkbox(
+                        &mut self.config.replay_upload.save_locally,
+                        "Save replays locally",
+                    )
+                    .changed();
+                config_changed |= ui
+                    .checkbox(
+                        &mut self.config.replay_upload.upload_enabled,
+                        "Upload to ballchasing.com",
+                    )
+                    .changed();
             });
+            ui.add_enabled_ui(self.config.replay_upload.upload_enabled, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Provider:");
+                    egui::ComboBox::from_id_salt("replay_upload_provider")
+                        .selected_text("ballchasing.com")
+                        .show_ui(ui, |ui| {
+                            config_changed |= ui
+                                .selectable_value(
+                                    &mut self.config.replay_upload.provider,
+                                    "ballchasing.com".to_string(),
+                                    "ballchasing.com",
+                                )
+                                .changed();
+                        });
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("API key:");
+                    config_changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.config.replay_upload.api_key)
+                                .password(true)
+                                .desired_width(ui.available_width()),
+                        )
+                        .changed();
+                });
+            });
+        });
+        ui.add_space(8.0);
+        let check_now = egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.heading("Replay Details");
+            ui.separator();
             ui.horizontal_wrapped(|ui| {
-                ui.label("API key:");
+                ui.label("Replay name:");
                 config_changed |= ui
                     .add(
-                        egui::TextEdit::singleline(&mut self.config.replay_upload.api_key)
-                            .password(true)
+                        egui::TextEdit::singleline(&mut self.config.replay_upload.naming_template)
                             .desired_width(ui.available_width()),
                     )
                     .changed();
             });
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Replay name:");
+            ui.label(
+                egui::RichText::new(
+                    "Placeholders: {date}  {time}  {time24}  {winning_team}  {gamemode}  {map}  {match_guid}",
+                )
+                .small()
+                .weak(),
+            );
+            ui.add_enabled_ui(self.config.replay_upload.upload_enabled, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Visibility:");
+                    egui::ComboBox::from_id_salt("replay_upload_visibility")
+                        .selected_text(&self.config.replay_upload.visibility)
+                        .show_ui(ui, |ui| {
+                            for visibility in ["private", "unlisted", "public"] {
+                                config_changed |= ui
+                                    .selectable_value(
+                                        &mut self.config.replay_upload.visibility,
+                                        visibility.to_string(),
+                                        visibility,
+                                    )
+                                    .changed();
+                            }
+                        });
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Group ID (optional):");
+                    config_changed |= ui
+                        .text_edit_singleline(&mut self.config.replay_upload.group_id)
+                        .changed();
+                });
+            });
             config_changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.config.replay_upload.naming_template)
-                        .desired_width(ui.available_width()),
+                .checkbox(
+                    &mut self.config.replay_upload.debug_logging,
+                    "Debug logging",
                 )
                 .changed();
-        });
-        ui.label(
-            egui::RichText::new(
-                "Placeholders: {date}  {time}  {time24}  {winning_team}  {gamemode}  {map}  {match_guid}",
-            )
-            .small()
-            .weak(),
-        );
-        ui.add_enabled_ui(self.config.replay_upload.upload_enabled, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Visibility:");
-                egui::ComboBox::from_id_salt("replay_upload_visibility")
-                    .selected_text(&self.config.replay_upload.visibility)
-                    .show_ui(ui, |ui| {
-                        for visibility in ["private", "unlisted", "public"] {
-                            config_changed |= ui
-                                .selectable_value(
-                                    &mut self.config.replay_upload.visibility,
-                                    visibility.to_string(),
-                                    visibility,
-                                )
-                                .changed();
-                        }
-                    });
-            });
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Group ID (optional):");
-                config_changed |= ui
-                    .text_edit_singleline(&mut self.config.replay_upload.group_id)
-                    .changed();
-            });
-        });
-        config_changed |= ui
-            .checkbox(
-                &mut self.config.replay_upload.debug_logging,
-                "Debug logging",
-            )
-            .changed();
+            ui
+                .add_enabled(
+                    self.replay_options_enabled(),
+                    egui::Button::new("Check latest matches now"),
+                )
+                .clicked()
+        }).inner;
         if config_changed {
+            self.auto_upload_replays.stop();
             self.save_config();
-            if !options_were_enabled && self.replay_options_enabled() {
-                self.prompt_for_missing_spoofer_certificate();
-            }
             self.evaluate_proxies();
         }
-        ui.separator();
-        if self.config.replay_upload.upload_enabled
-            && self.config.replay_upload.api_key.trim().is_empty()
-        {
-            ui.colored_label(
-                egui::Color32::YELLOW,
-                "Enter a ballchasing.com API key to upload replays.",
+        if check_now {
+            self.auto_upload_replays.check(
+                &self.config.replay_upload,
+                std::path::Path::new(&self.config.settings.rl_path),
+                &self.config.rl_launch,
+                self.tx.clone(),
+                ui.ctx().clone(),
+                true,
             );
         }
-        self.auto_upload_replays.show_status(ui, &session.status());
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.heading("Status");
+            ui.separator();
+            if self.config.replay_upload.upload_enabled
+                && self.config.replay_upload.api_key.trim().is_empty()
+            {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "Enter a ballchasing.com API key to upload replays.",
+                );
+            }
+            self.auto_upload_replays.show_status(ui);
+        });
     }
     fn process_preset_operations(
         &mut self,
@@ -1424,6 +1632,18 @@ impl HebnixApp {
         self.patcher_boost.poll_ops(&self.tx, &mut self.config);
         self.patcher_decal
             .handle_op_result(&self.tx, &mut self.config);
+        self.colours.poll();
+        if !self.colours.is_busy()
+            && let Some(cars) = self.presets.pending_cars.take()
+        {
+            self.colours.begin(
+                crate::patcher::colours::ColourAction::ApplyCars(cars),
+                cooked_pc,
+                backups_dir,
+                &self.tx,
+                ctx,
+            );
+        }
         if self.patcher_ball.processing_target.is_none()
             && self.patcher_ball.active_ball.is_none()
             && let Some(name) = self.presets.pending_ball.take()
@@ -1504,6 +1724,7 @@ impl HebnixApp {
         self.presets.pending_ball = None;
         self.presets.pending_boost = None;
         self.presets.pending_decals.clear();
+        self.presets.pending_cars = None;
         let swap_report = self
             .swapper
             .apply_preset_swaps(&preset.swaps, cooked_pc, backups_dir);
@@ -1572,6 +1793,20 @@ impl HebnixApp {
                 ) {
                     messages.push(error);
                 } else {
+                    queued += 1;
+                }
+            }
+            if let Some(cars) = patches
+                .and_then(|p| p.get("car_colours"))
+                .filter(|v| !v.is_null())
+                .and_then(|v| serde_json::from_value::<crate::patcher::colours::CarColours>(v.clone()).ok())
+            {
+                if !spoofer::is_admin()
+                    && crate::patcher::colours::needs_admin(cooked_pc)
+                {
+                    messages.push("Car colours need administrator rights; apply them from the Colours tab".into());
+                } else {
+                    self.presets.pending_cars = Some(cars);
                     queued += 1;
                 }
             }
@@ -1653,7 +1888,7 @@ impl HebnixApp {
         ctx: &egui::Context,
     ) {
         self.process_preset_operations(cooked_pc, backups_dir, ctx);
-        ui.heading(t("presets-presets"));
+        ui.heading(t("studio-swap-presets"));
         ui.label(t("presets-save-and-restore-named-collections-of"));
         ui.horizontal(|ui| {
             ui.label(t("presets-name"));
@@ -1673,6 +1908,7 @@ impl HebnixApp {
                         "boost": self.patcher_boost.active_boost,
                         "decals": self.patcher_decal.active_decals,
                         "cars": self.patcher_car.active_cars,
+                        "car_colours": self.colours.settings.car_colours_patch(),
                     })
                 } else {
                     serde_json::Value::Null
@@ -1996,29 +2232,16 @@ impl HebnixApp {
     }
 
     fn replay_options_enabled(&self) -> bool {
-        self.config
-            .replay_upload
-            .enabled_for_spoofer(self.http_spoofer_features().any())
+        self.config.replay_upload.enabled()
+            && self.replay_history_patch.enabled()
     }
 
     fn sync_proxy_consumers(&mut self) {
-        let http_requested = self.http_spoofer_features().any();
-        if self
-            .config
-            .replay_upload
-            .enforce_spoofer(http_requested)
-        {
-            self.auto_upload_replays.stop();
-            self.save_config();
-        }
         self.spoofer_mgr.configure(self.proxy_options());
-        let session = hebnix_sdk::rlapi::session::shared_game_session();
         self.auto_upload_replays.sync(
             self.replay_options_enabled(),
             self.spoofer_mgr.game_running(),
-            session.enabled()
-                && self.spoofer_mgr.http_running()
-                && self.spoofer_mgr.socket_running(),
+            self.spoofer_mgr.http_running() && self.spoofer_mgr.socket_running(),
         );
     }
 
@@ -2049,10 +2272,8 @@ impl HebnixApp {
         // Disable HTTP consumers without discarding their names or history.
         self.spoofer_username_enabled = false;
         self.spoofer_friends_enabled = false;
-        self.config.replay_upload.upload_enabled = false;
-        self.config.replay_upload.save_locally = false;
+
         self.spoofer_certificate_prompt_open = false;
-        self.auto_upload_replays.stop();
         self.spoofer_mgr.set_username("");
         self.save_friends_internal();
         self.save_ranks_internal();
@@ -2076,8 +2297,13 @@ impl HebnixApp {
     fn set_hidden(&mut self, ctx: &egui::Context, hidden: bool) {
         if !crate::visibility::begin_change(ctx, hidden) { return; }
         tracing::info!(hidden, "toggling main window visibility");
+        if hidden {
+            self.panel.leave(ctx);
+        }
         if !hidden {
             winutil::note_foreground();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         }
         self.hidden = hidden;
 
@@ -2185,6 +2411,180 @@ impl HebnixApp {
         ui.separator();
     }
 
+    /// Controller chord: dock the panel beside the game, or close it again.
+    fn handle_toggle_panel(&mut self, ctx: &egui::Context) {
+        if self.panel.active {
+            self.set_hidden(ctx, true);
+            return;
+        }
+        if self
+            .config
+            .settings
+            .restrict_hotkey_to_hebnix_or_rocket_league
+            && !winutil::foreground_window_is_ours()
+            && !hebnix_sdk::process::is_rocket_league_focused()
+        {
+            return;
+        }
+        self.panel.page = None;
+        let settings = &self.config.settings;
+        self.panel.enter(ctx, crate::panel::Look { left: settings.panel_left, width: settings.panel_width, animate: settings.panel_animate });
+        if self.hidden {
+            self.set_hidden(ctx, false);
+        } else {
+            winutil::focus_main_window();
+        }
+    }
+
+    /// Move the open panel page to its previous or next sub-tab. Pages without any ignore it.
+    fn step_panel_subtab(&mut self, tab: Tab, step: i32) {
+        fn walk<T: Copy + PartialEq>(list: &[T], current: &mut T, step: i32) {
+            let at = list.iter().position(|item| item == current).unwrap_or(0) as i32;
+            *current = list[(at + step).rem_euclid(list.len() as i32) as usize];
+        }
+        match tab {
+            Tab::Workshop => self.workshop.step_view(step),
+            Tab::Plugins => {
+                let before = self.plugins_subtab;
+                walk(
+                    &[PluginsSubTab::Installed, PluginsSubTab::Browse, PluginsSubTab::Settings],
+                    &mut self.plugins_subtab,
+                    step,
+                );
+                // the page only fetches the catalogue when its own tab buttons change
+                if before != self.plugins_subtab
+                    && self.plugins_subtab == PluginsSubTab::Browse
+                    && self.install_modal.catalog.is_empty()
+                    && !self.install_modal.fetching
+                {
+                    self.fetch_hebnix_plugin();
+                }
+            }
+            Tab::Items => walk(
+                &[
+                    ItemsSubTab::Swapper,
+                    ItemsSubTab::Colours,
+                    ItemsSubTab::Active,
+                    ItemsSubTab::Presets,
+                    ItemsSubTab::Loadouts,
+                ],
+                &mut self.items_subtab,
+                step,
+            ),
+            Tab::Spoofer => walk(
+                &[
+                    SpooferSubTab::Username,
+                    SpooferSubTab::Titles,
+                    SpooferSubTab::ProfilePictures,
+                    SpooferSubTab::MenuTextures,
+                    SpooferSubTab::Friends,
+                ],
+                &mut self.spoofer_subtab,
+                step,
+            ),
+            Tab::Settings => walk(
+                &[
+                    HebnixSettingsTab::Interface,
+                    HebnixSettingsTab::Directories,
+                    HebnixSettingsTab::Discord,
+                    HebnixSettingsTab::ActionButton,
+                    HebnixSettingsTab::System,
+                ],
+                &mut self.hebnix_settings_tab,
+                step,
+            ),
+            _ => {}
+        }
+    }
+
+    /// Big-picture side panel: a list of large cards, each opening one existing page.
+    fn render_panel(&mut self, ui: &mut egui::Ui) {
+        // in-game pages first, the rest only behind the Advanced tickbox
+        let mut pages = vec![Tab::Workshop, Tab::Plugins];
+        if self.config.settings.panel_advanced {
+            pages.extend([Tab::Items, Tab::GameMods, Tab::Spoofer, Tab::Settings]);
+        }
+        let pages = &pages;
+        let ctx = ui.ctx().clone();
+        self.panel.begin_frame(&ctx);
+        let step = std::mem::take(&mut self.panel.pending_page);
+        let back = std::mem::take(&mut self.panel.pending_back);
+        let list_page = std::mem::take(&mut self.panel.pending_list_page);
+        if back {
+            if self.panel.page.take().is_none() {
+                self.set_hidden(&ctx, true);
+                return;
+            }
+        }
+        // LB/RB only move between the open page's sub-tabs; changing page means going back
+        if let (true, Some(index)) = (step != 0, self.panel.page) {
+            self.step_panel_subtab(pages[index.min(pages.len() - 1)], step);
+        }
+        if list_page != 0 && self.panel.page.is_some_and(|index| pages.get(index) == Some(&Tab::Workshop)) {
+            self.workshop.step_browse_page(list_page);
+        }
+
+        if self.panel.page.is_some_and(|index| index >= pages.len()) {
+            self.panel.page = None;
+        }
+        for font in ui.style_mut().text_styles.values_mut() {
+            font.size *= 1.25;
+        }
+        let spacing = ui.spacing_mut();
+        spacing.interact_size.y = 40.0;
+        spacing.button_padding = egui::vec2(12.0, 8.0);
+        spacing.item_spacing = egui::vec2(10.0, 10.0);
+        ui.visuals_mut().selection.stroke.width = 3.0;
+
+        egui::CentralPanel::default().show(ui, |ui| match self.panel.page {
+            None => {
+                ui.heading("Hebnix");
+                crate::plugins::gamepad_icons::prompt_row(ui, &[(&["south"], "Select"), (&["east"], "Close"), (&["l3", "r3"], "Close")]);
+                ui.add_space(6.0);
+                for (index, tab) in pages.iter().enumerate() {
+                    let card = ui.add_sized(
+                        [ui.available_width(), 64.0],
+                        egui::Button::new(egui::RichText::new(tab.label()).size(22.0)),
+                    );
+                    if index == 0 && ctx.memory(|m| m.focused()).is_none() {
+                        card.request_focus();
+                    }
+                    if card.clicked() {
+                        self.panel.page = Some(index);
+                    }
+                }
+                ui.add_space(6.0);
+                if ui
+                    .checkbox(&mut self.config.settings.panel_advanced, "Advanced mode")
+                    .changed()
+                {
+                    self.save_config();
+                }
+            }
+            Some(index) => {
+                self.tab = pages[index];
+                ui.horizontal(|ui| {
+                    if ui.button("< Back").clicked() {
+                        self.panel.page = None;
+                    }
+                    ui.heading(pages[index].label());
+                });
+                let mut prompts: Vec<(&[&'static str], &str)> = vec![(&["south"], "Select"), (&["east"], "Back"), (&["l1", "r1"], "Sub-tab")];
+                if pages[index] == Tab::Workshop {
+                    prompts.push((&["l2", "r2"], "Page"));
+                }
+                crate::plugins::gamepad_icons::prompt_row(ui, &prompts);
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| {
+                        self.render_current_page(ui);
+                        crate::panel::follow_focus(ui);
+                    }));
+            }
+        });
+    }
+
     fn force_quit(&mut self, ctx: &egui::Context) {
         self.quitting = true;
         self.config.window.width = self.last_size.0;
@@ -2247,18 +2647,19 @@ impl HebnixApp {
                     let debug = self.config.replay_upload.debug_logging;
                     let message = if debug {
                         Some(match &result.result {
-                            Ok(entry) if entry.duplicate => format!(
+                            Ok(Some(entry)) if entry.duplicate => format!(
                                 "[Replay Upload] match {} already exists at {}",
                                 entry.match_guid, entry.location
                             ),
-                            Ok(entry) if entry.replay_id.is_empty() => format!(
+                            Ok(Some(entry)) if entry.replay_id.is_empty() => format!(
                                 "[Replays] saved match {} locally to {}",
                                 entry.match_guid, entry.local_path
                             ),
-                            Ok(entry) => format!(
+                            Ok(Some(entry)) => format!(
                                 "[Replay Upload] uploaded match {} to {}",
                                 entry.match_guid, entry.location
                             ),
+                            Ok(None) => "[Replays] Replay history is up to date".into(),
                             Err(error) => format!(
                                 "[Replay Upload] match {} failed: {error}",
                                 result.match_guid
@@ -2516,7 +2917,11 @@ impl HebnixApp {
                 AppMsg::TrayToggleVisibility => {
                     self.set_hidden(ctx, !self.hidden);
                 }
-                AppMsg::TrayQuit => self.force_quit(ctx),
+                AppMsg::TogglePanel => self.handle_toggle_panel(ctx),
+                AppMsg::TrayQuit => {
+                    tracing::info!("handling tray quit on UI thread");
+                    self.force_quit(ctx);
+                }
                 AppMsg::HotkeyCaptured(name) => {
                     self.capturing_hotkey = false;
                     if let Some(name) = name {
@@ -2638,7 +3043,7 @@ impl HebnixApp {
                                     "[Console] Plugin was installed but could not be enabled: {error}"
                                 )),
                             }
-                            if !self.install_modal.hebnix_stage {
+                            if !self.install_modal.hebnix_stage && self.plugins_subtab != PluginsSubTab::Browse {
                                 self.install_modal = InstallModal::default();
                             }
                             self.save_config();
@@ -2648,12 +3053,29 @@ impl HebnixApp {
                         }
                     }
                 }
+                AppMsg::ThemeInstallDone { result } => match result {
+                    Ok((name, author)) => {
+                        self.theme_options = theme::list_themes(&self.themes_dir);
+                        self.console
+                            .write(format!("[Console] Installed Theme {name} by {author}"));
+                    }
+                    Err(error) => self
+                        .console
+                        .write(format!("[Console] Theme installation failed: {error}")),
+                },
                 AppMsg::Toast {
                     slug,
                     name,
                     text,
                     style,
                 } => self.toasts.push(&slug, &name, &text, style),
+                AppMsg::Progress {
+                    key,
+                    text,
+                    fraction,
+                    done,
+                    failed,
+                } => self.toasts.progress(&key, &text, fraction, done, failed),
                 AppMsg::PluginHttpRes {
                     slug,
                     req_id,
@@ -2790,8 +3212,20 @@ impl HebnixApp {
         }
     }
 
+    fn deliver_overlay_messages(&self) {
+        for (slug, data) in self.plugin_mgr.take_overlay_messages() {
+            self.webview.deliver(&slug, &data);
+        }
+    }
+
     fn handle_game_event(&mut self, event: hebnix_sdk::stats::StatsEvent, ctx: &egui::Context) {
+        self.home.event(&event);
+        let replay_event = self.replay_timeline.is_replay_event(&event);
+        self.replay_timeline.event(&event, &self.ws_stats);
         self.sync_proxy_consumers();
+        if !replay_event && matches!(event.event_type.as_str(), "MatchCreated" | "MatchStarted" | "UpdateState") {
+            self.auto_upload_replays.track_match(event.match_guid.as_deref());
+        }
         match event.event_type.as_str() {
             "UpdateState" => {
                 let entered_match = !self.in_match && !self.match_ended;
@@ -2800,13 +3234,13 @@ impl HebnixApp {
                     self.plugin_mgr.shared.borrow_mut().in_match = true;
                 }
                 if let Some(state) = event.update_state() {
+                    if !replay_event {
+                        self.scoreboard.update(event.match_guid.as_deref(), state);
+                    }
                     self.workshop
                         .update_workshop_map_from_stats(&state.game.arena, &self.tx);
-                    let log = (entered_match || self.auto_upload_replays.needs_match_identity(event.match_guid.as_deref()))
+                    let log = (!replay_event && entered_match)
                         .then(|| hebnix_sdk::log::parse_launch_log(None, true, "INT"));
-                    if let (Some(match_guid), Some(log)) = (event.match_guid.as_deref(), log.as_ref()) {
-                        self.auto_upload_replays.track_match(match_guid, log.session.primary_id.clone());
-                    }
                     if entered_match {
                         self.discord_match = Some(crate::discord_presence::MatchInfo::from_state(
                             state,
@@ -2822,15 +3256,9 @@ impl HebnixApp {
                 self.plugin_mgr.dispatch_game_event(&event);
             }
             "MatchEnded" => {
-                if let Some(message) = self.auto_upload_replays.submit_finished(
-                    event.match_guid.as_deref(),
-                    &self.config.replay_upload,
-                    std::path::Path::new(&self.config.settings.rl_path),
-                    &self.config.rl_launch,
-                    self.tx.clone(),
-                    ctx.clone(),
-                ) {
-                    self.console.write(message);
+                if !replay_event {
+                    self.auto_upload_replays.submit_finished(event.match_guid.as_deref());
+                    crate::patcher::instant_suite::match_ended();
                 }
                 self.in_match = false;
                 self.match_ended = true;
@@ -2839,15 +3267,9 @@ impl HebnixApp {
                 self.plugin_mgr.dispatch_game_event(&event);
             }
             "MatchDestroyed" => {
-                if let Some(message) = self.auto_upload_replays.submit_finished(
-                    event.match_guid.as_deref(),
-                    &self.config.replay_upload,
-                    std::path::Path::new(&self.config.settings.rl_path),
-                    &self.config.rl_launch,
-                    self.tx.clone(),
-                    ctx.clone(),
-                ) {
-                    self.console.write(message);
+                if !replay_event {
+                self.scoreboard.end_match();
+                self.auto_upload_replays.submit_finished(event.match_guid.as_deref());
                 }
                 self.in_match = false;
                 self.match_ended = false;
@@ -2866,6 +3288,10 @@ impl HebnixApp {
     }
 
     fn handle_rl_status(&mut self, rl_open: bool, api_open: bool) {
+        if !rl_open || !api_open {
+            self.home = home::HomeState::default();
+            self.scoreboard.end_match();
+        }
         self.last_rl_open = rl_open;
         self.last_api_open = api_open;
         let is_ready = rl_open && api_open;
@@ -3051,6 +3477,7 @@ impl HebnixApp {
         self.patcher_boost.active_boost = self.config.patcher.active_boost.clone();
         self.patcher_decal.active_decals = self.config.patcher.active_decals.clone();
         self.patcher_car.active_cars = self.config.patcher.active_cars.clone();
+        self.patcher_anthem.active_anthems = self.config.patcher.active_anthems.clone();
         self.patcher_ball.source = self.config.patcher.ball_source;
         self.patcher_boost.source = self.config.patcher.boost_source;
         self.patcher_decal.source = self.config.patcher.decal_source;
@@ -3454,34 +3881,53 @@ impl HebnixApp {
         if self.spoofer_subtab == SpooferSubTab::TitleRank {
             self.spoofer_subtab = SpooferSubTab::Username;
         }
-        theme::secondary_navigation(ui, "spoofer_settings_list")
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("spoofer_settings_names")
-                    .show(ui, |ui| {
-                        ui.selectable_value(
-                                &mut self.spoofer_subtab,
-                                SpooferSubTab::Username,
-                                "Name",
-                            );
-                        ui.selectable_value(&mut self.spoofer_subtab, SpooferSubTab::Titles, "Titles");
-                        ui.scope(|ui| {
-                            ui.add_enabled_ui(false, |ui| {
-                                ui.selectable_value(
-                                    &mut self.spoofer_subtab,
-                                    SpooferSubTab::TitleRank,
-                                    t("spoofer-rank"),
-                                )
-                                .on_disabled_hover_text("Rank spoofing is currently unavailable.");
-                            });
+        theme::secondary_navigation(ui, "spoofer_settings_list").show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("spoofer_settings_names")
+                .show(ui, |ui| crate::panel::followed(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.spoofer_subtab,
+                        SpooferSubTab::Username,
+                        t("nav-player-name"),
+                    );
+                    ui.selectable_value(
+                        &mut self.spoofer_subtab,
+                        SpooferSubTab::NameBridgeTest,
+                        "Name bridge test",
+                    );
+                    ui.selectable_value(
+                        &mut self.spoofer_subtab,
+                        SpooferSubTab::Titles,
+                        t("nav-titles"),
+                    );
+                    ui.selectable_value(
+                        &mut self.spoofer_subtab,
+                        SpooferSubTab::ProfilePictures,
+                        t("nav-profile-pictures"),
+                    );
+                    ui.selectable_value(&mut self.spoofer_subtab, SpooferSubTab::Scoreboard, t("nav-scoreboard"));
+                    ui.scope(|ui| {
+                        ui.add_enabled_ui(false, |ui| {
                             ui.selectable_value(
                                 &mut self.spoofer_subtab,
-                                SpooferSubTab::Friends,
-                                t("spoofer-friends"),
-                            );
+                                SpooferSubTab::TitleRank,
+                                t("spoofer-rank"),
+                            )
+                            .on_disabled_hover_text("Rank spoofing is currently unavailable.");
                         });
+                        ui.selectable_value(
+                            &mut self.spoofer_subtab,
+                            SpooferSubTab::MenuTextures,
+                            "Menus (experimental)",
+                        );
+                        ui.selectable_value(
+                            &mut self.spoofer_subtab,
+                            SpooferSubTab::Friends,
+                            t("spoofer-friends"),
+                        );
                     });
-            });
+                }));
+        });
 
         egui::CentralPanel::default()
             .frame(crate::i18n::layout::subtab_content_frame())
@@ -3491,6 +3937,14 @@ impl HebnixApp {
                     return;
                 }
                 self.title_editor.leave_page();
+                if self.spoofer_subtab == SpooferSubTab::ProfilePictures {
+                    self.profile_pictures.show(ui, std::path::Path::new(&self.config.settings.rl_path));
+                    return;
+                }
+                if self.spoofer_subtab == SpooferSubTab::MenuTextures {
+                    self.render_menu_textures_page(ui);
+                    return;
+                }
                 if self.spoofer_subtab == SpooferSubTab::Username {
                     self.render_name_page(ui);
                     return;
@@ -3498,11 +3952,21 @@ impl HebnixApp {
                 egui::ScrollArea::vertical()
                     .id_salt("spoofer_settings_view")
                     .auto_shrink([false, false])
-                    .show(ui, |ui| match self.spoofer_subtab {
-                        SpooferSubTab::Username => unreachable!("Name uses its own centered scroll area"),
-                        SpooferSubTab::Titles => unreachable!("Titles uses its own scrolling columns"),
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| match self.spoofer_subtab {
+                        SpooferSubTab::Username => {
+                            unreachable!("Name uses its own centered scroll area")
+                        }
+                        SpooferSubTab::Titles => {
+                            unreachable!("Titles uses its own scrolling columns")
+                        }
+                        SpooferSubTab::Scoreboard => self.scoreboard.show(ui),
+                        SpooferSubTab::NameBridgeTest => self.name_bridge.show(ui, std::path::Path::new(&self.config.settings.rl_path)),
+                        SpooferSubTab::ProfilePictures => unreachable!("Profile pictures uses its own page"),
+                        SpooferSubTab::MenuTextures => {
+                            unreachable!("Menu textures use their own scroll area")
+                        }
                         SpooferSubTab::Friends => {
-                            ui.heading(t("spoofer-friend-spoofing"));
+                            ui.heading(t("spoofer-friends"));
                             ui.add_space(8.0);
 
                             ui.scope(|ui| {
@@ -3583,9 +4047,9 @@ impl HebnixApp {
 
                                 if discovered.is_empty() && friends_vec.is_empty() {
                                     ui.label(
-                                        egui::RichText::new(
-                                            t("spoofer-start-rocket-league-to-populate-friends"),
-                                        )
+                                        egui::RichText::new(t(
+                                            "spoofer-start-rocket-league-to-populate-friends",
+                                        ))
                                         .color(egui::Color32::GRAY),
                                     );
                                 } else {
@@ -3594,7 +4058,7 @@ impl HebnixApp {
                                     egui::ScrollArea::vertical()
                                         .id_salt("friends_scroll")
                                         .auto_shrink([false, false])
-                                        .show(ui, |ui| {
+                                        .show(ui, |ui| crate::panel::followed(ui, |ui| {
                                             for (_id, state) in friends_vec {
                                                 ui.horizontal(|ui| {
                                                     if ui.checkbox(&mut state.enabled, "").changed()
@@ -3623,7 +4087,7 @@ impl HebnixApp {
                                                     }
                                                 });
                                             }
-                                        });
+                                        }));
 
                                     if any_interaction {
                                         self.save_friends();
@@ -3632,7 +4096,7 @@ impl HebnixApp {
                             });
                         }
                         SpooferSubTab::TitleRank => {
-                            ui.heading(t("spoofer-rank-spoofing"));
+                            crate::theme::page_heading(ui, t("spoofer-rank-spoofing"));
                             ui.add_space(8.0);
 
                             ui.weak(spoofer::WEBSOCKET_UNAVAILABLE);
@@ -3655,8 +4119,13 @@ impl HebnixApp {
 
                                     egui::ScrollArea::vertical().id_salt("ranks_scroll").show(
                                         ui,
-                                        |ui| {
-                                            for &(id, name) in RANK_SPOOF_PLAYLISTS {
+                                        |ui| crate::panel::followed(ui, |ui| {
+                                            for &(id, fallback_name) in RANK_SPOOF_PLAYLISTS {
+                                                let name =
+                                                    hebnix_sdk::utils::playlists::known_name(
+                                                        i64::from(id),
+                                                    )
+                                                    .unwrap_or(fallback_name);
                                                 let state = self.spoofer_ranks.entry(id).or_insert(
                                                     RankSpoofState {
                                                         enabled: false,
@@ -3719,7 +4188,7 @@ impl HebnixApp {
                                                 });
                                                 ui.add_space(4.0);
                                             }
-                                        },
+                                        }),
                                     );
 
                                     if changed {
@@ -3729,11 +4198,48 @@ impl HebnixApp {
                                 });
                             });
                         }
-                    });
+                    }));
             });
     }
 
     fn render_plugins_tab(&mut self, ui: &mut egui::Ui) {
+        let before = self.plugins_subtab;
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(
+                &mut self.plugins_subtab,
+                PluginsSubTab::Installed,
+                t("nav-installed"),
+            );
+            ui.selectable_value(
+                &mut self.plugins_subtab,
+                PluginsSubTab::Browse,
+                t("nav-browse"),
+            );
+            ui.selectable_value(
+                &mut self.plugins_subtab,
+                PluginsSubTab::Settings,
+                t("settings-subtab-plugin"),
+            );
+        });
+        ui.separator();
+        if before != self.plugins_subtab
+            && self.plugins_subtab == PluginsSubTab::Browse
+            && self.install_modal.catalog.is_empty()
+            && !self.install_modal.fetching
+        {
+            self.fetch_hebnix_plugin();
+        }
+        match self.plugins_subtab {
+            PluginsSubTab::Installed => self.render_installed_plugins(ui),
+            PluginsSubTab::Browse => {
+                let mut close = false;
+                self.render_hebnix_install(ui, &mut close);
+            }
+            PluginsSubTab::Settings => self.render_plugin_settings(ui),
+        }
+    }
+
+    fn render_installed_plugins(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("Open Plugins Folder").clicked() {
                 // `that()` can block until the launched handler exits (its
@@ -3742,11 +4248,14 @@ impl HebnixApp {
                 // semantics: the button should return immediately.
                 let _ = open::that_detached(&self.plugin_dir);
             }
-            if ui.button(t("plugins-install-plugin")).clicked() {
-                self.install_modal = InstallModal {
-                    open: true,
-                    ..Default::default()
-                };
+            if ui.button(t("install-modal-install-from-zip")).clicked() {
+                let dialog = rfd::FileDialog::new().add_filter(t("install-modal-plugin-archives"), &["zip"]);
+                if let Some(file) = winutil::parent_file_dialog(dialog).pick_file() {
+                    match install_zip(&file, &self.plugin_dir) {
+                        Ok(()) => { self.plugin_mgr.refresh(&mut self.config, true); self.save_config(); }
+                        Err(error) => self.console.write(format!("[Plugins] ZIP installation failed: {error}")),
+                    }
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -3769,7 +4278,7 @@ impl HebnixApp {
         egui::ScrollArea::vertical()
             .id_salt("plugins_list")
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show(ui, |ui| crate::panel::followed(ui, |ui| {
                 for plugin in &self.plugin_mgr.plugins {
                     if let Some(err) = &plugin.load_error {
                         ui.horizontal(|ui| {
@@ -3822,7 +4331,7 @@ impl HebnixApp {
                         ui.label(t("plugins-no-plugins-installed-drop-a-plugin"));
                     });
                 }
-            });
+            }));
 
         for (slug, enabled) in toggles {
             let display = self
@@ -3853,8 +4362,8 @@ impl HebnixApp {
 
         if let Some(slug) = open_settings {
             self.selected_settings_plugin = Some(slug);
-            self.tab = Tab::Settings;
-            self.settings_subtab = SettingsSubTab::Plugin;
+            self.tab = Tab::Plugins;
+            self.plugins_subtab = PluginsSubTab::Settings;
         }
     }
 
@@ -4093,24 +4602,7 @@ impl HebnixApp {
     }
 
     fn render_settings_tab(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut self.settings_subtab,
-                SettingsSubTab::Hebnix,
-                t("settings-subtab-hebnix"),
-            );
-            ui.selectable_value(
-                &mut self.settings_subtab,
-                SettingsSubTab::Plugin,
-                t("settings-subtab-plugin"),
-            );
-        });
-        ui.separator();
-
-        match self.settings_subtab {
-            SettingsSubTab::Hebnix => self.render_hebnix_settings(ui),
-            SettingsSubTab::Plugin => self.render_plugin_settings(ui),
-        }
+        self.render_hebnix_settings(ui);
     }
 
     fn render_hebnix_settings(&mut self, ui: &mut egui::Ui) {
@@ -4120,16 +4612,16 @@ impl HebnixApp {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("hebnix_settings_names")
-                    .show(ui, |ui| {
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| {
                         ui.selectable_value(
                             &mut self.hebnix_settings_tab,
                             HebnixSettingsTab::Interface,
-                            t("settings-nav-interface"),
+                            t("nav-settings-appearance"),
                         );
                         ui.selectable_value(
                             &mut self.hebnix_settings_tab,
                             HebnixSettingsTab::Directories,
-                            t("settings-nav-directories"),
+                            t("nav-files-folders"),
                         );
                         ui.selectable_value(
                             &mut self.hebnix_settings_tab,
@@ -4146,7 +4638,7 @@ impl HebnixApp {
                             HebnixSettingsTab::ActionButton,
                             t("settings-nav-action-button"),
                         );
-                    });
+                    }));
             });
 
         egui::CentralPanel::default()
@@ -4155,10 +4647,10 @@ impl HebnixApp {
                 egui::ScrollArea::vertical()
                     .id_salt("hebnix_settings_view")
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| {
                         ui.heading(match self.hebnix_settings_tab {
-                            HebnixSettingsTab::Interface => t("settings-heading-interface"),
-                            HebnixSettingsTab::Directories => t("settings-heading-directories"),
+                            HebnixSettingsTab::Interface => t("nav-settings-appearance"),
+                            HebnixSettingsTab::Directories => t("nav-files-folders"),
                             HebnixSettingsTab::Discord => t("settings-heading-discord"),
                             HebnixSettingsTab::ActionButton => t("settings-heading-action-button"),
                             HebnixSettingsTab::System => t("settings-heading-system"),
@@ -4167,12 +4659,69 @@ impl HebnixApp {
 
                         match self.hebnix_settings_tab {
                             HebnixSettingsTab::Interface => {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.selectable_value(
+                                        &mut self.appearance_subtab,
+                                        AppearanceSubTab::General,
+                                        t("settings-appearance-general"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.appearance_subtab,
+                                        AppearanceSubTab::Theme,
+                                        t("settings-appearance-theme"),
+                                    );
+                                });
+                                ui.separator();
+                                if self.appearance_subtab == AppearanceSubTab::Theme {
+                                    let label_w = label_column_width(ui, &[t("settings-theme-label")]);
+                                    ui.horizontal(|ui| {
+                                        crate::i18n::layout::settings_label(ui, label_w, t("settings-theme-label"));
+                                        let mut selected = self.config.settings.theme.clone();
+                                        let mut changed = false;
+                                        egui::ComboBox::from_id_salt("theme_select")
+                                            .selected_text(selected.clone())
+                                            .width(120.0)
+                                            .show_ui(ui, |ui| {
+                                                for option in self.theme_options.clone() {
+                                                    if ui
+                                                        .selectable_value(
+                                                            &mut selected,
+                                                            option.clone(),
+                                                            option,
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        changed = true;
+                                                    }
+                                                }
+                                            });
+                                        if changed {
+                                            self.change_theme(&ctx, &selected);
+                                        }
+                                        if ui.button(t("btn-refresh")).clicked() {
+                                            self.theme_options = theme::list_themes(&self.themes_dir);
+                                            let selected = self.config.settings.theme.clone();
+                                            self.change_theme(&ctx, &selected);
+                                            self.console.write(format!(
+                                                "[Console] {}",
+                                                t("console-themes-rescanned")
+                                            ));
+                                        }
+                                        if ui.button(t("btn-open-folder")).clicked() {
+                                            let _ = open::that(&self.themes_dir);
+                                        }
+                                        if ui.button(t("settings-open-fonts-folder")).clicked() {
+                                            let _ = open::that(&self.fonts_dir);
+                                        }
+                                    });
+
+                                    return;
+                                }
                                 let label_w = label_column_width(
                                     ui,
                                     &[
                                         t("settings-keybind-label"),
                                         t("settings-language-label"),
-                                        t("settings-theme-label"),
                                         t("settings-opacity-label"),
                                         t("settings-toast-position-label"),
                                         t("system-default-tab"),
@@ -4446,6 +4995,27 @@ impl HebnixApp {
                                         self.save_config();
                                     }
                                 });
+                                ui.add_space(12.0);
+                                ui.strong("Controller panel");
+                                ui.weak("Opened with L3 + R3 beside the game.");
+                                let mut panel_changed = false;
+                                ui.horizontal(|ui| {
+                                    crate::i18n::layout::settings_label(ui, label_w, "Opens from".to_string());
+                                    panel_changed |= ui.selectable_value(&mut self.config.settings.panel_left, true, "Left").changed();
+                                    panel_changed |= ui.selectable_value(&mut self.config.settings.panel_left, false, "Right").changed();
+                                });
+                                ui.horizontal(|ui| {
+                                    crate::i18n::layout::settings_label(ui, label_w, "Width".to_string());
+                                    panel_changed |= ui
+                                        .add(egui::Slider::new(&mut self.config.settings.panel_width, 0.2..=0.5).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)))
+                                        .on_hover_text("Share of the game window the panel covers")
+                                        .changed();
+                                });
+                                panel_changed |= ui.checkbox(&mut self.config.settings.panel_animate, "Slide in like a drawer").changed();
+                                panel_changed |= ui.checkbox(&mut self.config.settings.panel_advanced, "Show every page (Advanced mode)").changed();
+                                if panel_changed {
+                                    self.save_config();
+                                }
                             }
 
                             HebnixSettingsTab::Directories => {
@@ -4872,6 +5442,9 @@ impl HebnixApp {
                             }
 
                             HebnixSettingsTab::System => {
+                                let cooked_pc = PathBuf::from(&self.config.settings.rl_path).join("TAGame").join("CookedPCConsole");
+                                self.delete_backups.render(ui, &cooked_pc);
+                                ui.add_space(16.0);
                                 let label_w = label_column_width(
                                     ui,
                                     &[
@@ -5036,7 +5609,7 @@ impl HebnixApp {
                                 self.render_spoofer_certificate_settings(ui);
                             }
                         }
-                    });
+                    }));
             });
     }
     fn change_theme(&mut self, ctx: &egui::Context, choice: &str) {
@@ -5101,6 +5674,7 @@ impl HebnixApp {
                 ui.add_space(8.0);
                 if ui.button(t("plugin-settings-go")).clicked() {
                     self.tab = Tab::Plugins;
+                    self.plugins_subtab = PluginsSubTab::Installed;
                 }
             });
             return;
@@ -5120,13 +5694,13 @@ impl HebnixApp {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("plugin_settings_names")
-                    .show(ui, |ui| {
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| {
                         for (slug, name) in &with_settings {
                             if ui.selectable_label(*slug == selected, name).clicked() {
                                 self.selected_settings_plugin = Some(slug.clone());
                             }
                         }
-                    });
+                    }));
             });
 
         let display_name = with_settings
@@ -5141,7 +5715,7 @@ impl HebnixApp {
                 egui::ScrollArea::vertical()
                     .id_salt("plugin_settings_view")
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| {
                         ui.heading(t_args(
                             "plugin-settings-display-name-configuration",
                             &[("display_name", display_name.to_string().into())],
@@ -5152,7 +5726,7 @@ impl HebnixApp {
                                 "[Console] Error rendering settings for {display_name}: {e}"
                             ));
                         }
-                    });
+                    }));
             });
     }
 
@@ -5549,220 +6123,51 @@ impl HebnixApp {
         }
     }
 
-    fn render_rl_launch_setup(&mut self, ctx: &egui::Context) {
-        if !self.rl_launch_setup_open {
+    fn render_launch_path_notice(&mut self, ctx: &egui::Context) {
+        if !self.launch_path_notice {
             return;
         }
-        use crate::config::RlLaunchMode;
-
-        let mut open = true;
-        egui::Window::new(t("rl-launch-setup-rocket-league-launch-setup"))
-            .id(egui::Id::new("rl-launch-setup-rocket-league-launch-setup"))
-            .open(&mut open)
+        let mut close = false;
+        egui::Window::new(t("launch-path-notice-rocket-league"))
+            .id(egui::Id::new("launch-path-notice-rocket-league"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.set_max_width(420.0);
-                ui.label(
-                    "How do you actually launch Rocket League? This decides how the Restart \
-                     Rocket League button and Workshop LAN's Host/Join work.",
-                );
-                ui.add_space(8.0);
-
-                ui.radio_value(
-                    &mut self.rl_launch_draft.mode,
-                    RlLaunchMode::SteamProton,
-                    "Real Steam game (native or Proton)",
-                );
-                ui.radio_value(
-                    &mut self.rl_launch_draft.mode,
-                    RlLaunchMode::SteamShortcutToHeroic,
-                    t("rl-launch-setup-non-steam-shortcut-that-opens-heroic"),
-                );
-                if self.rl_launch_draft.mode == RlLaunchMode::SteamShortcutToHeroic {
-                    ui.label(
-                        egui::RichText::new(
-                            "Non-Steam shortcuts can't pass launch arguments (a Steam \
-                             limitation). Set up TAP & Host/Join will launch Heroic directly \
-                             instead, bypassing Steam for that session.",
-                        )
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(0xe6, 0xa8, 0x3c)),
-                    );
+                ui.label(t("launch-notice-body"));
+                if ui.button(t("btn-ok")).clicked() {
+                    close = true;
                 }
-                ui.radio_value(
-                    &mut self.rl_launch_draft.mode,
-                    RlLaunchMode::HeroicDirect,
-                    "Heroic directly, no Steam involved",
-                );
-                ui.add_space(8.0);
-
-                match self.rl_launch_draft.mode {
-                    RlLaunchMode::Unconfigured => {}
-                    RlLaunchMode::SteamProton => {
-                        ui.label("Steam App ID (252950 is Rocket League's own real listing):");
-                        ui.text_edit_singleline(&mut self.rl_launch_draft.steam_id);
-                    }
-                    RlLaunchMode::SteamShortcutToHeroic => {
-                        if ui
-                            .button(t("rl-launch-setup-scan-steam-shortcuts-for-heroic"))
-                            .clicked()
-                        {
-                            self.rl_launch_shortcut_candidates =
-                                crate::rl_launch::find_heroic_shortcuts();
-                        }
-                        if self.rl_launch_shortcut_candidates.is_empty() {
-                            ui.small(t("rl-launch-setup-no-candidates-found-yet-click-scan"));
-                        } else {
-                            for candidate in &self.rl_launch_shortcut_candidates {
-                                if ui
-                                    .button(format!("{}  ({})", candidate.app_name, candidate.exe))
-                                    .clicked()
-                                {
-                                    self.rl_launch_draft.steam_id = candidate.rungameid.to_string();
-                                }
-                            }
-                        }
-                        ui.add_space(4.0);
-                        ui.label(t("rl-launch-setup-steam-shortcut-id"));
-                        ui.text_edit_singleline(&mut self.rl_launch_draft.steam_id);
-                        ui.add_space(4.0);
-                        ui.label("Heroic binary path (or just 'heroic' if it's on your PATH):");
-                        ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_binary);
-                    }
-                    RlLaunchMode::HeroicDirect => {
-                        ui.label("Heroic binary path (or just 'heroic' if it's on your PATH):");
-                        ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_binary);
-                    }
-                }
-
-                if matches!(
-                    self.rl_launch_draft.mode,
-                    RlLaunchMode::SteamShortcutToHeroic | RlLaunchMode::HeroicDirect
-                ) {
-                    ui.add_space(4.0);
-                    ui.label("Epic app name (Sugar is Rocket League's, same for everyone):");
-                    ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_app_name);
-                    ui.label(t("rl-launch-setup-runner"));
-                    ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_runner);
-                }
-
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    let can_save = self.rl_launch_draft.mode != RlLaunchMode::Unconfigured;
-                    if ui
-                        .add_enabled(can_save, egui::Button::new("Save"))
-                        .clicked()
-                    {
-                        self.config.rl_launch = self.rl_launch_draft.clone();
-                        self.save_config();
-                        self.console
-                            .write("[Core] Rocket League launch setup saved.");
-                        self.rl_launch_setup_open = false;
-                    }
-                    if ui.button(t("spawner-enable-prompt-cancel")).clicked() {
-                        self.rl_launch_setup_open = false;
-                    }
-                });
             });
-        if !open {
-            self.rl_launch_setup_open = false;
+        if close {
+            self.launch_path_notice = false;
         }
     }
 
-    fn render_install_modal(&mut self, ctx: &egui::Context) {
-        if !self.install_modal.open {
-            return;
-        }
-        let mut open = true;
-        let mut close_requested = false;
+    fn fetch_hebnix_plugin(&mut self) {
+        self.install_modal.fetching = true;
+        self.install_modal.error = None;
+        self.install_modal.catalog.clear();
 
-        let window = if self.install_modal.hebnix_stage {
-            egui::Window::new(t("plugins-install-plugin"))
-                .id(egui::Id::new("install_plugin_catalog"))
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .fixed_size([900.0, 550.0])
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        } else {
-            egui::Window::new(t("plugins-install-plugin"))
-                .id(egui::Id::new("install_plugin_prompt"))
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        };
-
-        window.show(ctx, |ui| {
-            if !self.install_modal.hebnix_stage {
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_sized(
-                            [160.0, 120.0],
-                            egui::Button::new(t("install-modal-install-from-hebnix")),
-                        )
-                        .clicked()
-                    {
-                        self.install_modal.hebnix_stage = true;
-                        self.fetch_hebnix_plugin();
-                    }
-                    if ui
-                        .add_sized(
-                            [160.0, 120.0],
-                            egui::Button::new(t("install-modal-install-from-zip")),
-                        )
-                        .clicked()
-                    {
-                        if let Some(file) = rfd::FileDialog::new()
-                            .add_filter("Plugin Archives", &["zip"])
-                            .pick_file()
-                        {
-                            match install_zip(&file, &self.plugin_dir) {
-                                Ok(()) => {
-                                    self.console.write(format!(
-                                        "[Console] Extracted contents of {} into /plugins/",
-                                        file.file_name()
-                                            .map(|f| f.to_string_lossy().to_string())
-                                            .unwrap_or_default()
-                                    ));
-                                    self.plugin_mgr.refresh(&mut self.config, true);
-                                    self.save_config();
-                                    close_requested = true;
-                                }
-                                Err(e) => {
-                                    self.console.write(format!(
-                                        "[Console] Failed to install plugin from zip: {e}"
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                });
-                ui.add_space(10.0);
-            } else {
-                self.render_hebnix_install(ui, &mut close_requested);
-            }
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result: Result<Value, String> = (|| {
+                let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).build();
+                let resp = agent
+                    .get("https://api.hebnix.com/plugins")
+                    .timeout(Duration::from_secs(10))
+                    .call()
+                    .map_err(|e| e.to_string())?;
+                resp.into_json().map_err(|e| e.to_string())
+            })();
+            let _ = tx.send(AppMsg::PluginFetch { result });
         });
-
-        if !open || close_requested {
-            self.install_modal = InstallModal::default();
-        }
     }
 
     fn render_hebnix_install(&mut self, ui: &mut egui::Ui, _close_requested: &mut bool) {
         let ctx = ui.ctx().clone();
 
         ui.horizontal(|ui| {
-            if ui.button(t("hebnix-install-back")).clicked() {
-                self.install_modal.hebnix_stage = false;
-                self.install_modal.catalog.clear();
-                self.install_modal.error = None;
-                self.install_modal.search_query.clear();
-                self.install_modal.current_page = 0;
-            }
             if ui.button(t("btn-refresh")).clicked() {
                 self.fetch_hebnix_plugin();
             }
@@ -5795,7 +6200,9 @@ impl HebnixApp {
             return;
         }
 
-        let items_per_page = 20;
+        // Keep two complete rows per page as the available width changes.
+        let columns = ((ui.available_width() + 12.0) / 260.0).floor().max(1.0) as usize;
+        let items_per_page = columns * 2;
         let (total_items, total_pages, current_page_items) = {
             let query = self.install_modal.search_query.to_lowercase();
             let filtered: Vec<&Value> = self
@@ -5858,168 +6265,174 @@ impl HebnixApp {
             Download(String),
         }
 
-        egui::ScrollArea::both()
+        // the panel draws text and buttons larger, so the fixed-height tile has to grow with them
+        let text_scale = if self.panel.active { 1.25 } else { 1.0 };
+        let tile_height = 292.0 * text_scale + (ui.spacing().interact_size.y - 26.0).max(0.0);
+        egui::ScrollArea::vertical()
             .id_salt("plugin_catalog_scroll")
-            .auto_shrink([false, false])
-            .max_height(ui.available_height() - 35.0)
-            .show(ui, |ui| {
-                egui::Grid::new("plugin_catalog_grid")
-                    .striped(true)
-                    .spacing([15.0, 10.0])
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Banner").strong());
-                        ui.label(egui::RichText::new("Plugin Name").strong());
-                        ui.label(egui::RichText::new("Author").strong());
-                        ui.label(egui::RichText::new("Description").strong());
-                        ui.label(egui::RichText::new("Version").strong());
-                        ui.label(egui::RichText::new("Action").strong());
-                        ui.end_row();
+            .max_height((ui.available_height() - 35.0).max(0.0))
+            .show(ui, |ui| crate::panel::followed(ui, |ui| {
+                if total_items == 0 {
+                    ui.add_space(20.0);
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            egui::RichText::new(t("hebnix-install-no-plugins-found"))
+                                .italics()
+                                .color(egui::Color32::GRAY),
+                        );
+                    });
+                }
 
-                        if total_items == 0 {
-                            ui.label(
-                                egui::RichText::new("No plugins found.")
-                                    .italics()
-                                    .color(egui::Color32::GRAY),
-                            );
-                            ui.end_row();
-                        }
+                for row in current_page_items.chunks(columns) {
+                    ui.columns(columns, |tiles| {
+                        for (column, plugin_data) in row.iter().enumerate() {
+                            let ui = &mut tiles[column];
+                    let id = plugin_data
+                        .get("plugin_id")
+                        .or_else(|| plugin_data.get("id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let name = plugin_data
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown");
+                    let author = plugin_data
+                        .get("author")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown");
+                    let desc = plugin_data
+                        .get("short_description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let hover = plugin_data
+                        .get("long_description")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(desc);
+                    let mut short_desc = desc.trim_start().replace('\n', " ").replace('\r', "");
+                    if short_desc.chars().count() > 120 {
+                        short_desc = short_desc.chars().take(117).collect();
+                        short_desc.push_str("...");
+                    }
+                    let version = plugin_data
+                        .get("version_number")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let banner = plugin_data
+                        .get("banner_path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
 
-                        for plugin_data in current_page_items {
-                            let id = plugin_data.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                            let name = plugin_data
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Unknown");
-                            let author = plugin_data
-                                .get("author")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Unknown");
-                            let desc = plugin_data
-                                .get("short_description")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let hover = plugin_data
-                                .get("long_description")
-                                .and_then(|v| v.as_str())
-                                .filter(|s| !s.is_empty())
-                                .unwrap_or(desc);
 
-                            let mut short_desc = desc.replace('\n', " ").replace('\r', "");
-                            if short_desc.chars().count() > 120 {
-                                short_desc = short_desc.chars().take(117).collect();
-                                short_desc.push_str("...");
-                            }
-                            let version = plugin_data
-                                .get("version_number")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?");
-                            let banner = plugin_data
-                                .get("banner_path")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-
-                            let img_size = egui::vec2(128.0, 72.0);
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), tile_height), egui::Sense::hover());
+                            let mut tile = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(9.0)).layout(egui::Layout::top_down(egui::Align::Center)));
+                            tile.set_clip_rect(rect.intersect(ui.clip_rect()));
+                            let ui = &mut tile;
+                            let width = ui.available_width();
+                            // a fixed box for every banner: an image sized to its own aspect ratio
+                            // would shrink the box and push the text and button around
+                            let (image_rect, _) = ui.allocate_exact_size(egui::vec2(width, 112.0), egui::Sense::hover());
+                            let mut image_ui = ui.new_child(egui::UiBuilder::new().max_rect(image_rect).layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)));
                             match self.install_modal.images.get(banner) {
-                                Some(ImageState::Ready(bytes)) => {
-                                    ui.add(
-                                        egui::Image::from_bytes(
-                                            format!("bytes://plugin/{banner}"),
-                                            bytes.clone(),
-                                        )
-                                        .fit_to_exact_size(img_size),
-                                    );
-                                }
-                                Some(ImageState::Failed) | None => {
-                                    ui.add_sized(img_size, egui::Label::new(""));
-                                }
-                                Some(ImageState::Loading) => {
-                                    ui.add_sized(img_size, egui::Spinner::new());
-                                }
+                                Some(ImageState::Ready(bytes)) => { image_ui.add(egui::Image::from_bytes(format!("bytes://plugin/{banner}"), bytes.clone()).max_size(image_rect.size())); }
+                                Some(ImageState::Loading) => { image_ui.spinner(); }
+                                _ => {}
                             }
-
-                            ui.label(name);
-                            ui.label(author);
-                            ui.vertical(|ui| {
-                                ui.set_width(300.0);
-                                ui.add(egui::Label::new(short_desc).wrap())
-                                    .on_hover_text(hover);
+                            ui.add(egui::Label::new(egui::RichText::new(format!("{name} v{version}")).strong()).truncate()).on_hover_text(name);
+                            ui.add(egui::Label::new(egui::RichText::new(author).weak()).truncate());
+                            let (description_rect, _) = ui.allocate_exact_size(egui::vec2(width, 66.0 * text_scale), egui::Sense::hover());
+                            let mut description = ui.new_child(egui::UiBuilder::new().max_rect(description_rect).layout(egui::Layout::top_down(egui::Align::Center)));
+                            description.set_clip_rect(description_rect.intersect(ui.clip_rect()));
+                            description.add(egui::Label::new(short_desc).wrap().halign(egui::Align::Center)).on_hover_text(hover);
+                            ui.add_space((ui.available_height() - ui.spacing().interact_size.y).max(0.0));
+                            ui.horizontal(|ui| {
+                                        let existing =
+                                            self.plugin_mgr.plugins.iter().find(|p| {
+                                                p.manifest.plugin_id.as_deref() == Some(id)
+                                            });
+                                        ui.add_space(((ui.available_width() - 208.0) * 0.5).max(0.0));
+                                        if let Some(existing) = existing {
+                                            let slug = existing.slug.clone();
+                                            let enabled = existing.enabled;
+                                            let settings = existing.has_settings();
+                                            if ui.add_sized([100.0, 26.0], egui::Button::new(t(if enabled { "plugins-unload" } else { "plugins-load" }))).clicked() {
+                                                action = Some(if enabled { ModalAction::Disable(slug.clone()) } else { ModalAction::Enable(slug.clone()) });
+                                            }
+                                            if ui.add_enabled_ui(settings && enabled, |ui| ui.add_sized([100.0, 26.0], egui::Button::new(t("tab-settings")))).inner.clicked() {
+                                                self.selected_settings_plugin = Some(slug);
+                                                self.plugins_subtab = PluginsSubTab::Settings;
+                                                self.tab = Tab::Plugins;
+                                            }
+                                        } else if self.install_modal.downloading_id.as_deref()
+                                            == Some(id)
+                                        {
+                                            ui.add_enabled(
+                                                false,
+                                                egui::Button::new(t("hebnix-install-installing")),
+                                            );
+                                        } else if ui.add_sized([208.0, 26.0], egui::Button::new(t("hebnix-install-install"))).clicked() {
+                                            action = Some(ModalAction::Download(id.to_string()));
+                                        }
                             });
-                            ui.label(version);
-
-                            let existing =
-                                self.plugin_mgr.plugins.iter().find(|p| {
-                                    p.manifest.name == name && p.manifest.author == author
-                                });
-
-                            if let Some(existing) = existing {
-                                let slug = existing.slug.clone();
-                                if existing.enabled {
-                                    if ui.button("Disable").clicked() {
-                                        action = Some(ModalAction::Disable(slug));
-                                    }
-                                } else {
-                                    if ui
-                                        .add(
-                                            egui::Button::new("Enable")
-                                                .fill(egui::Color32::from_rgb(0x2e, 0xcc, 0x71)),
-                                        )
-                                        .clicked()
-                                    {
-                                        action = Some(ModalAction::Enable(slug));
-                                    }
-                                }
-                            } else {
-                                let is_downloading =
-                                    self.install_modal.downloading_id.as_deref() == Some(id);
-                                if is_downloading {
-                                    ui.add_enabled(false, egui::Button::new("Installing..."));
-                                } else {
-                                    if ui.button("Install").clicked() {
-                                        action = Some(ModalAction::Download(id.to_string()));
-                                    }
-                                }
-                            }
-                            ui.end_row();
                         }
                     });
-            });
-
-        ui.add_space(8.0);
+                    ui.add_space(12.0);
+                }
+            }));
+        let display_page = if total_pages == 0 {
+            0
+        } else {
+            self.install_modal.current_page + 1
+        };
+        let page_label = t_args(
+            "hebnix-install-page-display-page-of-total-pages",
+            &[
+                ("display_page", display_page.to_string().into()),
+                ("total_pages", total_pages.to_string().into()),
+            ],
+        );
+        let prev_label = t("hebnix-install-prev");
+        let next_label = t("hebnix-install-next");
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let controls_width: f32 = [&prev_label, &page_label, &next_label]
+            .iter()
+            .map(|label| ui.painter().layout_no_wrap(
+                (*label).clone(), font.clone(), ui.visuals().text_color(),
+            ).size().x)
+            .sum::<f32>()
+            + 4.0 * ui.spacing().button_padding.x
+            + 2.0 * ui.spacing().item_spacing.x;
+        let footer_height = ui.spacing().interact_size.y;
+        ui.add_space((ui.available_height() - footer_height).max(0.0));
         ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(
-                        self.install_modal.current_page + 1 < total_pages,
-                        egui::Button::new(t("hebnix-install-next")),
-                    )
-                    .clicked()
-                {
-                    self.install_modal.current_page += 1;
-                }
+            ui.add_space(((ui.available_width() - controls_width) / 2.0).max(0.0));
+            ui.allocate_ui_with_layout(
+                egui::vec2(controls_width, footer_height),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if ui
+                        .add_enabled(
+                            self.install_modal.current_page + 1 < total_pages,
+                            egui::Button::new(next_label),
+                        )
+                        .clicked()
+                    {
+                        self.install_modal.current_page += 1;
+                    }
 
-                let display_page = if total_pages == 0 {
-                    0
-                } else {
-                    self.install_modal.current_page + 1
-                };
-                ui.label(t_args(
-                    "hebnix-install-page-display-page-of-total-pages",
-                    &[
-                        ("display_page", display_page.to_string().into()),
-                        ("total_pages", total_pages.to_string().into()),
-                    ],
-                ));
+                    ui.label(page_label);
 
-                if ui
-                    .add_enabled(
-                        self.install_modal.current_page > 0,
-                        egui::Button::new(t("hebnix-install-prev")),
-                    )
-                    .clicked()
-                {
-                    self.install_modal.current_page -= 1;
-                }
-            });
+                    if ui
+                        .add_enabled(
+                            self.install_modal.current_page > 0,
+                            egui::Button::new(prev_label),
+                        )
+                        .clicked()
+                    {
+                        self.install_modal.current_page -= 1;
+                    }
+                },
+            );
         });
 
         match action {
@@ -6041,58 +6454,6 @@ impl HebnixApp {
         }
     }
 
-    fn ensure_plugin_image(&mut self, banner_path: &str, ctx: &egui::Context) {
-        if banner_path.is_empty() || self.install_modal.images.contains_key(banner_path) {
-            return;
-        }
-        self.install_modal
-            .images
-            .insert(banner_path.to_string(), ImageState::Loading);
-
-        let cache_dir = self
-            .base_dir
-            .join("plugins")
-            .join("cache")
-            .join("plugin_store");
-        crate::ui::workshop::spawn_image_fetch(
-            banner_path.to_string(),
-            cache_dir,
-            self.tx.clone(),
-            ctx.clone(),
-            |key, bytes| AppMsg::PluginImage { key, bytes },
-        );
-    }
-
-    fn fetch_hebnix_plugin(&mut self) {
-        self.install_modal.fetching = true;
-        self.install_modal.error = None;
-        self.install_modal.catalog.clear();
-
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let result: Result<Value, String> = (|| {
-                let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).build();
-                let resp = agent
-                    .get("https://api.hebnix.com/plugins")
-                    .timeout(Duration::from_secs(10))
-                    .call()
-                    .map_err(|e| e.to_string())?;
-                resp.into_json().map_err(|e| e.to_string())
-            })();
-            let _ = tx.send(AppMsg::PluginFetch { result });
-        });
-    }
-
-    fn download_theme(&self, theme_id: &str) {
-        let theme_id = theme_id.to_string();
-        let themes_dir = self.themes_dir.clone();
-        let fonts_dir = self.fonts_dir.clone();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let result = crate::deep_link::install_theme(&theme_id, &themes_dir, &fonts_dir);
-            let _ = tx.send(AppMsg::ThemeInstallDone { result });
-        });
-    }
     fn download_hebnix_plugin(&mut self, plugin_id: &str) {
         self.install_modal.downloading_id = Some(plugin_id.to_string());
         let plugin_id = plugin_id.to_string();
@@ -6120,94 +6481,224 @@ impl HebnixApp {
         });
     }
 
-    fn render_game_overlay(&mut self) {
-        // linux-port: the monitor thread can't reach into the wayland
-        // backend directly (it lives on the main thread only), so it just
-        // flags force-hide; consume that here before anything else.
-        if crate::overlay::take_force_hide() {
-            self.overlay.hide();
-        }
+    fn download_theme(&self, theme_id: &str) {
+        let theme_id = theme_id.to_string();
+        let themes_dir = self.themes_dir.clone();
+        let fonts_dir = self.fonts_dir.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::deep_link::install_theme(&theme_id, &themes_dir, &fonts_dir);
+            let _ = tx.send(AppMsg::ThemeInstallDone { result });
+        });
+    }
 
-        // drains GTK/WebKit's GLib main context -- also what services the
-        // tray icon's own GTK objects, so this needs to run every tick
-        // regardless of whether any plugin actually uses the html overlay.
-        crate::webview::WebviewOverlay::pump();
-
-        let page_layers = self.plugin_mgr.overlay_page_plugins();
-        self.webview.sync_pages(&page_layers);
-        if let Some(error) = self.webview.take_error() {
-            self.console
-                .write(format!("[Core] Overlay webview: {error}"));
-        }
-
-        let focused = hebnix_sdk::process::is_rocket_league_focused();
-        if self.webview.is_active() {
-            if focused {
-                self.webview.show();
-            } else {
-                self.webview.hide();
-            }
-        }
-
-        if !self.last_rl_open {
-            self.toasts.update(false);
-            self.overlay.hide();
-            self.overlay_rect = None;
+    fn render_install_modal(&mut self, ctx: &egui::Context) {
+        if !self.install_modal.open {
             return;
         }
+        let mut open = true;
+        let mut close_requested = false;
 
-        let slugs = self.plugin_mgr.overlay_plugins();
-        let has_toast = self.toasts.update(focused);
-
-        if (slugs.is_empty() && !has_toast) || !focused {
-            self.overlay.hide();
-            self.overlay_rect = None;
-            return;
-        }
-
-        let now = std::time::Instant::now();
-        let refresh_due = self
-            .overlay_rect_checked
-            .map(|t| now.duration_since(t).as_millis() > 250)
-            .unwrap_or(true);
-        if refresh_due {
-            self.overlay_rect_checked = Some(now);
-            self.overlay_rect = hebnix_sdk::process::get_rocket_league_window_rect();
-        }
-        let Some(rect) = self.overlay_rect else {
-            self.overlay.hide();
-            return;
+        let window = if self.install_modal.hebnix_stage {
+            egui::Window::new(t("plugins-install-plugin"))
+                .id(egui::Id::new("install_plugin_catalog"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .fixed_size([900.0, 550.0])
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        } else {
+            egui::Window::new(t("plugins-install-plugin"))
+                .id(egui::Id::new("install_plugin_prompt"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         };
 
-        let mgr = &mut self.plugin_mgr;
-        let toasts = &mut self.toasts;
-        let toast_pos = self.config.settings.toast_position;
-        let mut errors: Vec<String> = Vec::new();
-        self.overlay.frame(rect, |w, h| {
-            for slug in &slugs {
-                if let Err(e) = mgr.render_overlay_gdi(slug, w, h) {
-                    errors.push(format!("[Core] Overlay error in '{slug}': {e}"));
-                }
+        window.show(ctx, |ui| {
+            if !self.install_modal.hebnix_stage {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_sized(
+                            [160.0, 120.0],
+                            egui::Button::new(t("install-modal-install-from-hebnix")),
+                        )
+                        .clicked()
+                    {
+                        self.install_modal.hebnix_stage = true;
+                        self.fetch_hebnix_plugin();
+                    }
+                    if ui
+                        .add_sized(
+                            [160.0, 120.0],
+                            egui::Button::new(t("install-modal-install-from-zip")),
+                        )
+                        .clicked()
+                    {
+                        let dialog = rfd::FileDialog::new()
+                            .add_filter(t("install-modal-plugin-archives"), &["zip"]);
+                        if let Some(file) = winutil::parent_file_dialog(dialog).pick_file() {
+                            match install_zip(&file, &self.plugin_dir) {
+                                Ok(()) => {
+                                    self.console.write(format!(
+                                        "[Console] Extracted contents of {} into /plugins/",
+                                        file.file_name()
+                                            .map(|f| f.to_string_lossy().to_string())
+                                            .unwrap_or_default()
+                                    ));
+                                    self.plugin_mgr.refresh(&mut self.config, true);
+                                    self.save_config();
+                                    close_requested = true;
+                                }
+                                Err(e) => {
+                                    self.console.write(format!(
+                                        "[Console] Failed to install plugin from zip: {e}"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+            } else {
+                self.render_hebnix_install(ui, &mut close_requested);
             }
-            toasts.draw(w, h, toast_pos);
         });
-        for e in errors {
-            self.console.write(e);
+
+        if !open || close_requested {
+            self.install_modal = InstallModal::default();
         }
     }
 
-    fn plugin_monitor_size(&mut self) -> (f32, f32) {
-        let now = std::time::Instant::now();
-        let due = self
-            .plugin_monitor_checked
-            .map(|t| now.duration_since(t).as_millis() > 500)
-            .unwrap_or(true);
-        if due {
-            self.plugin_monitor_checked = Some(now);
-            let (w, h) = hebnix_sdk::process::rocket_league_monitor_size();
-            self.plugin_monitor_size = (w as f32, h as f32);
+    fn render_rl_launch_setup(&mut self, ctx: &egui::Context) {
+        if !self.rl_launch_setup_open {
+            return;
         }
-        self.plugin_monitor_size
+        use crate::config::RlLaunchMode;
+
+        let mut open = true;
+        egui::Window::new(t("rl-launch-setup-rocket-league-launch-setup"))
+            .id(egui::Id::new("rl-launch-setup-rocket-league-launch-setup"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(t("rl-launch-setup-how-do-you-actually-launch-rocket"));
+                ui.add_space(8.0);
+
+                ui.radio_value(
+                    &mut self.rl_launch_draft.mode,
+                    RlLaunchMode::Unconfigured,
+                    t("rl-launch-setup-auto-detect-steam-or-epic-games"),
+                );
+                ui.radio_value(
+                    &mut self.rl_launch_draft.mode,
+                    RlLaunchMode::SteamProton,
+                    t("settings-rl-mode-steam-native"),
+                );
+                ui.radio_value(
+                    &mut self.rl_launch_draft.mode,
+                    RlLaunchMode::SteamShortcutToHeroic,
+                    t("rl-launch-setup-non-steam-shortcut-that-opens-heroic"),
+                );
+                if self.rl_launch_draft.mode == RlLaunchMode::SteamShortcutToHeroic {
+                    ui.label(
+                        egui::RichText::new(t("rl-launch-setup-non-steam-shortcuts-can-t-pass"))
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(0xe6, 0xa8, 0x3c)),
+                    );
+                }
+                ui.radio_value(
+                    &mut self.rl_launch_draft.mode,
+                    RlLaunchMode::HeroicDirect,
+                    t("rl-launch-setup-heroic-directly-no-steam-or-epic"),
+                );
+                ui.add_space(8.0);
+
+                match self.rl_launch_draft.mode {
+                    RlLaunchMode::Unconfigured => {}
+                    RlLaunchMode::SteamProton => {
+                        ui.label(t("rl-launch-setup-steam-app-id-252950-is-rocket"));
+                        ui.text_edit_singleline(&mut self.rl_launch_draft.steam_id);
+                    }
+                    RlLaunchMode::SteamShortcutToHeroic => {
+                        if ui
+                            .button(t("rl-launch-setup-scan-steam-shortcuts-for-heroic"))
+                            .clicked()
+                        {
+                            self.rl_launch_shortcut_candidates =
+                                crate::rl_launch::find_heroic_shortcuts();
+                        }
+                        if self.rl_launch_shortcut_candidates.is_empty() {
+                            ui.small(t("rl-launch-setup-no-candidates-found-yet-click-scan"));
+                        } else {
+                            for candidate in &self.rl_launch_shortcut_candidates {
+                                if ui
+                                    .button(format!("{}  ({})", candidate.app_name, candidate.exe))
+                                    .clicked()
+                                {
+                                    self.rl_launch_draft.steam_id = candidate.rungameid.to_string();
+                                    // the shortcut's own target IS Heroic's binary - almost every
+                                    // Steam shortcut that opens Heroic points straight at it, with
+                                    // the actual game picked by the shortcut's launch options, so
+                                    // there's nothing left to type in by hand here.
+                                    self.rl_launch_draft.heroic_binary =
+                                        candidate.exe.trim().trim_matches('"').to_string();
+                                }
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.label(t("rl-launch-setup-steam-shortcut-id"));
+                        ui.text_edit_singleline(&mut self.rl_launch_draft.steam_id);
+                        if !self.rl_launch_draft.heroic_binary.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(t_args(
+                                "rl-launch-setup-heroic-binary-rl-launch-draft",
+                                &[(
+                                    "heroic_binary",
+                                    self.rl_launch_draft.heroic_binary.to_string().into(),
+                                )],
+                            ));
+                        }
+                    }
+                    RlLaunchMode::HeroicDirect => {
+                        ui.label(t("rl-launch-setup-heroic-binary-path-e-g-the"));
+                        ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_binary);
+                    }
+                }
+
+                if matches!(
+                    self.rl_launch_draft.mode,
+                    RlLaunchMode::SteamShortcutToHeroic | RlLaunchMode::HeroicDirect
+                ) {
+                    ui.add_space(4.0);
+                    ui.label(t("rl-launch-setup-epic-catalog-app-name-sugar-is"));
+                    ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_app_name);
+                    ui.label(t("rl-launch-setup-runner"));
+                    ui.text_edit_singleline(&mut self.rl_launch_draft.heroic_runner);
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t("rl-launch-setup-save")).clicked() {
+                        self.config.rl_launch = self.rl_launch_draft.clone();
+                        self.save_config();
+                        self.console
+                            .write("[Core] Rocket League launch setup saved.");
+                        self.rl_launch_setup_open = false;
+                    }
+                    if ui.button(t("spawner-enable-prompt-cancel")).clicked() {
+                        self.rl_launch_setup_open = false;
+                    }
+                });
+            });
+        if !open {
+            self.rl_launch_setup_open = false;
+        }
     }
 
     fn render_plugin_windows(&mut self, ctx: &egui::Context) {
@@ -6347,6 +6838,119 @@ impl HebnixApp {
             });
         }
     }
+
+    fn render_game_overlay(&mut self) {
+        // linux-port: the monitor thread can't reach into the wayland
+        // backend directly (it lives on the main thread only), so it just
+        // flags force-hide; consume that here before anything else.
+        if crate::overlay::take_force_hide() {
+            self.overlay.hide();
+        }
+
+        // drains GTK/WebKit's GLib main context -- also what services the
+        // tray icon's own GTK objects, so this needs to run every tick
+        // regardless of whether any plugin actually uses the html overlay.
+        crate::webview::WebviewOverlay::pump();
+
+        let page_layers = self.plugin_mgr.overlay_page_plugins();
+        self.webview.sync_pages(&page_layers);
+        if let Some(error) = self.webview.take_error() {
+            self.console
+                .write(format!("[Core] Overlay webview: {error}"));
+        }
+
+        let focused = hebnix_sdk::process::is_rocket_league_focused();
+        if self.webview.is_active() {
+            if focused {
+                self.webview.show();
+            } else {
+                self.webview.hide();
+            }
+        }
+
+        if !self.last_rl_open {
+            self.toasts.update(false);
+            self.overlay.hide();
+            self.overlay_rect = None;
+            return;
+        }
+
+        let slugs = self.plugin_mgr.overlay_plugins();
+        let has_toast = self.toasts.update(focused);
+
+        if (slugs.is_empty() && !has_toast) || !focused {
+            self.overlay.hide();
+            self.overlay_rect = None;
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        let refresh_due = self
+            .overlay_rect_checked
+            .map(|t| now.duration_since(t).as_millis() > 250)
+            .unwrap_or(true);
+        if refresh_due {
+            self.overlay_rect_checked = Some(now);
+            self.overlay_rect = hebnix_sdk::process::get_rocket_league_window_rect();
+        }
+        let Some(rect) = self.overlay_rect else {
+            self.overlay.hide();
+            return;
+        };
+
+        let mgr = &mut self.plugin_mgr;
+        let toasts = &mut self.toasts;
+        let toast_pos = self.config.settings.toast_position;
+        let mut errors: Vec<String> = Vec::new();
+        self.overlay.frame(rect, |w, h| {
+            for slug in &slugs {
+                if let Err(e) = mgr.render_overlay_gdi(slug, w, h) {
+                    errors.push(format!("[Core] Overlay error in '{slug}': {e}"));
+                }
+            }
+            toasts.draw(w, h, toast_pos);
+        });
+        for e in errors {
+            self.console.write(e);
+        }
+    }
+
+    fn ensure_plugin_image(&mut self, banner_path: &str, ctx: &egui::Context) {
+        if banner_path.is_empty() || self.install_modal.images.contains_key(banner_path) {
+            return;
+        }
+        self.install_modal
+            .images
+            .insert(banner_path.to_string(), ImageState::Loading);
+
+        let cache_dir = self
+            .base_dir
+            .join("plugins")
+            .join("cache")
+            .join("plugin_store");
+        crate::ui::workshop::spawn_image_fetch(
+            banner_path.to_string(),
+            cache_dir,
+            self.tx.clone(),
+            ctx.clone(),
+            |key, bytes| AppMsg::PluginImage { key, bytes },
+        );
+    }
+
+    fn plugin_monitor_size(&mut self) -> (f32, f32) {
+        let now = std::time::Instant::now();
+        let due = self
+            .plugin_monitor_checked
+            .map(|t| now.duration_since(t).as_millis() > 500)
+            .unwrap_or(true);
+        if due {
+            self.plugin_monitor_checked = Some(now);
+            let (w, h) = hebnix_sdk::process::rocket_league_monitor_size();
+            self.plugin_monitor_size = (w as f32, h as f32);
+        }
+        self.plugin_monitor_size
+    }
+
 }
 
 fn install_plugin_update(
@@ -6419,7 +7023,21 @@ impl Drop for HebnixApp {
 }
 
 impl eframe::App for HebnixApp {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !self.panel.active {
+            return;
+        }
+        let (page, back, list_page) = crate::panel::feed(ctx, raw_input, &self.panel.pad.drain(), &mut self.panel.pending_nav);
+        self.panel.pending_page += page;
+        self.panel.pending_back |= back;
+        self.panel.pending_list_page += list_page;
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        self.replay_history_patch.tick(ctx, std::path::Path::new(&self.config.settings.rl_path));
+        self.workshop.startup_sync(&self.config.settings.rl_path, ctx);
+        self.scoreboard.tick(ctx, std::path::Path::new(&self.config.settings.rl_path));
+        self.profile_pictures.tick(ctx, std::path::Path::new(&self.config.settings.rl_path));
         if self.quitting && crate::watchdog::has_live_handoff() {
             if !hebnix_sdk::process::is_rocket_league_running() {
                 crate::watchdog::finish_live_handoff();
@@ -6432,13 +7050,21 @@ impl eframe::App for HebnixApp {
         // eframe skips ui() while occluded, but controls must still run.
         crate::visibility::poll(ctx);
         self.handle_messages(ctx);
+        self.deliver_overlay_messages();
+        self.replay_timeline.tick(ctx, &self.ws_stats,
+            self.tab == Tab::Replays && self.replays_subtab == ReplaysSubTab::ReplayTimeline);
+        self.auto_upload_replays.sync(self.replay_options_enabled(), true, true);
+        self.auto_upload_replays.check(&self.config.replay_upload,
+            std::path::Path::new(&self.config.settings.rl_path), &self.config.rl_launch,
+            self.tx.clone(), ctx.clone(), false);
         if winutil::take_minimize_request() && !self.hidden {
             self.set_hidden(ctx, true);
         }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        let alpha = if crate::window_state::safe_rendering() { 1.0 } else { 0.0 };
+        [0.0, 0.0, 0.0, alpha]
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -6504,27 +7130,25 @@ impl eframe::App for HebnixApp {
         }
 
         if !self.hidden {
-            if let Some(presentation) = theme::presentation(ctx) {
-                egui::Panel::top("linux_titlebar").show(ui, |ui| self.render_titlebar(ui));
+            if self.panel.active {
+                self.render_panel(ui);
+            } else if let Some(presentation) = theme::presentation(ctx) {
                 self.render_themed_shell(ui, &presentation);
             } else {
             egui::CentralPanel::default().show(ui, |ui| {
                 self.render_titlebar(ui);
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    // same order as the original hardcoded bar
-                    for tab in [
-                        Tab::Console,
-                        Tab::Workshop,
-                        Tab::Spoofer,
-                        Tab::Colours,
-                        Tab::Patcher,
-                        Tab::Settings,
-                        Tab::Plugins,
-                        Tab::Replays,
-                        Tab::About,
-                    ] {
-                        ui.selectable_value(&mut self.tab, tab, tab.label());
+                    for tab in Tab::ALL {
+                        if tab == Tab::Home {
+                            if ui.add(egui::Button::image(egui::Image::new(egui::include_image!("../assets/navigation/home.svg"))
+                                .fit_to_exact_size(egui::vec2(18.0, 18.0)).tint(ui.visuals().text_color()))
+                                .selected(self.tab == tab)).on_hover_text(tab.label()).clicked() {
+                                self.tab = tab;
+                            }
+                        } else {
+                            ui.selectable_value(&mut self.tab, tab, tab.label());
+                        }
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -6597,6 +7221,15 @@ impl eframe::App for HebnixApp {
         } else {
             Duration::from_millis(500)
         };
+        // peers' map names and the game's sync button need this on every tab, hidden or not
+        let join_rl_path = self.config.settings.rl_path.clone();
+        self.workshop.auto_connect(&join_rl_path, &self.tx.clone(), ctx);
+        // Instant Suite's action can change mid-game: the winner movie asks Hebnix each match
+        let cooked_pc = PathBuf::from(&join_rl_path).join("TAGame").join("CookedPCConsole");
+        self.instant_suite.tick(&cooked_pc, &cooked_pc.join("Backups"), &self.config.game_mods.instant_suite_mode, &self.config.game_mods.instant_suite_map);
+        self.workshop.poll_downloads(&join_rl_path, &self.tx.clone(), ctx);
+        self.workshop.panel_mode = self.panel.active;
+        self.workshop.render_join_prompt(ctx, &join_rl_path);
         self.plugin_mgr.dispatch_tick_if_due(plugin_tick_interval);
         self.render_plugin_windows(ctx);
         if !self.hidden {
@@ -6621,135 +7254,240 @@ impl eframe::App for HebnixApp {
 }
 
 impl HebnixApp {
-    fn render_current_page(&mut self, ui: &mut egui::Ui) {
-        if self.tab != Tab::Spoofer || self.spoofer_subtab != SpooferSubTab::Titles {
-            self.title_editor.leave_page();
-        }
-        let ctx = &ui.ctx().clone();
-        match self.tab {
-            Tab::Console => self.render_console_tab(ui),
-            Tab::Workshop => {
-                let rl_path = self.config.settings.rl_path.clone();
-                let rl_launch = self.config.rl_launch.clone();
-                let tx = self.tx.clone();
-                self.workshop.render(ui, &rl_path, &rl_launch, &tx);
+    fn render_items_tab(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            for (value, key) in [
+                (ItemsSubTab::Swapper, "nav-swapper"),
+                (ItemsSubTab::Colours, "nav-colours"),
+                (ItemsSubTab::Active, "nav-active"),
+                (ItemsSubTab::Presets, "presets-presets"),
+                (ItemsSubTab::Loadouts, "loadouts-title"),
+            ] {
+                ui.selectable_value(&mut self.items_subtab, value, t(key));
             }
-            Tab::Spoofer => self.render_spoofer_tab(ui),
-            Tab::Patcher => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut self.items_mode, ItemsMode::Swapper, t("app-items-swapper"));
-                    ui.selectable_value(&mut self.items_mode, ItemsMode::Recolour, t("app-items-recolour"));
-                    ui.selectable_value(&mut self.items_mode, ItemsMode::Patching, t("app-items-patching"));
-                    ui.selectable_value(&mut self.items_mode, ItemsMode::Spawner, t("app-items-spawner"));
-                    ui.selectable_value(&mut self.items_mode, ItemsMode::SpeedPatch, t("app-speed-patch"));
-                    ui.selectable_value(&mut self.items_mode, ItemsMode::WheelAlignment, t("app-wheel-alignment"));
-                    ui.selectable_value(&mut self.items_mode, ItemsMode::BallAppearance, t("app-ball-appearance"));
+        });
+        ui.separator();
+        if matches!(
+            self.items_subtab,
+            ItemsSubTab::Swapper | ItemsSubTab::Colours
+        ) {
+            theme::secondary_navigation(ui, "items_categories").show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("items_category_pages")
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| {
+                        if self.items_subtab == ItemsSubTab::Colours {
+                            self.swapper.render_recolour_categories(ui);
+                        } else {
+                            for category in crate::swapper::SwapCategory::ALL {
+                                ui.selectable_value(
+                                    &mut self.swapper_subtab,
+                                    PatcherSubTab::Swapper(category),
+                                    category.label(),
+                                );
+                            }
+                        }
+                    }));
+            });
+        }
+        if self.items_subtab == ItemsSubTab::Loadouts {
+            let apply = egui::ScrollArea::vertical()
+                .id_salt("loadouts_scroll")
+                .auto_shrink([false; 2])
+                .show(ui, |ui| crate::panel::followed(ui, |ui| self.loadouts.show(ui, &self.swapper, &mut self.presets)))
+                .inner;
+            if let Some(name) = apply {
+                if let Some(index) = self.presets.presets.iter().position(|p| p.name == name) {
+                    self.presets.selected = index;
+                    let cooked_pc = PathBuf::from(&self.config.settings.rl_path)
+                        .join("TAGame")
+                        .join("CookedPCConsole");
+                    let backups_dir = cooked_pc.join("Backups");
+                    let ctx = ui.ctx().clone();
+                    self.apply_selected_preset(&cooked_pc, &backups_dir, &ctx);
+                }
+            }
+            return;
+        }
+        let mode = match self.items_subtab {
+            ItemsSubTab::Swapper => ItemsMode::Swapper,
+            ItemsSubTab::Colours => ItemsMode::Recolour,
+            ItemsSubTab::Active => ItemsMode::ItemsActive,
+            ItemsSubTab::Presets => ItemsMode::Presets,
+            ItemsSubTab::Loadouts => unreachable!("Loadouts has its own editor"),
+        };
+        self.render_editor_content(ui, mode);
+    }
+
+    fn render_upk_studio(&mut self, ui: &mut egui::Ui) {
+        let mut section = self.items_mode.section().expect("studio page");
+        let previous = section;
+        ui.horizontal_wrapped(|ui| {
+            for (value, key) in [
+                (StudioSection::CustomAssets, "studio-custom-assets"),
+                (StudioSection::Appearance, "studio-appearance"),
+                (StudioSection::Tools, "studio-tools"),
+                (StudioSection::Active, "nav-active"),
+            ] {
+                ui.selectable_value(&mut section, value, t(key));
+            }
+        });
+        if section != previous {
+            self.items_mode = match section {
+                StudioSection::CustomAssets => ItemsMode::Patching,
+                StudioSection::Appearance => ItemsMode::GameColours,
+                StudioSection::Tools => ItemsMode::SpeedPatch,
+                StudioSection::Active => ItemsMode::Manage,
+            };
+        }
+        ui.separator();
+        if section != StudioSection::Active {
+            theme::secondary_navigation(ui, "studio_navigation").show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("studio_pages")
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| match section {
+                        StudioSection::CustomAssets => {
+                            for (value, key) in [
+                                (PatcherSubTab::Car, "nav-car-models"),
+                                (PatcherSubTab::Decal, "nav-decals"),
+                                (PatcherSubTab::Anthem, "studio-player-anthems"),
+                                (PatcherSubTab::Ball, "nav-ball-textures"),
+                                (PatcherSubTab::BoostMeter, "nav-boost-meter"),
+                                (PatcherSubTab::Thumbnail, "nav-item-thumbnails"),
+                            ] {
+                                let selected = self.items_mode == ItemsMode::Patching
+                                    && self.patcher_subtab == value;
+                                if ui.selectable_label(selected, t(key)).clicked() {
+                                    self.items_mode = ItemsMode::Patching;
+                                    self.patcher_subtab = value;
+                                }
+                            }
+                            ui.selectable_value(
+                                &mut self.items_mode,
+                                ItemsMode::ItemNames,
+                                t("nav-item-names"),
+                            );
+                        }
+                        StudioSection::Appearance => {
+                            for (value, key) in [
+                                (ItemsMode::GameColours, "nav-game-colours"),
+                                (ItemsMode::BallAppearance, "nav-ball-shape"),
+                                (ItemsMode::WheelAlignment, "app-wheel-alignment"),
+                                (ItemsMode::ArenaBackgrounds, "nav-arena-backgrounds"),
+                                (ItemsMode::GoalExplosion, "nav-goal-explosion-scale"),
+                            ] {
+                                ui.selectable_value(&mut self.items_mode, value, t(key));
+                            }
+                        }
+                        StudioSection::Tools => {
+                            ui.selectable_value(
+                                &mut self.items_mode,
+                                ItemsMode::SpeedPatch,
+                                t("app-speed-patch"),
+                            );
+                        }
+                        StudioSection::Active => unreachable!(),
+                    }));
+            });
+        }
+        self.render_editor_content(ui, self.items_mode);
+    }
+
+    fn render_active_items(
+        &mut self,
+        ui: &mut egui::Ui,
+        cooked_pc: &std::path::Path,
+        backups_dir: &std::path::Path,
+    ) {
+        egui::ScrollArea::vertical()
+            .id_salt("active_item_swaps")
+            .show(ui, |ui| crate::panel::followed(ui, |ui| {
+                ui.heading(t("nav-active"));
+                let count = self.swapper.active_count(backups_dir);
+                ui.horizontal(|ui| {
+                    ui.label(t_n("items-active-changes", count as i64));
+                    if ui
+                        .add_enabled(count > 0, egui::Button::new(t("app-restore-all")))
+                        .clicked()
+                    {
+                        match self
+                            .swapper
+                            .restore_all_active(cooked_pc, backups_dir, &self.tx)
+                        {
+                            Ok(count) => self
+                                .console
+                                .write(format!("[Items] Restored {count} item changes.")),
+                            Err(error) => self
+                                .console
+                                .write(format!("[Items] Restore failed: {error}")),
+                        }
+                    }
                 });
                 ui.separator();
-                let cooked_pc = PathBuf::from(&self.config.settings.rl_path)
-                    .join("TAGame")
-                    .join("CookedPCConsole");
-                let backups_dir = cooked_pc.join("Backups");
-                if self.items_mode == ItemsMode::Spawner {
-                    let status = self.spoofer_mgr.item_status();
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{} items; {} legacy tracked IDs", status.active, status.legacy));
-                        if ui.add_enabled(!status.clearing, egui::Button::new("Remove Items")).clicked() {
-                            match self.spoofer_mgr.begin_item_clear() {
-                                Ok(()) => self.check_item_clear(),
-                                Err(error) => self.item_clear_error = Some(error),
-                            }
-                        }
-                    });
-                    if let Some(error) = &self.item_clear_error { ui.label(error); }
-                } else if matches!(self.items_mode, ItemsMode::Swapper | ItemsMode::Patching) {
-                let patching = self.items_mode == ItemsMode::Patching;
-                let selected_subtab = if patching {
-                    &mut self.patcher_subtab
-                } else {
-                    &mut self.swapper_subtab
-                };
-                theme::secondary_navigation(ui, "patcher_settings_list")
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt(("patcher_subtabs", patching))
-                            .show(ui, |ui| {
-                                if patching {
-                                    ui.selectable_value(
-                                        selected_subtab,
-                                        PatcherSubTab::Ball,
-                                        t("app-ball-patcher"),
-                                    );
-                                    ui.selectable_value(
-                                        selected_subtab,
-                                        PatcherSubTab::BoostMeter,
-                                        t("app-boost-patcher"),
-                                    );
-                                    ui.selectable_value(
-                                        selected_subtab,
-                                        PatcherSubTab::Decal,
-                                        t("app-decal-patcher"),
-                                    );
-                                    ui.selectable_value(
-                                        selected_subtab,
-                                        PatcherSubTab::Car,
-                                        t("app-car-patcher"),
-                                    );
-                                } else {
-                                    for category in crate::swapper::SwapCategory::ALL {
-                                        ui.selectable_value(
-                                            selected_subtab,
-                                            PatcherSubTab::Swapper(category),
-                                            category.label(),
-                                        );
-                                    }
-                                    ui.separator();
-                                    ui.selectable_value(
-                                        selected_subtab,
-                                        PatcherSubTab::Active,
-                                        t("app-active"),
-                                    );
-                                    ui.selectable_value(
-                                        selected_subtab,
-                                        PatcherSubTab::Presets,
-                                        t("presets-presets"),
-                                    );
-                                }
-                            });
-                    });
-                let selected_subtab = *selected_subtab;
+                if count == 0 {
+                    ui.weak(t("app-no-patches-or-swaps-are-active"));
+                }
+                self.swapper
+                    .render_active_swaps(ui, cooked_pc, backups_dir, &self.tx);
+            }));
+    }
 
-                egui::CentralPanel::default()
-                    .frame(crate::i18n::layout::subtab_content_frame())
-                    .show(ui, |ui| {
-                        let catalog_required = matches!(
-                            selected_subtab,
-                            PatcherSubTab::Decal
-                                | PatcherSubTab::Car
-                                | PatcherSubTab::Swapper(_)
+    fn render_editor_content(&mut self, ui: &mut egui::Ui, mode: ItemsMode) {
+        let ctx = &ui.ctx().clone();
+        let cooked_pc = PathBuf::from(&self.config.settings.rl_path)
+            .join("TAGame")
+            .join("CookedPCConsole");
+        let backups_dir = cooked_pc.join("Backups");
+        egui::CentralPanel::default()
+            .frame(crate::i18n::layout::subtab_content_frame())
+            .show(ui, |ui| {
+                if matches!(
+                    mode,
+                    ItemsMode::Swapper
+                        | ItemsMode::Patching
+                        | ItemsMode::Manage
+                        | ItemsMode::Presets
+                ) {
+                    let selected_subtab = if mode == ItemsMode::Patching {
+                        self.patcher_subtab
+                    } else if mode == ItemsMode::Manage {
+                        PatcherSubTab::Active
+                    } else if mode == ItemsMode::Presets {
+                        PatcherSubTab::Presets
+                    } else {
+                        self.swapper_subtab
+                    };
+                    let catalog_required = matches!(
+                        selected_subtab,
+                        PatcherSubTab::Decal
+                            | PatcherSubTab::Car
+                            | PatcherSubTab::Anthem
+                            | PatcherSubTab::Swapper(_)
+                    );
+                    if self.catalogs_loading {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(t("app-loading-item-catalogs"));
+                        });
+                        ui.add_space(8.0);
+                    }
+                    if let Some(error) = self.catalogs_error.clone() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0xe7, 0x4c, 0x3c),
+                            t_args(
+                                "app-catalog-download-failed-error",
+                                &[("error", error.to_string().into())],
+                            ),
                         );
-                        if self.catalogs_loading {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(t("app-loading-item-catalogs"));
-                            });
-                            ui.add_space(8.0);
+                        if ui.button(t("app-reload-catalogs")).clicked() {
+                            self.reload_catalogs(ctx);
                         }
-                        if let Some(error) = self.catalogs_error.clone() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(0xe7, 0x4c, 0x3c),
-                                t_args("app-catalog-download-failed-error", &[("error", error.to_string().into())]),
-                            );
-                            if ui.button(t("app-reload-catalogs")).clicked() {
-                                self.reload_catalogs(ctx);
-                            }
-                            ui.add_space(8.0);
-                        }
-                        if catalog_required && !self.catalogs_loaded {
-                            return;
-                        }
+                        ui.add_space(8.0);
+                    }
+                    if catalog_required && !self.catalogs_loaded {
+                        return;
+                    }
 
-                        match selected_subtab {
+                    match selected_subtab {
                         PatcherSubTab::Ball => {
                             self.patcher_ball.render_ball_tab(
                                 ui,
@@ -6792,52 +7530,149 @@ impl HebnixApp {
                                 &mut self.config,
                             );
                         }
-                        PatcherSubTab::Swapper(category) => {
+                        PatcherSubTab::Anthem => {
+                            ui.heading(t("studio-player-anthems"));
                             self.owned_inventory.show(ui);
-                            let owned_ids = &self.owned_inventory.ids;
+                            self.patcher_anthem.render_tab(
+                                ui,
+                                &cooked_pc,
+                                &self.tx,
+                                &mut self.config,
+                                &self.owned_inventory.ids,
+                            );
+                        }
+                        PatcherSubTab::Swapper(category) => {
                             self.swapper.speed_enabled = self.config.speed_patch.items_page;
-                            self.swapper.render_tab(
+                            self.swapper.render_owned_tab(
                                 ui,
                                 category,
                                 &cooked_pc,
                                 &backups_dir,
                                 &self.tx,
-                                owned_ids,
+                                &mut self.owned_inventory,
+                            );
+                        }
+                        PatcherSubTab::Thumbnail => {
+                            self.swapper.render_owned_thumbnail_patcher(
+                                ui,
+                                &cooked_pc,
+                                &backups_dir,
+                                &mut self.owned_inventory,
                             );
                         }
                         PatcherSubTab::Active => {
-                            self.patcher_ball.poll_ops(
-                                &self.tx,
-                                ctx,
-                                &mut self.config,
-                            );
+                            self.patcher_ball.poll_ops(&self.tx, ctx, &mut self.config);
                             self.patcher_boost.poll_ops(&self.tx, &mut self.config);
                             self.patcher_decal
                                 .handle_op_result(&self.tx, &mut self.config);
                             egui::ScrollArea::vertical()
-                                .id_salt("active_items")
+                                .id_salt("active_upk_studio")
                                 .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                            ui.heading(t("app-active-items"));
-                            let swap_count = self.swapper.active_count(&backups_dir);
-                            let active_count = swap_count
-                                + usize::from(self.patcher_ball.active_ball.is_some())
-                                + usize::from(self.patcher_boost.active_boost.is_some())
-                                + self.patcher_decal.active_decals.len()
-                                + self.patcher_car.active_cars.len();
-                            ui.horizontal(|ui| {
-                                ui.label(t_n("items-active-changes", active_count as i64));
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui
-                                            .add_enabled(
-                                                active_count > 0,
-                                                egui::Button::new(t("app-restore-all")),
+                                .show(ui, |ui| crate::panel::followed(ui, |ui| {
+                                    ui.heading(t("nav-active"));
+                                    let active_count =
+                                        usize::from(self.patcher_ball.active_ball.is_some())
+                                            + usize::from(
+                                                self.patcher_boost.active_boost.is_some(),
                                             )
-                                            .clicked()
-                                        {
-                                            if self.patcher_ball.active_ball.is_some() {
+                                            + self.patcher_decal.active_decals.len()
+                                            + self.patcher_car.active_cars.len()
+                                            + self.patcher_anthem.active_anthems.len();
+                                    ui.horizontal(|ui| {
+                                        ui.label(t_n("items-active-changes", active_count as i64));
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .add_enabled(
+                                                        active_count > 0,
+                                                        egui::Button::new(t("app-restore-all")),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    if !self
+                                                        .patcher_anthem
+                                                        .active_anthems
+                                                        .is_empty()
+                                                    {
+                                                        self.patcher_anthem
+                                                            .restore_all(&cooked_pc, ctx);
+                                                    }
+                                                    if self.patcher_ball.active_ball.is_some() {
+                                                        self.patcher_ball.begin_restore(
+                                                            &cooked_pc,
+                                                            &backups_dir,
+                                                            &self.tx,
+                                                            ctx,
+                                                        );
+                                                    }
+                                                    if self.patcher_boost.active_boost.is_some() {
+                                                        self.patcher_boost.begin_restore(
+                                                            &cooked_pc,
+                                                            &backups_dir,
+                                                            &self.tx,
+                                                            ctx,
+                                                        );
+                                                    }
+                                                    if !self.patcher_decal.active_decals.is_empty()
+                                                    {
+                                                        let _ =
+                                                            self.patcher_decal.restore_all_decals(
+                                                                &cooked_pc,
+                                                                &backups_dir,
+                                                                &self.tx,
+                                                                ctx,
+                                                            );
+                                                    }
+                                                    if !self.patcher_car.active_cars.is_empty() {
+                                                        if let Err(error) =
+                                                            self.patcher_car.restore_all(
+                                                                &cooked_pc,
+                                                                &backups_dir,
+                                                                &self.tx,
+                                                                &mut self.config,
+                                                            )
+                                                        {
+                                                            let _ =
+                                                                self.tx.send(AppMsg::Log(format!(
+                                                                    "[Cars] Restore failed: {error}"
+                                                                )));
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    });
+                                    ui.separator();
+                                    if active_count == 0 {
+                                        ui.vertical_centered(|ui| {
+                                            ui.weak(t("app-no-patches-or-swaps-are-active"))
+                                        });
+                                    }
+
+                                    let active_ball = self.patcher_ball.active_ball.clone();
+                                    if let Some(name) = active_ball {
+                                        let image = self
+                                            .patcher_ball
+                                            .balls
+                                            .iter()
+                                            .find(|item| item.name == name)
+                                            .and_then(|item| item.image_bytes.clone());
+                                        ui.horizontal(|ui| {
+                                            if let Some(image) = image {
+                                                ui.add(
+                                                    egui::Image::from_bytes(
+                                                        format!("bytes://active/ball/{name}"),
+                                                        image,
+                                                    )
+                                                    .fit_to_exact_size(egui::vec2(90.0, 58.0)),
+                                                );
+                                            }
+                                            ui.vertical(|ui| {
+                                                ui.strong(&name);
+                                                ui.weak(t("app-replaced-the-default-ball"));
+                                            });
+                                            if ui.button(t("app-restore")).clicked() {
                                                 self.patcher_ball.begin_restore(
                                                     &cooked_pc,
                                                     &backups_dir,
@@ -6845,116 +7680,38 @@ impl HebnixApp {
                                                     ctx,
                                                 );
                                             }
-                                            if self.patcher_boost.active_boost.is_some() {
-                                                self.patcher_boost.begin_restore(
-                                                    &cooked_pc,
-                                                    &backups_dir,
-                                                    &self.tx,
-                                                    ctx,
-                                                );
-                                            }
-                                            if !self.patcher_decal.active_decals.is_empty() {
-                                                let _ = self.patcher_decal.restore_all_decals(
-                                                    &cooked_pc,
-                                                    &backups_dir,
-                                                    &self.tx,
-                                                    ctx,
-                                                );
-                                            }
-                                            if !self.patcher_car.active_cars.is_empty() {
-                                                if let Err(error) = self.patcher_car.restore_all(
-                                                    &cooked_pc,
-                                                    &backups_dir,
-                                                    &self.tx,
-                                                    &mut self.config,
-                                                ) {
-                                                    let _ = self.tx.send(AppMsg::Log(format!(
-                                                        "[Cars] Restore failed: {error}"
-                                                    )));
-                                                }
-                                            }
-                                            match self.swapper.restore_all_active(
-                                                &cooked_pc,
-                                                &backups_dir,
-                                                &self.tx,
-                                            ) {
-                                                Ok(count) if count > 0 => {
-                                                    let _ = self.tx.send(AppMsg::Log(format!(
-                                                        "[Swapper] {}",
-                                                        t_n("console-swapper-restored", count as i64)
-                                                    )));
-                                                }
-                                                Err(error) => {
-                                                    let _ = self.tx.send(AppMsg::Log(format!(
-                                                        "[Swapper] Error: {error}"
-                                                    )));
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    },
-                                );
-                            });
-                            ui.separator();
-                            if active_count == 0 {
-                                ui.vertical_centered(|ui| ui.weak(t("app-no-patches-or-swaps-are-active")));
-                            }
-
-                            let active_ball = self.patcher_ball.active_ball.clone();
-                            if let Some(name) = active_ball {
-                                let image = self
-                                    .patcher_ball
-                                    .balls
-                                    .iter()
-                                    .find(|item| item.name == name)
-                                    .and_then(|item| item.image_bytes.clone());
-                                ui.horizontal(|ui| {
-                                    if let Some(image) = image {
-                                        ui.add(egui::Image::from_bytes(
-                                            format!("bytes://active/ball/{name}"), image,
-                                        ).fit_to_exact_size(egui::vec2(90.0, 58.0)));
+                                        });
                                     }
-                                    ui.vertical(|ui| {
-                                        ui.strong(&name);
-                                        ui.weak(t("app-replaced-the-default-ball"));
-                                    });
-                                    if ui.button(t("app-restore")).clicked() {
-                                        self.patcher_ball.begin_restore(
-                                            &cooked_pc, &backups_dir, &self.tx, ctx,
-                                        );
-                                    }
-                                });
-                            }
-                            let active_boost = self.patcher_boost.active_boost.clone();
-                            if let Some(name) = active_boost {
-                                let images = self
-                                    .patcher_boost
-                                    .boosts
-                                    .iter()
-                                    .find(|item| item.name == name)
-                                    .map(|item| {
-                                        (
-                                            item.background_image.clone(),
-                                            item.fill_image.clone(),
-                                            item.glow_image.clone(),
-                                            item.tint_image.clone(),
-                                        )
-                                    });
-                                ui.horizontal(|ui| {
-                                    if let Some((background, fill, glow, tint)) = images {
-                                        let size = egui::vec2(90.0, 58.0);
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            size,
-                                            egui::Sense::hover(),
-                                        );
-                                        for (layer, image) in [
-                                            ("background", background),
-                                            ("fill", fill),
-                                            ("glow", glow),
-                                            ("tint", tint),
-                                        ] {
-                                            if let Some(image) = image {
-                                                ui.put(
+                                    let active_boost = self.patcher_boost.active_boost.clone();
+                                    if let Some(name) = active_boost {
+                                        let images = self
+                                            .patcher_boost
+                                            .boosts
+                                            .iter()
+                                            .find(|item| item.name == name)
+                                            .map(|item| {
+                                                (
+                                                    item.background_image.clone(),
+                                                    item.fill_image.clone(),
+                                                    item.glow_image.clone(),
+                                                    item.tint_image.clone(),
+                                                )
+                                            });
+                                        ui.horizontal(|ui| {
+                                            if let Some((background, fill, glow, tint)) = images {
+                                                let size = egui::vec2(90.0, 58.0);
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    size,
+                                                    egui::Sense::hover(),
+                                                );
+                                                for (layer, image) in [
+                                                    ("background", background),
+                                                    ("fill", fill),
+                                                    ("glow", glow),
+                                                    ("tint", tint),
+                                                ] {
+                                                    if let Some(image) = image {
+                                                        ui.put(
                                                     rect,
                                                     egui::Image::from_bytes(
                                                         format!(
@@ -6964,108 +7721,159 @@ impl HebnixApp {
                                                     )
                                                     .fit_to_exact_size(size),
                                                 );
+                                                    }
+                                                }
                                             }
-                                        }
+                                            ui.vertical(|ui| {
+                                                ui.strong(&name);
+                                                ui.weak(t("app-replaced-the-default-boost-meter"));
+                                            });
+                                            if ui.button(t("app-restore")).clicked() {
+                                                self.patcher_boost.begin_restore(
+                                                    &cooked_pc,
+                                                    &backups_dir,
+                                                    &self.tx,
+                                                    ctx,
+                                                );
+                                            }
+                                        });
                                     }
-                                    ui.vertical(|ui| {
-                                        ui.strong(&name);
-                                        ui.weak(t("app-replaced-the-default-boost-meter"));
-                                    });
-                                    if ui.button(t("app-restore")).clicked() {
-                                        self.patcher_boost.begin_restore(
-                                            &cooked_pc, &backups_dir, &self.tx, ctx,
+                                    let active_decals = self
+                                        .patcher_decal
+                                        .active_decals
+                                        .iter()
+                                        .map(|(target, name)| (target.clone(), name.clone()))
+                                        .collect::<Vec<_>>();
+                                    let mut restore_decal = None;
+                                    for (target, name) in active_decals {
+                                        let target_label =
+                                            self.patcher_decal.target_display_name(&target);
+                                        let image = self
+                                            .patcher_decal
+                                            .decals
+                                            .iter()
+                                            .find(|item| item.name == name)
+                                            .and_then(|item| item.preview_image.clone());
+                                        ui.horizontal(|ui| {
+                                            if let Some(image) = image {
+                                                ui.add(
+                                                    egui::Image::from_bytes(
+                                                        format!("bytes://active/decal/{target}"),
+                                                        image,
+                                                    )
+                                                    .fit_to_exact_size(egui::vec2(90.0, 58.0)),
+                                                );
+                                            }
+                                            ui.vertical(|ui| {
+                                                ui.strong(&name);
+                                                ui.weak(t_args(
+                                                    "app-replaced-target-label",
+                                                    &[(
+                                                        "target_label",
+                                                        target_label.to_string().into(),
+                                                    )],
+                                                ));
+                                            });
+                                            if ui.button(t("app-restore")).clicked() {
+                                                restore_decal =
+                                                    target.split_once('|').map(|(car, skin)| {
+                                                        (car.to_string(), skin.to_string())
+                                                    });
+                                            }
+                                        });
+                                    }
+                                    if let Some((car, skin)) = restore_decal {
+                                        let _ = self.patcher_decal.restore_decal_from_skin(
+                                            &car,
+                                            &skin,
+                                            &cooked_pc,
+                                            &backups_dir,
+                                            &self.tx,
+                                            ctx,
                                         );
                                     }
-                                });
-                            }
-                            let active_decals = self
-                                .patcher_decal
-                                .active_decals
-                                .iter()
-                                .map(|(target, name)| (target.clone(), name.clone()))
-                                .collect::<Vec<_>>();
-                            let mut restore_decal = None;
-                            for (target, name) in active_decals {
-                                let target_label = self
-                                    .patcher_decal
-                                    .target_display_name(&target);
-                                let image = self.patcher_decal.decals.iter()
-                                    .find(|item| item.name == name)
-                                    .and_then(|item| item.preview_image.clone());
-                                ui.horizontal(|ui| {
-                                    if let Some(image) = image {
-                                        ui.add(egui::Image::from_bytes(
-                                            format!("bytes://active/decal/{target}"), image,
-                                        ).fit_to_exact_size(egui::vec2(90.0, 58.0)));
+                                    let active_cars = self
+                                        .patcher_car
+                                        .active_cars
+                                        .iter()
+                                        .map(|(target, name)| (target.clone(), name.clone()))
+                                        .collect::<Vec<_>>();
+                                    let mut restore_car = None;
+                                    for (target, name) in active_cars {
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.strong(&name);
+                                                ui.weak(t_args(
+                                                    "app-replaced-target-for-its-bodyid-car",
+                                                    &[("target", target.to_string().into())],
+                                                ));
+                                            });
+                                            if ui.button(t("app-restore")).clicked() {
+                                                restore_car = Some(target.clone());
+                                            }
+                                        });
                                     }
-                                    ui.vertical(|ui| {
-                                        ui.strong(&name);
-                                        ui.weak(t_args("app-replaced-target-label", &[("target_label", target_label.to_string().into())]));
-                                    });
-                                    if ui.button(t("app-restore")).clicked() {
-                                        restore_decal = target.split_once('|')
-                                            .map(|(car, skin)| (car.to_string(), skin.to_string()));
+                                    if let Some(target) = restore_car {
+                                        if let Err(error) = self.patcher_car.restore(
+                                            &target,
+                                            &cooked_pc,
+                                            &backups_dir,
+                                            &self.tx,
+                                            &mut self.config,
+                                        ) {
+                                            let _ = self.tx.send(AppMsg::Log(format!(
+                                                "[Cars] Restore failed: {error}"
+                                            )));
+                                        }
                                     }
-                                });
-                            }
-                            if let Some((car, skin)) = restore_decal {
-                                let _ = self.patcher_decal.restore_decal_from_skin(
-                                    &car, &skin, &cooked_pc, &backups_dir, &self.tx, ctx,
-                                );
-                            }
-                            let active_cars = self
-                                .patcher_car
-                                .active_cars
-                                .iter()
-                                .map(|(target, name)| (target.clone(), name.clone()))
-                                .collect::<Vec<_>>();
-                            let mut restore_car = None;
-                            for (target, name) in active_cars {
-                                ui.horizontal(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.strong(&name);
-                                        ui.weak(t_args("app-replaced-target-for-its-bodyid-car", &[("target", target.to_string().into())]));
-                                    });
-                                    if ui.button(t("app-restore")).clicked() {
-                                        restore_car = Some(target.clone());
+                                    let active_anthems = self.patcher_anthem.active_anthems.clone();
+                                    for (key, name) in active_anthems {
+                                        ui.horizontal(|ui| {
+                                            ui.strong(name);
+                                            ui.weak("Patched anthem audio");
+                                            if ui.button(t("app-restore")).clicked() {
+                                                self.patcher_anthem
+                                                    .update_enabled(key, false, &cooked_pc, ctx);
+                                            }
+                                        });
                                     }
-                                });
-                            }
-                            if let Some(target) = restore_car {
-                                if let Err(error) = self.patcher_car.restore(
-                                    &target,
-                                    &cooked_pc,
-                                    &backups_dir,
-                                    &self.tx,
-                                    &mut self.config,
-                                ) {
-                                    let _ = self.tx.send(AppMsg::Log(format!(
-                                        "[Cars] Restore failed: {error}"
-                                    )));
-                                }
-                            }
-                            self.swapper.render_active_swaps(
-                                ui, &cooked_pc, &backups_dir, &self.tx,
-                            );
-                                });
+                                }));
                         }
                         PatcherSubTab::Presets => {
                             self.render_presets_tab(ui, &cooked_pc, &backups_dir, ctx);
                         }
-                        }
-                    });
-                } else if self.items_mode == ItemsMode::Recolour {
-                    ui.heading(t("app-items-recolour"));
+                    }
+                } else if mode == ItemsMode::ItemsActive {
+                    self.render_active_items(ui, &cooked_pc, &backups_dir);
+                } else if mode == ItemsMode::ItemNames {
+                    self.swapper.render_owned_item_names(
+                        ui,
+                        &cooked_pc,
+                        &backups_dir,
+                        &mut self.owned_inventory,
+                    );
+                } else if mode == ItemsMode::Recolour {
+                    ui.heading(t("nav-item-colours"));
                     self.owned_inventory.show_with_actions(ui, |ui| {
                         self.swapper.render_recolour_controls(ui, &self.tx);
                     });
-                    if self.catalogs_loading { ui.spinner(); }
-                    if let Some(error) = &self.catalogs_error { ui.label(error); }
-                    self.swapper.render_recolour(ui, &cooked_pc, &backups_dir, &self.tx, &self.owned_inventory.ids);
-                } else if self.items_mode == ItemsMode::SpeedPatch {
+                    if self.catalogs_loading {
+                        ui.spinner();
+                    }
+                    if let Some(error) = &self.catalogs_error {
+                        ui.label(error);
+                    }
+                    self.swapper.render_recolour(
+                        ui,
+                        &cooked_pc,
+                        &backups_dir,
+                        &self.tx,
+                        &self.owned_inventory.ids,
+                    );
+                } else if mode == ItemsMode::SpeedPatch {
                     egui::ScrollArea::vertical()
                         .id_salt("items_speed_patch")
-                        .show(ui, |ui| {
+                        .show(ui, |ui| crate::panel::followed(ui, |ui| {
                             if self.speed_patch.render(
                                 ui,
                                 &mut self.config.speed_patch,
@@ -7075,67 +7883,117 @@ impl HebnixApp {
                             ) {
                                 self.save_config();
                             }
-                        });
-                } else if self.items_mode == ItemsMode::WheelAlignment {
-                    if self.catalogs_loading { ui.spinner(); }
-                    if let Some(error) = &self.catalogs_error { ui.label(error); }
+                        }));
+                } else if mode == ItemsMode::GoalExplosion {
+                    self.goal_explosion.render(ui, &cooked_pc, &backups_dir);
+                    ui.add_space(16.0);
+                    self.goal_explosion_volume.render(ui, &cooked_pc, &backups_dir);
+                } else if mode == ItemsMode::WheelAlignment {
+                    if self.catalogs_loading {
+                        ui.spinner();
+                    }
+                    if let Some(error) = &self.catalogs_error {
+                        ui.label(error);
+                    }
                     self.wheel_alignment.render(ui, &cooked_pc);
-                } else if self.items_mode == ItemsMode::BallAppearance {
+                } else if mode == ItemsMode::BallAppearance {
                     self.colours.poll();
-                    if let Some(action) =
-                        self.colours.render_ball_appearance(ui, &backups_dir)
-                    {
+                    if let Some(action) = self.colours.render_ball_appearance(ui, &backups_dir) {
                         if crate::messages::block_item_action_if_game_running(&self.tx) {
-                            self.console.write(
-                                "[Colours] Close Rocket League before changing game files.",
-                            );
+                            self.console
+                                .write("[Colours] Close Rocket League before changing game files.");
+                        } else if !spoofer::is_admin()
+                            && crate::patcher::colours::needs_admin(&cooked_pc)
+                        {
+                            self.colour_admin_prompt_open = true;
                         } else {
-                            self.colours.begin(
-                                action,
-                                &cooked_pc,
-                                &backups_dir,
-                                &self.tx,
-                                ctx,
-                            );
+                            self.colours
+                                .begin(action, &cooked_pc, &backups_dir, &self.tx, ctx);
                         }
                     }
-                }
-            }
-            Tab::Colours => {
-                let cooked_pc = PathBuf::from(&self.config.settings.rl_path)
-                    .join("TAGame")
-                    .join("CookedPCConsole");
-                let backups_dir = cooked_pc.join("Backups");
-                self.colours.poll();
-                if let Some(action) = self.colours.render(ui, &backups_dir) {
-                    if crate::messages::block_item_action_if_game_running(&self.tx) {
-                        self.console.write(
-                            "[Colours] Close Rocket League before changing game files.",
-                        );
-                    } else {
-                        self.colours.begin(
-                            action,
-                            &cooked_pc,
-                            &backups_dir,
-                            &self.tx,
-                            ctx,
-                        );
+                } else if mode == ItemsMode::GameColours {
+                    self.colours.poll();
+                    if let Some(action) = self.colours.render(ui, &backups_dir) {
+                        if crate::messages::block_item_action_if_game_running(&self.tx) {
+                            self.console
+                                .write("[Colours] Close Rocket League before changing game files.");
+                        } else if !spoofer::is_admin()
+                            && crate::patcher::colours::needs_admin(&cooked_pc)
+                        {
+                            self.colour_admin_prompt_open = true;
+                        } else {
+                            self.colours
+                                .begin(action, &cooked_pc, &backups_dir, &self.tx, ctx);
+                        }
                     }
-                }
-            }
 
+                } else {
+                    let page = match mode {
+                        ItemsMode::ArenaBackgrounds => {
+                            crate::ui::workshop::StudioMapPage::ArenaBackgrounds
+                        }
+                        _ => unreachable!("studio mode has an editor"),
+                    };
+                    self.workshop.render_studio_page(
+                        page,
+                        ui,
+                        &self.config.settings.rl_path,
+                        &self.config.rl_launch,
+                        &self.tx,
+                    );
+                }
+            });
+    }
+
+    fn render_current_page(&mut self, ui: &mut egui::Ui) {
+        self.patcher_anthem.poll(&mut self.config, &self.tx);
+        if self.tab != Tab::Patcher
+            || self.items_mode != ItemsMode::Patching
+            || self.patcher_subtab != PatcherSubTab::Anthem
+        {
+            self.patcher_anthem.leave_page();
+        }
+        if self.tab != Tab::Spoofer || self.spoofer_subtab != SpooferSubTab::Titles {
+            self.title_editor.leave_page();
+        }
+        match self.tab {
+            Tab::Home => self.render_home(ui),
+            Tab::Console => self.render_console_tab(ui),
+            Tab::Workshop => {
+                let rl_path = self.config.settings.rl_path.clone();
+                let rl_launch = self.config.rl_launch.clone();
+                let tx = self.tx.clone();
+                self.workshop.render(ui, &rl_path, &rl_launch, &tx);
+            }
+            Tab::Spoofer => self.render_spoofer_tab(ui),
+            Tab::Items => self.render_items_tab(ui),
+            Tab::Patcher => self.render_upk_studio(ui),
+            Tab::GameMods => self.render_game_mods_tab(ui),
             Tab::Settings => self.render_settings_tab(ui),
             Tab::Plugins => self.render_plugins_tab(ui),
             Tab::Replays => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(
+                        &mut self.replays_subtab,
+                        ReplaysSubTab::ReplayTimeline,
+                        t("nav-replay-library"),
+                    );
                     ui.selectable_value(
                         &mut self.replays_subtab,
                         ReplaysSubTab::AutoUploadReplays,
-                        t("app-automatically-upload-replays"),
+                        t("nav-auto-upload"),
                     );
                 });
                 ui.separator();
                 match self.replays_subtab {
+                    ReplaysSubTab::ReplayTimeline => {
+                        let folder = crate::auto_upload_replays::configured_replay_directory(
+                            &self.config.replay_upload,
+                            std::path::Path::new(&self.config.settings.rl_path),
+                            &self.config.rl_launch,
+                        );
+                        self.replay_timeline.show(ui, folder, &self.ws_stats);
+                    }
                     ReplaysSubTab::AutoUploadReplays => {
                         ui.columns(2, |columns| {
                             egui::ScrollArea::vertical()
@@ -7144,7 +8002,10 @@ impl HebnixApp {
                                 .show(&mut columns[0], |ui| {
                                     self.render_replay_auto_upload_tab(ui);
                                 });
-                            self.auto_upload_replays.show_history(&mut columns[1]);
+                            egui::Frame::group(columns[1].style()).show(&mut columns[1], |ui| {
+                                ui.set_width(ui.available_width());
+                                self.auto_upload_replays.show_history(ui);
+                            });
                         });
                     }
                 }
@@ -7152,9 +8013,6 @@ impl HebnixApp {
             Tab::About => self.render_about_tab(ui),
         }
     }
-}
-
-impl HebnixApp {
     fn render_themed_navigation(&mut self, ui: &mut egui::Ui, p: &theme::Presentation, vertical: bool) {
         let tabs = Tab::ALL;
         let labels: Vec<String> = tabs.iter().map(|tab| tab.label()).collect();
@@ -7188,7 +8046,7 @@ impl HebnixApp {
                         ui.add_space(10.0);
                         egui::ScrollArea::vertical().id_salt("theme_nav_scroll")
                             .auto_shrink([false, false])
-                            .show(ui, |ui| self.render_themed_navigation(ui, p, true));
+                            .show(ui, |ui| crate::panel::followed(ui, |ui| self.render_themed_navigation(ui, p, true)));
                     }
                 });
             }
@@ -7205,7 +8063,7 @@ impl HebnixApp {
                 });
             }
             theme::ShellPart::Content => {
-                if p.layout.show_page_heading && self.tab != Tab::Workshop { ui.heading(self.tab.label()); ui.add_space(8.0); }
+                if p.layout.show_page_heading && !matches!(self.tab, Tab::Workshop | Tab::Home) { ui.heading(self.tab.label()); ui.add_space(8.0); }
                 self.render_current_page(ui);
             }
         });

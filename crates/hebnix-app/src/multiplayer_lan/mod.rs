@@ -21,6 +21,7 @@ use std::time::Duration;
 // one session type for hosting and joining, see hosting.rs
 pub use hosting::HostSession;
 pub use map_sync::{
+    valid_package_stem,
     LocalInfo, MAP_SYNC_PORT, MAX_MAP_BYTES, MapFileProvider, MapProvider, PeerOffer, SlotMap,
     TransferProgress, fetch_map_file, hash_file, is_local_map_id, local_map_id, valid_map_id,
 };

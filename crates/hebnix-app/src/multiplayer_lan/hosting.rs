@@ -26,6 +26,9 @@ impl std::fmt::Debug for HostSession {
 }
 
 impl HostSession {
+    /// Linux: the tailcat sidecar polls peers itself; kept so shared UI code compiles.
+    pub fn poll_now(&self) {}
+
     pub fn start(
         sidecar: Arc<TailcatSidecarHandle>,
         map_provider: MapProvider,

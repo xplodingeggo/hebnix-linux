@@ -647,13 +647,13 @@ impl PatcherState {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("patcher_subtabs")
-                    .show(ui, |ui| {
+                    .show(ui, |ui| crate::panel::followed(ui, |ui| {
                         ui.selectable_value(
                             &mut self.subtab,
                             PatcherSubTab::Ball,
                             t("render-ball"),
                         );
-                    });
+                    }));
             });
 
         egui::CentralPanel::default()
@@ -818,7 +818,7 @@ impl PatcherState {
 
         self.render_delete_confirmation(ctx, tx);
 
-        crate::ui::browser::header(ui, t("app-ball-patcher"), |ui| {
+        crate::ui::browser::header(ui, t("nav-ball-textures"), |ui| {
             if ui.button(t("btn-refresh")).clicked() {
                 if self.source == PatchSource::Catalog {
                     self.catalog.refresh(ctx);
@@ -927,7 +927,7 @@ impl PatcherState {
         egui::ScrollArea::vertical()
             .id_salt("patcher_balls_scroll")
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show(ui, |ui| crate::panel::followed(ui, |ui| {
                 for row in visible.chunks(column_count) {
                     ui.columns(column_count, |columns| {
                         for (column, ball) in row.iter().enumerate() {
@@ -1017,7 +1017,7 @@ impl PatcherState {
                     });
                     ui.add_space(6.0);
                 }
-            });
+            }));
     }
 
     fn import_zip(&mut self, zip_path: &Path, tx: &Sender<AppMsg>) -> bool {

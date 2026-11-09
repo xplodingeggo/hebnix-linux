@@ -78,6 +78,12 @@ pub struct SlotMap {
     pub slot: String,
     pub id: String,
     pub name: String,
+    /// original package filename without its extension, separate from the title
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file: String,
+    /// package name the host loaded it under (a map slot), when not `file`
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package: String,
     /// imported by the player rather than from the workshop cdn (derived
     /// from the id on receive, never taken from the wire)
     #[serde(default)]
@@ -1014,4 +1020,16 @@ mod tests {
         stream.read_to_string(&mut reply).unwrap();
         assert!(reply.contains("error"), "{reply}");
     }
+}
+
+pub fn valid_package_stem(value: &str) -> bool {
+    let upper = value.to_ascii_uppercase();
+    !value.is_empty()
+        && value.len() <= 180
+        && !value.ends_with(['.', ' '])
+        && !value.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|', '.'])
+        && !value.chars().any(char::is_control)
+        && !matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !(upper.len() == 4 && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes()[3].is_ascii_digit())
 }

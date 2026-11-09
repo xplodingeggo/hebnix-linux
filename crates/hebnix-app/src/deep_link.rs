@@ -96,6 +96,7 @@ fn register_protocol() -> Result<(), String> {
     Ok(())
 }
 
+
 fn id_from_url<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
     let id = value.strip_prefix(prefix)?.trim_end_matches('/');
     (!id.is_empty()

@@ -1,5 +1,9 @@
 //! Count and remove tracked items. No spawning, replay, or match transport.
 mod save_cleanup;
+
+pub use save_cleanup::{
+    apply_loadout_edit, loadout_export, loadout_export_bakkes, loadout_names, loadout_preset,
+};
 mod store;
 
 use std::collections::BTreeSet;
@@ -82,7 +86,8 @@ impl Cleaner {
             options.read(true).write(true).create(true).truncate(false);
             #[cfg(windows)]
             {
-                use std::os::windows::fs::OpenOptionsExt;
+                #[cfg(target_os = "windows")]
+use std::os::windows::fs::OpenOptionsExt;
                 options.share_mode(0);
             }
             locks.push(options.open(base.join("items.lock")).map_err(|_| {

@@ -298,9 +298,10 @@ fn parse_response(
 fn parse_rank(value: &Value, playlist_id: i64) -> PlaylistRank {
     PlaylistRank {
         playlist_id,
-        playlist_name: string_value(value, "playlist_name")
-            .unwrap_or("")
-            .to_string(),
+        playlist_name: crate::utils::playlists::known_name(playlist_id)
+            .or_else(|| string_value(value, "playlist_name"))
+            .map(str::to_owned)
+            .unwrap_or_else(|| crate::utils::playlists::display_name(playlist_id)),
         tier_id: value.get("tier_id").and_then(number_i64).unwrap_or(0),
         tier_name: string_value(value, "tier_name")
             .unwrap_or("Unranked")
@@ -312,8 +313,7 @@ fn parse_rank(value: &Value, playlist_id: i64) -> PlaylistRank {
         mmr: value
             .get("mmr")
             .and_then(number_f64)
-            .map(|mmr| mmr.round() as i64)
-            .unwrap_or(0),
+            .map(|mmr| mmr.round() as i64),
         matches_played: value
             .get("matches_played")
             .and_then(number_i64)
@@ -447,7 +447,7 @@ mod tests {
         );
         let rank = stats.ranks.get(&63).unwrap();
         assert_eq!(rank.playlist_id, 63);
-        assert_eq!(rank.mmr, 1164);
+        assert_eq!(rank.mmr, Some(1164));
         assert_eq!(rank.division_id, 2);
         assert_eq!(
             stats.avatar_url.as_deref(),

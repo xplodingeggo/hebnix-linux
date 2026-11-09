@@ -7,18 +7,30 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crossbeam_channel::Sender;
-use rustls::{ServerConnection, StreamOwned};
+pub const ACCOUNT_HOST: &str = "api.epicgames.dev";
+// A hosts redirect only changes the IP, so HTTPS must still listen on port 443.
+// Dynamic port fallback is only suitable for the CRL URL, which includes its port.
+const LISTEN_ADDR: &str = "127.0.0.1:443";
 
-use super::{ca::Ca, proxy, rules::Rule};
-use crate::messages::AppMsg;
+#[derive(Debug)]
+struct AccountCertificate(proxy::CertResolver);
+impl ResolvesServerCert for AccountCertificate {
+    fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        if hello
+            .server_name()
+            .is_some_and(|name| !name.eq_ignore_ascii_case(ACCOUNT_HOST))
+        {
+            return None;
+        }
+        self.0.resolve(hello)
+    }
+}
 
 pub struct HttpProxy {
     port: u16,
     running: Arc<AtomicBool>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
-
 impl HttpProxy {
     pub fn start(
         ca: Arc<Ca>,
@@ -32,29 +44,25 @@ impl HttpProxy {
             ca,
             "api.epicgames.dev",
         )))?;
-        let upstream = proxy::build_upstream_agent_pins(Default::default());
+        let listener = TcpListener::bind(LISTEN_ADDR)
+            .map_err(|e| format!("Cannot start account HTTPS proxy on {LISTEN_ADDR}: {e}"))?;
         let running = Arc::new(AtomicBool::new(true));
         let active = Arc::clone(&running);
-        let worker = std::thread::Builder::new()
-            .name("spoofer-http".into())
-            .spawn(move || {
-                for stream in listener.incoming() {
-                    if !active.load(Ordering::Acquire) {
-                        break;
+        let reported = Arc::new(AtomicBool::new(false));
+        let worker = std::thread::Builder::new().name("account-https-proxy".into()).spawn(move || {
+            for stream in listener.incoming() {
+                if !active.load(Ordering::Acquire) { break; }
+                let Ok(stream) = stream else { continue; };
+                let config = Arc::clone(&config); let upstream = upstream.clone();
+                let rules = Arc::clone(&rules); let tx = tx.clone(); let reported = Arc::clone(&reported);
+                std::thread::spawn(move || {
+                    if handle(stream,config,upstream,rules,tx.clone()).is_err() && !reported.swap(true,Ordering::Relaxed) {
+                        // Never record account response bodies, authentication headers or URLs.
+                        let _ = tx.send(AppMsg::Log("[Spoofer] An account HTTPS connection failed. Check the Hebnix certificate and restart Rocket League.".into()));
                     }
-                    let Ok(stream) = stream else { continue };
-                    let config = Arc::clone(&config);
-                    let upstream = upstream.clone();
-                    let rules = Arc::clone(&rules);
-                    let tx = tx.clone();
-                    std::thread::spawn(move || {
-                        if let Err(error) = handle(stream, config, upstream, rules, tx) {
-                            tracing::debug!("HTTP proxy connection ended: {error}");
-                        }
-                    });
-                }
-            })
-            .map_err(|e| format!("Cannot start HTTP proxy: {e}"))?;
+                });
+            }
+        }).map_err(|e|format!("Cannot start account proxy thread: {e}"))?;
         Ok(Self {
             port,
             running,
@@ -73,7 +81,6 @@ impl HttpProxy {
                 .lock()
                 .is_ok_and(|w| w.as_ref().is_some_and(|w| !w.is_finished()))
     }
-
     pub fn stop(&self) {
         if !self.running.swap(false, Ordering::AcqRel) {
             return;
@@ -86,7 +93,6 @@ impl HttpProxy {
         }
     }
 }
-
 impl Drop for HttpProxy {
     fn drop(&mut self) {
         self.stop();
@@ -94,105 +100,39 @@ impl Drop for HttpProxy {
 }
 
 fn handle(
-    mut client: TcpStream,
+    client: TcpStream,
     config: Arc<rustls::ServerConfig>,
     upstream: ureq::Agent,
     rules: Arc<Vec<Box<dyn Rule>>>,
     tx: Sender<AppMsg>,
 ) -> Result<(), String> {
+    let timeout = Some(std::time::Duration::from_secs(15));
     client
-        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .set_read_timeout(timeout)
         .map_err(|e| e.to_string())?;
     client
-        .set_write_timeout(Some(std::time::Duration::from_secs(30)))
+        .set_write_timeout(timeout)
         .map_err(|e| e.to_string())?;
-    // Read only the header so TLS bytes following CONNECT stay in the socket.
-    let mut header = Vec::new();
-    let mut byte = [0];
-    while !header.ends_with(b"\r\n\r\n") {
-        client.read_exact(&mut byte).map_err(|e| e.to_string())?;
-        header.push(byte[0]);
-        if header.len() > 65536 {
-            return Err("Proxy request headers too large".into());
-        }
-    }
-    let text = std::str::from_utf8(&header).map_err(|e| e.to_string())?;
-    let mut first = text
-        .lines()
-        .next()
-        .ok_or("Missing proxy request")?
-        .split_whitespace();
-    let method = first.next().ok_or("Missing method")?;
-    let target = first.next().ok_or("Missing target")?;
-    if method != "CONNECT" {
-        let url = url::Url::parse(target).map_err(|e| e.to_string())?;
-        if url.scheme() != "http" {
-            return Err("Expected an HTTP URL".into());
-        }
-        url.host_str().ok_or("Missing HTTP host")?;
-        let host = &url[url::Position::BeforeHost..url::Position::AfterPort];
-        let mut replay = PrefixedStream {
-            prefix: std::io::Cursor::new(header.clone()),
-            stream: client,
-        };
-        return proxy::serve_one(&mut replay, &upstream, &rules, &tx, host);
-    }
-    let (host, port) = connect_target(target)?;
-    if inspect_account(host, port) {
-        client
-            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+    let mut connection = ServerConnection::new(config).map_err(|e| e.to_string())?;
+    let mut client = client;
+    while connection.is_handshaking() {
+        connection
+            .complete_io(&mut client)
             .map_err(|e| e.to_string())?;
-        let conn = ServerConnection::new(config).map_err(|e| e.to_string())?;
-        return proxy::serve_one(StreamOwned::new(conn, client), &upstream, &rules, &tx, host);
     }
-    let mut server = TcpStream::connect((host, port)).map_err(|e| e.to_string())?;
-    client
-        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .map_err(|e| e.to_string())?;
-    client.set_read_timeout(None).map_err(|e| e.to_string())?;
-    let mut client_read = client.try_clone().map_err(|e| e.to_string())?;
-    let mut server_write = server.try_clone().map_err(|e| e.to_string())?;
-    std::thread::spawn(move || {
-        let _ = std::io::copy(&mut client_read, &mut server_write);
-        let _ = server_write.shutdown(Shutdown::Write);
-    });
-    let _ = std::io::copy(&mut server, &mut client);
-    let _ = client.shutdown(Shutdown::Write);
-    Ok(())
-}
-
-fn connect_target(target: &str) -> Result<(&str, u16), String> {
-    let (host, port) = target
-        .rsplit_once(':')
-        .ok_or("CONNECT requires a host and port")?;
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    if host.is_empty() {
-        return Err("CONNECT host is empty".into());
+    if connection
+        .server_name()
+        .is_some_and(|host| !host.eq_ignore_ascii_case(ACCOUNT_HOST))
+    {
+        return Err("Host is outside the account proxy scope".into());
     }
-    Ok((host, port.parse().map_err(|_| "Invalid CONNECT port")?))
-}
-
-fn inspect_account(host: &str, port: u16) -> bool {
-    port == 443 && host.eq_ignore_ascii_case("api.epicgames.dev")
-}
-
-struct PrefixedStream {
-    prefix: std::io::Cursor<Vec<u8>>,
-    stream: TcpStream,
-}
-impl Read for PrefixedStream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.prefix.read(buf)?;
-        if n > 0 { Ok(n) } else { self.stream.read(buf) }
-    }
-}
-impl Write for PrefixedStream {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.stream.write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.stream.flush()
-    }
+    proxy::serve_one(
+        StreamOwned::new(connection, client),
+        &upstream,
+        &rules,
+        &tx,
+        ACCOUNT_HOST,
+    )
 }
 
 #[cfg(test)]
@@ -200,105 +140,73 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    fn local_proxy() -> (TcpStream, std::thread::JoinHandle<Result<(), String>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        client
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+    // Use a temporary loopback port and in-memory certificates: these tests never
+    // modify the certificate store, hosts file, or Windows proxy settings.
+    fn tls_request(host: &str) -> Result<(), String> {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec![host.to_owned()])
+            .unwrap()
+            .self_signed(&key)
             .unwrap();
-        let worker = std::thread::spawn(move || {
-            let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let server_config = rustls::ServerConfig::builder_with_provider(provider.clone())
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_no_client_auth()
-            .with_cert_resolver(Arc::new(rustls::server::ResolvesServerCertUsingSni::new()));
+            .with_single_cert(
+                vec![cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+            )
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.der().clone()).unwrap();
+        let client_config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let worker = std::thread::spawn(move || {
             handle(
                 listener.accept().unwrap().0,
-                Arc::new(config),
+                Arc::new(server_config),
                 proxy::build_upstream_agent_pins(Default::default()),
                 Arc::new(Vec::new()),
                 crossbeam_channel::unbounded().0,
             )
         });
-        (client, worker)
+        let connection = rustls::ClientConnection::new(
+            Arc::new(client_config),
+            host.to_owned().try_into().unwrap(),
+        )
+        .unwrap();
+        let mut client = StreamOwned::new(connection, socket);
+        // Invalid HTTP reaches the parser after TLS, without making an upstream request.
+        let _ = client.write_all(b"INVALID\r\n\r\n");
+        let _ = client.flush();
+        // Keep the socket alive while the server reads: closing with unread TLS
+        // session tickets can reset the connection on Windows.
+        let result = worker.join().unwrap();
+        drop(client);
+        result
     }
 
     #[test]
-    fn connect_forwards_websocket_bytes_unchanged_without_interception() {
-        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = upstream.local_addr().unwrap();
-        let echo = std::thread::spawn(move || {
-            let mut stream = upstream.accept().unwrap().0;
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            let mut frame = [0; 5];
-            stream.read_exact(&mut frame).unwrap();
-            assert_eq!(&frame, b"\x81\x03abc");
-            stream.write_all(&frame).unwrap();
-        });
-        let (mut client, worker) = local_proxy();
-        // Sending CONNECT and the payload together catches accidental overreads.
-        let mut request =
-            format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").into_bytes();
-        request.extend_from_slice(b"\x81\x03abc");
-        client.write_all(&request).unwrap();
-        let mut response = Vec::new();
-        client.read_to_end(&mut response).unwrap();
-        assert_eq!(
-            response,
-            b"HTTP/1.1 200 Connection Established\r\n\r\n\x81\x03abc"
-        );
-        echo.join().unwrap();
-        worker.join().unwrap().unwrap();
+    fn account_tls_handshake_reaches_http_parser() {
+        let error = tls_request(ACCOUNT_HOST).unwrap_err();
+        assert!(error.starts_with("parse req:"), "{error}");
     }
 
     #[test]
-    fn plain_http_preserves_request_body_and_custom_upstream_port() {
-        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = upstream.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let mut stream = upstream.accept().unwrap().0;
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            let request = proxy::read_http_request(&mut stream).unwrap();
-            assert_eq!(request.method, "POST");
-            assert_eq!(request.path, "/echo?test=1");
-            assert_eq!(request.body, b"hello");
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-                .unwrap();
-        });
-        let (mut client, worker) = local_proxy();
-        write!(client, "POST http://{address}/echo?test=1 HTTP/1.1\r\nHost: {address}\r\nContent-Length: 5\r\n\r\nhello").unwrap();
-        let mut response = String::new();
-        client.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 200"));
-        assert!(response.ends_with("\r\n\r\nok"));
-        server.join().unwrap();
-        worker.join().unwrap().unwrap();
-    }
-    #[test]
-    fn psynet_and_other_websocket_hosts_are_never_inspected() {
-        assert!(inspect_account("API.EPICGAMES.DEV", 443));
-        for host in [
-            "config.psynet.gg",
-            "api.rlpp.psynet.gg",
-            "ws.psynet.gg",
-            "example.com",
-        ] {
-            assert!(!inspect_account(host, 443));
-        }
-        assert!(!inspect_account("api.epicgames.dev", 80));
-    }
-    #[test]
-    fn connect_authorities_handle_ipv6_and_reject_bad_ports() {
-        assert_eq!(connect_target("[::1]:443").unwrap(), ("::1", 443));
-        assert!(connect_target("example.com").is_err());
-        assert!(connect_target(":443").is_err());
-        assert!(connect_target("example.com:bad").is_err());
+    fn unrelated_tls_hosts_are_rejected_before_http_forwarding() {
+        let error = tls_request("ws.psynet.gg").unwrap_err();
+        assert_eq!(error, "Host is outside the account proxy scope");
     }
 }

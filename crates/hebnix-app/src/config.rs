@@ -61,6 +61,9 @@ pub struct SettingsCfg {
     pub language: String,
     /// Main tab selected when Hebnix starts.
     pub default_tab: String,
+    /// One-time migration to the Home dashboard; later startup choices persist.
+    #[serde(default)]
+    pub home_default_migrated: bool,
     /// main window bg opacity (0.5-1.0)
     pub window_opacity: f32,
     pub start_in_tray: bool,
@@ -83,6 +86,17 @@ pub struct SettingsCfg {
     /// weights (100-900) for regular and bold text in a variable overlay font
     pub overlay_font_weight: u32,
     pub overlay_font_bold_weight: u32,
+    pub restrict_hotkey_to_hebnix_or_rocket_league: bool,
+    /// Controller side panel: show every page, not just the in-game ones (maps, plugins).
+    pub panel_advanced: bool,
+    /// Controller side panel: dock on the left edge instead of the right.
+    pub panel_left: bool,
+    /// Controller side panel width, as a share of the game window (0.2 to 0.5).
+    pub panel_width: f32,
+    /// Controller side panel: slide in like a drawer.
+    pub panel_animate: bool,
+    /// Relaunch elevated on start when requested by the user.
+    pub run_as_admin: bool,
     /// Publish Hebnix/Rocket League activity to the local Discord client.
     pub discord_rich_presence: bool,
     /// Show presence only while Rocket League is running.
@@ -107,7 +121,8 @@ impl Default for SettingsCfg {
             hotkey: "f2".to_string(),
             theme: "Dark".to_string(),
             language: crate::i18n::AUTO.to_string(),
-            default_tab: "Console".to_string(),
+            default_tab: "Home".to_string(),
+            home_default_migrated: true,
             window_opacity: 0.96,
             start_in_tray: false,
             minimize_to_tray: false,
@@ -121,6 +136,12 @@ impl Default for SettingsCfg {
             overlay_font: String::new(),
             overlay_font_weight: 400,
             overlay_font_bold_weight: 700,
+            restrict_hotkey_to_hebnix_or_rocket_league: true,
+            panel_advanced: false,
+            panel_left: false,
+            panel_width: 0.30,
+            panel_animate: true,
+            run_as_admin: false,
             discord_rich_presence: true,
             discord_rocket_league_only: false,
             discord_game_state: true,
@@ -204,6 +225,26 @@ pub struct SpeedPatchCfg {
     pub items_page: bool,
 }
 
+/// Game Mods page settings
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameModsCfg {
+    /// Rocket League key name the forfeit command is bound to.
+    pub forfeit_key: String,
+    /// Rocket League key name the celebration command is bound to.
+    pub celebration_key: String,
+    /// Rocket League key name the bots in freeplay command is bound to.
+    pub bots_freeplay_key: String,
+    /// Controller buttons (XboxTypeS_ names without the prefix) for the same commands, empty for none.
+    pub forfeit_pad: String,
+    pub celebration_pad: String,
+    pub bots_freeplay_pad: String,
+    /// What Instant Suite does when a match ends: requeue, freeplay, menu or workshop.
+    pub instant_suite_mode: String,
+    /// The map Instant Suite's workshop action loads, by path.
+    pub instant_suite_map: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReplayUploadCfg {
@@ -231,16 +272,8 @@ fn default_replay_naming_template() -> String {
 }
 
 impl ReplayUploadCfg {
-    pub fn enabled_for_spoofer(&self, _spoofer_enabled: bool) -> bool {
-        false
-    }
-
-    /// Retired WebSocket capture stays disabled; preserve upload credentials/settings.
-    pub fn enforce_spoofer(&mut self, _spoofer_enabled: bool) -> bool {
-        let changed = self.upload_enabled || self.save_locally;
-        self.upload_enabled = false;
-        self.save_locally = false;
-        changed
+    pub fn enabled(&self) -> bool {
+        self.upload_enabled || self.save_locally
     }
 }
 
@@ -268,6 +301,7 @@ pub struct PatcherCfg {
     pub active_boost: Option<String>,
     pub active_decals: std::collections::HashMap<String, String>,
     pub active_cars: std::collections::HashMap<String, String>,
+    pub active_anthems: std::collections::HashMap<String, String>,
     pub ball_source: PatchSource,
     pub boost_source: PatchSource,
     pub decal_source: PatchSource,
@@ -411,6 +445,7 @@ pub struct Config {
     pub rl_launch: RlLaunchCfg,
     pub patcher: PatcherCfg,
     pub speed_patch: SpeedPatchCfg,
+    pub game_mods: GameModsCfg,
     pub replay_upload: ReplayUploadCfg,
     pub action_button: ActionButtonCfg,
     /// enabled state keyed by plugin slug
@@ -716,31 +751,5 @@ mod tests {
         assert_eq!(decoded.boost_source, PatchSource::Catalog);
         assert_eq!(decoded.decal_source, PatchSource::Custom);
         assert_eq!(decoded.car_source, PatchSource::Custom);
-    }
-}
-
-#[cfg(test)]
-mod replay_dependency_tests {
-    use super::ReplayUploadCfg;
-    #[test]
-    fn retired_replay_preferences_stay_disabled_and_preserve_other_settings() {
-        for (save, upload) in [(false, false), (true, false), (false, true), (true, true)] {
-            let mut config = ReplayUploadCfg {
-                save_locally: save,
-                upload_enabled: upload,
-                api_key: "keep-key".into(),
-                save_directory: "keep-directory".into(),
-                ..Default::default()
-            };
-            assert!(!config.enabled_for_spoofer(true));
-            assert!(!config.enabled_for_spoofer(false));
-            assert_eq!(config.enforce_spoofer(true), save || upload);
-            assert_eq!((config.save_locally, config.upload_enabled), (false, false));
-            assert!(!config.enforce_spoofer(false));
-            assert!(!config.save_locally && !config.upload_enabled);
-            assert_eq!(config.api_key, "keep-key");
-            assert_eq!(config.save_directory, "keep-directory");
-            assert!(!config.enabled_for_spoofer(true));
-        }
     }
 }

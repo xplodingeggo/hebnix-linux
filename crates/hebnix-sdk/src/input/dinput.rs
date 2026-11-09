@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gilrs::{Gamepad, GamepadId};
 
@@ -284,6 +284,63 @@ fn read_pressed(gamepad: &Gamepad) -> HashSet<&'static str> {
         .collect()
 }
 
+// gilrs 0.10's windows backend (Windows.Gaming.Input) never reports the
+// DualSense at all, while winmm sees it fine, so it's read from there instead.
+// winmm id of a connected dualsense, if any
+fn find_winmm_ds5() -> Option<u32> {
+    (0..unsafe { joyGetNumDevs() }).find(|&id| {
+        let mut caps = JOYCAPSW::default();
+        let ok = unsafe { joyGetDevCapsW(id as usize, &mut caps, size_of::<JOYCAPSW>() as u32) } == 0;
+        let (vid, pid) = (caps.wMid, caps.wPid);
+        ok && vid == SONY_VID
+            && SONY_PIDS.contains(&(pid, PsGen::Ds5))
+            && read_winmm_ds5(id).is_some()
+    })
+}
+
+// (named buttons, raw codes) held, None once the pad is unplugged
+fn read_winmm_ds5(id: u32) -> Option<(HashSet<&'static str>, HashSet<u32>)> {
+    // dinput button order of the dualsense, same as the SDL db's windows PS5 entry
+    const BUTTONS: [&str; 13] = [
+        "west", "south", "east", "north", "l1", "r1", "l2", "r2", "select", "start", "l3", "r3",
+        "mode",
+    ];
+    let mut info = JOYINFOEX {
+        dwSize: size_of::<JOYINFOEX>() as u32,
+        dwFlags: (JOY_RETURNBUTTONS | JOY_RETURNPOV) as u32,
+        ..Default::default()
+    };
+    if unsafe { joyGetPosEx(id, &mut info) } != 0 {
+        return None;
+    }
+    let mut pressed: HashSet<&'static str> = BUTTONS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| info.dwButtons & (1 << i) != 0)
+        .map(|(_, name)| *name)
+        .collect();
+    // hat in hundredths of a degree clockwise from up, 0xFFFF when centred
+    if info.dwPOV <= 36000 {
+        let octant = (info.dwPOV / 4500) % 8;
+        for (name, dirs) in [
+            ("dpad_up", [7, 0, 1]),
+            ("dpad_right", [1, 2, 3]),
+            ("dpad_down", [3, 4, 5]),
+            ("dpad_left", [5, 6, 7]),
+        ] {
+            if dirs.contains(&octant) {
+                pressed.insert(name);
+            }
+        }
+    }
+    let raw = [(13, DS5_TOUCHPAD_CODE), (14, DS5_MUTE_CODE)]
+        .into_iter()
+        .filter(|(bit, _)| info.dwButtons & (1 << bit) != 0)
+        .map(|(_, code)| code)
+        .collect();
+    Some((pressed, raw))
+}
+
 /// spawn the bg thread that reads controller state and reconnects on drop.
 /// safe to call twice.
 pub fn start_dinput_monitor() {
@@ -298,6 +355,8 @@ pub fn start_dinput_monitor() {
 
 fn monitor_loop() {
     let mut active: Option<GamepadId> = None;
+    let mut ds5: Option<u32> = None;
+    let mut last_ds5_scan: Option<Instant> = None;
 
     loop {
         {

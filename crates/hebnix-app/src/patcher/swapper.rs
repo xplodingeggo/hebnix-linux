@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod browser;
+mod item_name;
+mod thumbnail_patcher;
 #[cfg(test)]
 mod browser_tests;
 
@@ -53,14 +55,14 @@ impl SwapCategory {
     pub fn label(self) -> String {
         match self {
             Self::Antennas => t("label-antennas"),
-            Self::Anthems => t("label-anthems"),
-            Self::Borders => t("label-borders"),
-            Self::Bodies => t("label-bodies"),
+            Self::Anthems => t("studio-player-anthems"),
+            Self::Borders => t("nav-avatar-borders"),
+            Self::Bodies => t("nav-car-bodies"),
             Self::Boosts => t("label-boosts"),
-            Self::Engines => t("label-engines"),
-            Self::Goals => t("label-goals"),
-            Self::Finishes => t("label-finishes"),
-            Self::Banners => t("label-banners"),
+            Self::Engines => t("nav-engine-sounds"),
+            Self::Goals => t("nav-goal-explosions"),
+            Self::Finishes => t("nav-paint-finishes"),
+            Self::Banners => t("nav-player-banners"),
             Self::Skins => t("label-decals"),
             Self::Toppers => t("label-toppers"),
             Self::Trails => t("label-trails"),
@@ -213,6 +215,32 @@ impl ActiveSwap {
                     !item.shared_package || self.target_name.eq_ignore_ascii_case(&item.name)
                 })
     }
+}
+
+/// One BakkesMod item: the swap category, the product equipped in the stock loadout,
+/// the BakkesMod product to show instead, and its paint (0 = none).
+pub struct SwapPick {
+    pub category: SwapCategory,
+    pub stock_product: i64,
+    pub product: i64,
+    pub paint: u8,
+}
+
+/// BakkesMod equip slot to swap category. Body is not applied by BakkesMod, and the
+/// finish slots have no swap category here, so those return `None`.
+pub fn category_for_equip_slot(slot: u8) -> Option<SwapCategory> {
+    Some(match slot {
+        1 => SwapCategory::Skins,
+        2 => SwapCategory::Wheels,
+        3 => SwapCategory::Boosts,
+        4 => SwapCategory::Antennas,
+        5 => SwapCategory::Toppers,
+        13 => SwapCategory::Engines,
+        14 => SwapCategory::Trails,
+        15 => SwapCategory::Goals,
+        18 => SwapCategory::Anthems,
+        _ => return None,
+    })
 }
 
 #[derive(Default)]
@@ -406,16 +434,23 @@ pub struct SwapperState {
     swap_speed: HashMap<String, f32>,
     /// set from the Items animation speed tab; shows the speed picker on swap rows
     pub speed_enabled: bool,
+    thumbnail_editor: thumbnail_patcher::State,
+    name_editor: item_name::State,
 }
 
 impl SwapperState {
+    pub(crate) fn busy(&self) -> bool { self.name_editor.busy() || self.thumbnail_editor.busy() }
+
     pub fn new(base_dir: &Path) -> Self {
         let (thumbnail_jobs, jobs) = unbounded::<(String, PathBuf, String, egui::Context)>();
         let (results, thumbnail_results) = unbounded();
         std::thread::spawn(move || {
             while let Ok((key, path, category, context)) = jobs.recv() {
-                let result =
-                    crate::cosmetic_thumbnail::extract_png(&path, &category).map(Into::into);
+                let result = if let Some(kind) = category.strip_prefix("raw|") {
+                    crate::cosmetic_thumbnail::extract_raw_png(&path, kind)
+                } else {
+                    crate::cosmetic_thumbnail::extract_png(&path, &category)
+                }.map(Into::into);
                 let _ = results.send((key, result));
                 context.request_repaint();
             }
@@ -508,6 +543,8 @@ impl SwapperState {
             recolour_status: None,
             swap_speed: HashMap::new(),
             speed_enabled: false,
+            thumbnail_editor: thumbnail_patcher::State::default(),
+            name_editor: item_name::State::default(),
         }
     }
 
@@ -1254,30 +1291,33 @@ impl SwapperState {
         }
     }
 
-    pub fn render_recolour_controls(&mut self, ui: &mut egui::Ui, tx: &Sender<AppMsg>) {
+    pub fn render_recolour_categories(&mut self, ui: &mut egui::Ui) {
         let before = self.recolour_category;
-        egui::ComboBox::from_id_salt("recolour_category")
-            .selected_text(self.recolour_category.label())
-            .show_ui(ui, |ui| {
-                for category in SwapCategory::ALL
-                    .into_iter()
-                    .filter(|c| c.supports_recolour())
-                {
-                    ui.selectable_value(&mut self.recolour_category, category, category.label());
-                }
-            });
+        for category in SwapCategory::ALL
+            .into_iter()
+            .filter(|c| c.supports_recolour())
+        {
+            ui.selectable_value(&mut self.recolour_category, category, category.label());
+        }
+        if before != self.recolour_category {
+            self.recolour_selected = None;
+            self.recolour_status = None;
+            self.recolour_page = 0;
+        }
+    }
+
+    pub fn render_recolour_controls(&mut self, ui: &mut egui::Ui, tx: &Sender<AppMsg>) {
         if ui.button(t("app-reload-catalogs")).clicked() {
             let _ = tx.send(AppMsg::ReloadCatalogs);
         }
         let filter_changed = ui
-            .checkbox(&mut self.recolour_show_applied, t("recolour-show-recoloured"))
+            .checkbox(
+                &mut self.recolour_show_applied,
+                t("recolour-show-recoloured"),
+            )
             .on_hover_text(t("recolour-show-recoloured-hint"))
             .changed();
-        if before != self.recolour_category {
-            self.recolour_selected = None;
-            self.recolour_status = None;
-        }
-        if before != self.recolour_category || filter_changed {
+        if filter_changed {
             self.recolour_page = 0;
         }
     }
@@ -1450,7 +1490,7 @@ impl SwapperState {
         egui::ScrollArea::vertical()
             .id_salt("recolour_items")
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show(ui, |ui| crate::panel::followed(ui, |ui| {
                 for row in visible.chunks(columns) {
                     ui.columns(columns, |columns| {
                         for (column, &index) in row.iter().enumerate() {
@@ -1485,12 +1525,61 @@ impl SwapperState {
                     });
                     ui.add_space(6.0);
                 }
-            });
+            }));
     }
 
     pub fn active_count(&mut self, backups_dir: &Path) -> usize {
         self.load_active(backups_dir);
         self.active.len()
+    }
+
+    /// Catalog name of a product, if it is in the local catalog.
+    pub fn product_name(&self, category: SwapCategory, product_id: i64) -> Option<String> {
+        let items = self.catalogs.get(&category)?;
+        let item = items.iter().find(|item| item.product_id == Some(product_id))?;
+        Some(item.name.clone())
+    }
+
+    /// Swap entries for a preset: each pick shows `product` where `stock_product` is equipped.
+    /// Returns the entries and the reasons picks were skipped.
+    pub fn bakkes_preset_swaps(&self, picks: &[SwapPick]) -> (Vec<Value>, Vec<String>) {
+        let mut swaps = Vec::new();
+        let mut skipped = Vec::new();
+        for pick in picks {
+            let Some(items) = self.catalogs.get(&pick.category) else {
+                skipped.push(format!("{}: catalog unavailable", pick.category.slug()));
+                continue;
+            };
+            let find = |id: i64| items.iter().find(|item| item.product_id == Some(id));
+            let (Some(source), Some(target)) = (find(pick.stock_product), find(pick.product)) else {
+                skipped.push(format!(
+                    "{}: product {} or stock {} is not in the catalog",
+                    pick.category.slug(),
+                    pick.product,
+                    pick.stock_product
+                ));
+                continue;
+            };
+            let paint = match pick.paint {
+                0 => SwapPaint::Default,
+                paint => SwapPaint::Preset(paint),
+            };
+            let swap = ActiveSwap {
+                category: pick.category.slug().to_string(),
+                source_name: source.name.clone(),
+                source_upk: source.upk.clone(),
+                target_name: target.name.clone(),
+                target_upk: target.upk.clone(),
+                target_bnk: None,
+                paint,
+                target_thumbnail: None,
+                source_asset: source.path.clone(),
+                target_asset: target.path.clone(),
+                asset_override: false,
+            };
+            swaps.push(serde_json::to_value(swap).expect("swap serializes"));
+        }
+        (swaps, skipped)
     }
 
     pub fn apply_preset_swaps(
@@ -1876,7 +1965,7 @@ impl SwapperState {
         egui::ScrollArea::vertical()
             .id_salt(("swapper_walkthrough_targets", category))
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show(ui, |ui| crate::panel::followed(ui, |ui| {
                 for row in visible.chunks(column_count) {
                     ui.columns(column_count, |columns| {
                         for (column, &target_index) in row.iter().enumerate() {
@@ -1908,7 +1997,7 @@ impl SwapperState {
                     });
                     ui.add_space(6.0);
                 }
-            });
+            }));
 
         if apply {
             let Some(target_index) = self.walkthrough_target else {
@@ -1964,6 +2053,39 @@ impl SwapperState {
         tx: &Sender<AppMsg>,
         owned_ids: &HashSet<i64>,
     ) -> bool {
+        self.render_tab_with_inventory(ui, category, cooked_pc, backups_dir, tx, owned_ids, None)
+    }
+
+    pub fn render_owned_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        category: SwapCategory,
+        cooked_pc: &Path,
+        backups_dir: &Path,
+        tx: &Sender<AppMsg>,
+        inventory: &mut crate::owned_inventory::OwnedInventory,
+    ) -> bool {
+        self.render_tab_with_inventory(
+            ui,
+            category,
+            cooked_pc,
+            backups_dir,
+            tx,
+            &HashSet::new(),
+            Some(inventory),
+        )
+    }
+
+    fn render_tab_with_inventory(
+        &mut self,
+        ui: &mut egui::Ui,
+        category: SwapCategory,
+        cooked_pc: &Path,
+        backups_dir: &Path,
+        tx: &Sender<AppMsg>,
+        owned_ids: &HashSet<i64>,
+        inventory: Option<&mut crate::owned_inventory::OwnedInventory>,
+    ) -> bool {
         let mut owned_filter_requested = false;
         self.load_active(backups_dir);
         self.collect_thumbnails();
@@ -1975,7 +2097,7 @@ impl SwapperState {
             self.walkthrough_target = None;
         }
         ui.horizontal_top(|ui| {
-            ui.heading(category.label());
+            crate::theme::page_heading(ui, category.label());
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
                 egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
@@ -2029,6 +2151,11 @@ impl SwapperState {
                 },
             );
         });
+        let owned_snapshot = inventory.map(|inventory| {
+            inventory.show(ui);
+            inventory.ids.clone()
+        });
+        let owned_ids = owned_snapshot.as_ref().unwrap_or(owned_ids);
         ui.weak(t(&format!("items-browser-subtitle-{}", category.slug())));
         ui.add_space(8.0);
         let selecting_target =
@@ -2087,11 +2214,12 @@ impl SwapperState {
                 }
             }
             egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
+                .fill(egui::Color32::from_white_alpha(24))
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.vertical_centered(|ui| {
                         ui.strong(if self.walkthrough_step == WalkthroughStep::SelectSource {
                             t("tab-walkthrough-find-item")
                         } else {
@@ -2303,7 +2431,7 @@ impl SwapperState {
             egui::ScrollArea::vertical()
                 .id_salt(("swapper_walkthrough_sources", category))
                 .auto_shrink([false, false])
-                .show(ui, |ui| {
+                .show(ui, |ui| crate::panel::followed(ui, |ui| {
                     for row in visible.chunks(column_count) {
                         ui.columns(column_count, |columns| {
                             for (column, &source_index) in row.iter().enumerate() {
@@ -2338,14 +2466,14 @@ impl SwapperState {
                         });
                         ui.add_space(6.0);
                     }
-                });
+                }));
             return owned_filter_requested;
         }
         let mut action: Option<(usize, usize, bool, SwapPaint, f32)> = None;
         egui::ScrollArea::vertical()
             .id_salt(("swapper_grid", category))
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show(ui, |ui| crate::panel::followed(ui, |ui| {
                 for row in visible.chunks(column_count) {
                     ui.columns(column_count, |columns| {
                         for (column, &source_index) in row.iter().enumerate() {
@@ -2559,7 +2687,7 @@ impl SwapperState {
                     });
                     ui.add_space(6.0);
                 }
-            });
+            }));
         if let Some((source_index, target_index, restoring, paint, speed)) = action {
             if crate::messages::block_item_action_if_game_running(tx) {
                 return owned_filter_requested;
@@ -2888,11 +3016,11 @@ mod theme_content_space_tests {
             ui.horizontal(|ui|{for label in ["Item Swapper","Item Spawner","Animation Speed","Wheel Alignment","Ball Appearance"] {let _=ui.selectable_label(label=="Item Swapper",label);}});
             ui.separator();
             theme::secondary_navigation(ui,"space_test_categories").show(ui,|ui| {
-                egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui| {
+                egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui| crate::panel::followed(ui, |ui| {
                     for label in ["Ball Patcher","Boost Patcher","Decal Patcher","Car Patcher"] {let _=ui.selectable_label(false,label);}
                     ui.separator();
                     for category in SwapCategory::ALL {let _=ui.selectable_label(category==SwapCategory::Bodies,category.label());}
-                });
+                }));
             });
             egui::CentralPanel::default().frame(crate::i18n::layout::subtab_content_frame()).show(ui,|ui| {
                 assert!(!swapper.render_tab(ui,SwapCategory::Bodies,&cooked,&backups,&tx,&HashSet::new()));
