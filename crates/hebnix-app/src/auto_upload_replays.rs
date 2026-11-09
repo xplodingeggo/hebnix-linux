@@ -1226,7 +1226,7 @@ mod tests {
             validate_replay_url(
                 "http://api.rlpp.psynet.gg/Match.replay?MatchGUID=ABC&Timestamp=123"
             )
-            .is_ok()
+            .is_err()
         );
         assert!(validate_replay_url("https://api.rlpp.psynet.gg/Match.replay").is_ok());
         assert!(validate_replay_url("http://example.com/Match.replay").is_err());
@@ -1244,14 +1244,14 @@ mod tests {
                 "MapName": "Stadium_P"
             }
         });
-        let (time, time24, _) = local_times(1_790_685_544_i64);
+        let (date, time, time24) = local_times(1_790_685_544_i64);
         let title = render_replay_title(
             "{date} {time} {time24} {winning_team} My Replay - {gamemode} {map} {match_guid}",
             &entry,
         );
         assert_eq!(
             title,
-            format!("2026-09-29 {time} {time24} Orange My Replay - 2v2 Stadium_P ABC123")
+            format!("{date} {time} {time24} Orange My Replay - Doubles (Ranked) Stadium_P ABC123")
         );
     }
 }

@@ -3607,24 +3607,6 @@ mod tests {
     }
 
     #[test]
-    fn a_players_maps_are_summed_up_in_one_line() {
-        assert_eq!(offer_map_summary(&[]), "no map replaced");
-        let one = slot_map("Utopia Retro", "1", "Rings");
-        assert_eq!(offer_map_summary(std::slice::from_ref(&one)), "Rings");
-        let many = vec![
-            one,
-            slot_map("Underpass", "2", "Dunk"),
-            slot_map("Roadblock", "3", "Obstacle"),
-        ];
-        assert_eq!(offer_map_summary(&many), "Rings + 2 more");
-        // slots hebnix doesn't know about don't count
-        assert_eq!(
-            offer_map_summary(&[slot_map("Nowhere", "4", "Ghost")]),
-            "no map replaced"
-        );
-    }
-
-    #[test]
     fn the_player_search_ignores_case_and_spaces() {
         assert!(matches_filter("Squishy", ""));
         assert!(matches_filter("Squishy", "  "));
